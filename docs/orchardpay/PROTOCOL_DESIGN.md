@@ -1,8 +1,12 @@
-# OrchardPay Protocol Design (v0 draft)
+# OrchardPay Protocol Design
 
-Status: **design doc only** — no contract registered, no SDK/task wiring, no
-crypto implemented. See `docs/ORCHARDPAY_MIGRATION.md` for how this relates to
-DashPay, and `docs/GLOSSARY.md` for the "Orchard" vs "OrchardPay" naming note.
+Status: **schema finalized, identity-key wiring landed** (Milestone B). All 4
+open design questions below are resolved. Not yet done: the contract itself
+is not registered on any network yet (a one-time per-network operational
+step — see `docs/ORCHARDPAY_MIGRATION.md`), and no encryption module or
+contact-establishment flow is implemented (Milestones C-E). See
+`docs/ORCHARDPAY_MIGRATION.md` for how this relates to DashPay, and
+`docs/GLOSSARY.md` for the "Orchard" vs "OrchardPay" naming note.
 
 ## Goal
 
@@ -63,13 +67,11 @@ identity in v1.
 ```
 
 ```rust
-// Design sketch only — not compiled in this increment.
+// Design sketch — not yet backed by real create/query task code (Milestone C).
 pub struct ShieldedAddressDocument {
-    /// Raw Orchard payment address bytes.
-    /// TODO(confirm): exact length/encoding against dash_sdk's
-    /// `grovedb_commitment_tree::PaymentAddress` serialization
-    /// (see src/model/wallet/shielded.rs). Sketch assumes 43 bytes
-    /// (raw Orchard address per ZIP-316) — verify before finalizing.
+    /// Raw Orchard payment address bytes. Confirmed 43 bytes (raw address
+    /// per ZIP-316), matching `SHIELDED_ADDRESS_RAW_LEN` in
+    /// `src/model/address.rs`, backed by the SDK's own `OrchardAddress` type.
     pub shielded_address: Vec<u8>,
     pub protocol_version: u32,
 }
@@ -97,10 +99,9 @@ the *creator's own* bookkeeping/recovery UI (list of anchors I've published).
         "maxItems": 512,
         "position": 0
       },
-      "keyDerivationHint": { "type": "integer", "minimum": 0, "position": 1 },
-      "protocolVersion": { "type": "integer", "minimum": 1, "position": 2 }
+      "protocolVersion": { "type": "integer", "minimum": 1, "position": 1 }
     },
-    "required": ["encryptedPayload", "keyDerivationHint", "protocolVersion", "$createdAt"],
+    "required": ["encryptedPayload", "protocolVersion", "$createdAt"],
     "additionalProperties": false,
     "indices": [
       { "name": "byOwnerAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
@@ -109,26 +110,40 @@ the *creator's own* bookkeeping/recovery UI (list of anchors I've published).
 }
 ```
 
-`keyDerivationHint` is a small public integer (an HD child-key index), **not
-the key itself** — it lets the anchor's *creator* deterministically recompute
-the same AES-256 key later from their own wallet seed even if all other local
-state (or ZK transaction history) is lost, satisfying the pruning-resilience/
-recovery design goal for the creator's side. The recipient still needs the key
-delivered confidentially via the ZK memo channel, since they don't share the
-sender's seed.
+**Key derivation (resolved, replaces the earlier `keyDerivationHint` HD-index
+draft):** the AES-256 key comes from an ECDH shared secret between two
+identity-bound Platform keys, not a wallet HD index — so no hint field is
+needed at all. Every identity gets one `Purpose::ENCRYPTION`/
+`Purpose::DECRYPTION` key pair (added at identity-creation time — see
+`default_orchardpay_key_specs` in `src/backend_task/orchardpay/keys.rs`),
+contract-bounded via `ContractBounds::SingleContractDocumentType` to this
+contract's `contactAnchor` document type. To establish a `contactAnchor`,
+Alice fetches Bob's contract-bounded DECRYPTION key (via Platform's
+`IdentitiesContractKeysQuery`, filtered by contract + document type +
+purpose) and derives the ECDH shared secret against her own ENCRYPTION key,
+using the same DIP-15-style algorithm as the existing (legacy) DashPay
+contact-key exchange in `src/backend_task/dashpay/encryption.rs`'s
+`generate_ecdh_shared_key` (called directly, not forked). This is why one key
+pair per identity is enough for the whole relationship: the derived shared
+secret is cached and reused for every subsequent `encryptedMessage`, not
+re-derived per message, so no separate key is needed for that document type.
+Key rotation/recovery: Platform identity keys are individually addressable by
+`key_id`, and rotation is identity-native (an identity-update transition) —
+disabling an ENCRYPTION/DECRYPTION key bounded to this contract makes past
+anchors/messages encrypted against it permanently undecryptable, so the
+"Manage Identity Keys" UI must warn about this before disabling such a key.
+**Hardening note:** Platform does not consensus-enforce `contract_bounds` for
+ENCRYPTION/DECRYPTION purposes — it's a client-side convention only (unlike
+AUTHENTICATION signing keys). Any code resolving a counterparty's key for
+ECDH must explicitly verify the returned key's `contract_bounds()` matches
+this contract + `contactAnchor` before using it — the existing DashPay
+`contact_requests.rs` code does not do this today, and OrchardPay's
+equivalent must not repeat that gap.
 
 ```rust
 pub struct ContactAnchorDocument {
     /// AES-256-GCM ciphertext of `ContactAnchorPayload` (see below).
     pub encrypted_payload: Vec<u8>,
-    /// HD child-key index used to derive the AES-256 key from the creator's
-    /// own contact-key seed chain. Mirrors the DIP-14-style derivation
-    /// pattern already used by src/backend_task/dashpay/hd_derivation.rs,
-    /// but on a separate, OrchardPay-specific derivation path — this
-    /// separation is what implements the "encryption independence" design
-    /// goal (ZK-layer encryption and platform-document encryption can be
-    /// upgraded independently).
-    pub key_derivation_hint: u32,
     pub protocol_version: u32,
 }
 
@@ -174,7 +189,7 @@ variants inside `encryptedPayload`, no contract migration needed.
         "type": "array",
         "byteArray": true,
         "minItems": 32,
-        "maxItems": 16384,
+        "maxItems": 5120,
         "position": 1
       },
       "protocolVersion": { "type": "integer", "minimum": 1, "position": 2 }
@@ -192,8 +207,14 @@ To preserve the "anonymity of usecases" goal, `messageType` (payment / memo /
 payment-request / purchase-order / receipt / general-message) is deliberately
 **inside** the encrypted payload, not a plaintext top-level field — otherwise
 usage-pattern statistics would leak even without identity linkage.
-`maxItems: 16384` is a placeholder; confirm the actual Dash Platform
-per-document byte-size limit before finalizing.
+`maxItems: 5120` is Dash Platform's real `max_field_value_size` system limit
+(confirmed against the pinned SDK rev's `SYSTEM_LIMITS_V2`), not a
+placeholder — the earlier 16384 draft value was too high and would have been
+rejected at contract registration. 5 KiB per message (before AES-GCM/AEAD
+overhead) is a real constraint on `PurchaseOrder`-style payloads with many
+line items; large payloads may need to split across multiple linked
+`encryptedMessage` documents (via `reply_to_document_id`) if this becomes a
+practical limitation — not addressed in this increment.
 
 ```rust
 pub struct EncryptedMessageDocument {
@@ -234,28 +255,44 @@ pub struct EncryptedMessagePayload {
    agreed `referenceId`, for any purpose (payment, memo, request, order,
    receipt) — structurally identical regardless of purpose.
 
-## Open design questions (not resolved in this increment)
+## Resolved design decisions
 
-1. **AES-256 key-derivation source for the Contact Anchor.** This draft
-   assumes an HD-path index (`keyDerivationHint`) on the sender's own
-   contact-key chain, mirroring `src/backend_task/dashpay/hd_derivation.rs`'s
-   DIP-14 pattern but on an OrchardPay-specific path. Need to confirm this
-   matches the intended design versus, e.g., deriving from a value embedded
-   in the ZK viewing key (which would let the recipient derive the key
-   without needing anything delivered via the memo beyond the DocumentID).
-2. **One or two ReferenceIDs per relationship?** This draft assumes two
-   (`reference_id_outbound` / `reference_id_inbound`), matching the articles'
-   plural "both parties' ReferenceIDs" — confirm versus a single shared value
-   used by both directions.
-3. **Exact byte length/encoding of the Orchard shielded address** — 43 bytes
-   assumed (raw address per ZIP-316); verify against `dash_sdk`'s actual
-   `PaymentAddress` serialization in `src/model/wallet/shielded.rs`.
-4. **Real Dash Platform per-document byte-size ceiling** — needed to set a
-   real (not placeholder) `maxItems` on the `encryptedPayload` fields.
+1. **AES-256 key-derivation source for the Contact Anchor**: identity-bound
+   `Purpose::ENCRYPTION`/`Purpose::DECRYPTION` keys, contract-bounded to this
+   contract's `contactAnchor` document type, via ECDH — not an HD-path index.
+   See the `contactAnchor` section above for the full rationale. This is the
+   protocol-idiomatic path: Platform ships a dedicated purpose/contract-bounds
+   system and a first-class query (`IdentitiesContractKeysQuery`) for exactly
+   this, and it's the cheapest to implement given the existing (legacy)
+   DashPay ECDH code this reuses.
+2. **One or two ReferenceIDs per relationship?** Two —
+   `reference_id_outbound` / `reference_id_inbound`, as originally drafted.
+3. **Exact byte length/encoding of the Orchard shielded address**: 43 bytes,
+   confirmed against `SHIELDED_ADDRESS_RAW_LEN` in `src/model/address.rs`.
+4. **Real Dash Platform per-document byte-size ceiling**: `max_field_value_size
+   = 5120` bytes (5 KiB), Platform's actual per-field-value system limit —
+   see the `encryptedMessage` section above.
 
-## Non-goals for this increment
+## Payment semantics (resolved)
 
-No working ZK contact-establishment flow, no AES-256 encrypt/decrypt
-implementation, no contract registration on any network, no new `src/`
-modules or `RootScreenType` variant. This document is the input to that next
-increment, once reviewed.
+Sending a `Payment`-kind `encryptedMessage` performs a **real** shielded
+value transfer, not just a message about a payment: it wraps an actual
+shielded transfer (memo-tagged to correlate it with the message thread) plus
+the `encryptedMessage` document carrying the amount/note. `Memo` /
+`GeneralMessage` / etc. kinds remain pure Platform documents with no value
+movement — sending "just a message" stays possible and cheap, distinct from
+sending a payment.
+
+## Status of implementation (Milestone tracker — see the OrchardPay plan)
+
+- **Done**: contract schema (this document, `src/backend_task/orchardpay/
+  contract_schema.json`), `default_orchardpay_key_specs`
+  (`src/backend_task/orchardpay/keys.rs`), identity registration wired to
+  request these keys automatically (`combined_default_key_specs` in
+  `src/backend_task/identity/mod.rs`, used by both the canonical registration
+  builder and the identity-creation UI).
+- **Not yet done**: the contract is not registered on any network (a
+  one-time per-network operational step, tracked as a hard prerequisite in
+  `docs/ORCHARDPAY_MIGRATION.md`); no AES-256-GCM encryption module; no
+  contact-establishment flow (search, initiate, detect, accept); no
+  messaging send/receive; no local persistence layer.

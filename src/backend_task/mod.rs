@@ -57,6 +57,7 @@ pub mod error;
 pub mod grovestark;
 pub mod identity;
 pub mod migration;
+pub mod orchardpay;
 pub mod platform_info;
 pub mod register_contract;
 pub mod shielded;

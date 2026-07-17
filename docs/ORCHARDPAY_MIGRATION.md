@@ -1,6 +1,23 @@
 # DashPay → OrchardPay Migration
 
-## Status: not started (design phase)
+## Status: in progress
+
+Guided onboarding chain (wallet → identity → DPNS name) landed. OrchardPay's
+data contract schema is finalized and identity registration now requests
+OrchardPay's contract-bounded ENCRYPTION/DECRYPTION keys automatically — see
+`docs/orchardpay/PROTOCOL_DESIGN.md`. None of the parity checklist below is
+checked yet; that starts with shielded-address publishing (next up).
+
+**Operational prerequisite, not yet met on any network**: OrchardPay's
+contract is not an SDK-embedded system contract like DPNS/DashPay — it must
+be registered once per network (via the existing generic "Register Contract"
+screen) and the resulting contract ID recorded in that network's config
+(`NetworkConfig::orchardpay_contract_id` in `src/config.rs`). Until that
+happens on a given network, `AppContext::orchardpay_contract_id()` returns
+`None` there and identity registration silently falls back to DashPay's keys
+only (see `combined_default_key_specs` in `src/backend_task/identity/mod.rs`)
+— OrchardPay's contact/messaging features are simply unavailable on that
+network, not broken.
 
 DashPay (`src/ui/dashpay/`, `src/backend_task/dashpay/`, `src/database/dashpay.rs`,
 `src/database/contacts.rs`) is **legacy** — superseded in intent by OrchardPay's
@@ -32,9 +49,10 @@ for full rationale.
 ## Marked locations
 
 Grep for `ORCHARDPAY-TODO(dashpay-legacy)` to find all wiring points flagged
-during the rebrand pass (`src/ui/mod.rs`, `src/app.rs`, `src/ui/components/left_panel.rs`).
-Module-level `//! LEGACY` doc comments are on `src/ui/dashpay/mod.rs` and
-`src/backend_task/dashpay.rs`.
+during the rebrand pass (`src/model/settings.rs` — where `RootScreenType`
+lives after the platform-wallet rewrite, `src/app.rs`,
+`src/ui/components/left_panel.rs`). Module-level `//! LEGACY` doc comments
+are on `src/ui/dashpay/mod.rs` and `src/backend_task/dashpay.rs`.
 
 ## Removal criteria
 

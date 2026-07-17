@@ -9,7 +9,7 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
     IdentityKeyEntry, IdentityKeySpecs, IdentityRegistrationInfo, IdentityTask,
-    RegisterIdentityFundingMethod, default_identity_key_specs,
+    RegisterIdentityFundingMethod, combined_default_key_specs,
 };
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
@@ -37,7 +37,6 @@ use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::OutPoint;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -220,9 +219,8 @@ impl AddNewIdentityScreen {
     /// Default number of keys (master + additional) the chooser warms and reads
     /// from the auth-pubkey cache.
     fn default_key_count(&self) -> u32 {
-        let dashpay_contract_id = self.app_context.dashpay_contract.id();
         // master (index 0) + the default additional keys.
-        default_identity_key_specs(dashpay_contract_id).len() as u32 + 1
+        combined_default_key_specs(&self.app_context).len() as u32 + 1
     }
 
     /// Read the chosen identity keys from the auth-pubkey cache (D4b),
@@ -254,8 +252,7 @@ impl AddNewIdentityScreen {
 
         let network = self.app_context.network;
         let identity_index = self.identity_id_number;
-        let dashpay_contract_id = self.app_context.dashpay_contract.id();
-        let default_keys = default_identity_key_specs(dashpay_contract_id);
+        let default_keys = combined_default_key_specs(&self.app_context);
 
         let Ok(backend) = self.app_context.wallet_backend() else {
             self.identity_keys = IdentityKeySpecs::empty();
@@ -466,7 +463,7 @@ impl AddNewIdentityScreen {
             return false;
         };
         let spendable_duffs = app_context.snapshot_balance(&w.seed_hash()).spendable();
-        let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
+        let key_count = combined_default_key_specs(app_context).len() + 1;
         let minimum_credits = app_context
             .fee_estimator()
             .estimate_identity_create(key_count);

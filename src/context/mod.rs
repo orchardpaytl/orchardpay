@@ -37,6 +37,7 @@ use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
@@ -1496,6 +1497,36 @@ impl AppContext {
     /// Returns the DashPay contract identifier.
     pub fn dashpay_contract_id(&self) -> Identifier {
         self.dashpay_contract.id()
+    }
+
+    /// Returns the OrchardPay contract identifier configured for this
+    /// network, if any. Unlike `dashpay_contract_id`, this is not always
+    /// present — OrchardPay's contract is registered per network (not
+    /// SDK-embedded), so a fresh network has no configured ID until someone
+    /// registers it and records the resulting ID in network config.
+    pub fn orchardpay_contract_id(&self) -> Option<Identifier> {
+        let id_str = self.config.read().ok()?.orchardpay_contract_id.clone()?;
+        match Identifier::from_string(&id_str, Encoding::Base58) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!("Configured orchardpay_contract_id is not a valid identifier: {e}");
+                None
+            }
+        }
+    }
+
+    /// Resolves the OrchardPay contract itself, if its ID is configured and
+    /// it has actually been registered on this network (looked up from the
+    /// local contract cache, the same path used for any user-registered
+    /// contract — see `get_unqualified_contract_by_id`). `None` either means
+    /// no ID is configured, or one is configured but the contract hasn't
+    /// been fetched/cached locally yet.
+    pub fn orchardpay_contract(&self) -> Option<DataContract> {
+        let id = self.orchardpay_contract_id()?;
+        self.get_unqualified_contract_by_id(&id)
+            .inspect_err(|e| tracing::warn!("Failed to resolve OrchardPay contract: {e}"))
+            .ok()
+            .flatten()
     }
 }
 

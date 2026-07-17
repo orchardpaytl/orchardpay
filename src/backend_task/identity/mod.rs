@@ -566,6 +566,31 @@ pub fn default_identity_key_specs(
     ]
 }
 
+/// Returns the full set of default key specifications a new identity should
+/// carry: DashPay's ([`default_identity_key_specs`]) plus OrchardPay's
+/// ([`crate::backend_task::orchardpay::keys::default_orchardpay_key_specs`]),
+/// when OrchardPay's contract is configured for the active network. When it
+/// isn't (a fresh network where nobody has registered the contract yet),
+/// this degrades gracefully to DashPay's keys alone — a new identity simply
+/// gets OrchardPay's keys added later, whenever the contract becomes known.
+///
+/// This is the actual entry point every identity-creation code path should
+/// call instead of [`default_identity_key_specs`] directly, so DashPay's and
+/// OrchardPay's keys never drift out of sync across call sites.
+pub fn combined_default_key_specs(
+    app_context: &AppContext,
+) -> Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> {
+    let mut specs = default_identity_key_specs(app_context.dashpay_contract.id());
+    if let Some(orchardpay_contract_id) = app_context.orchardpay_contract_id() {
+        specs.extend(
+            crate::backend_task::orchardpay::keys::default_orchardpay_key_specs(
+                orchardpay_contract_id,
+            ),
+        );
+    }
+    specs
+}
+
 /// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity from a
 /// borrowed HD seed.
 ///
@@ -585,8 +610,7 @@ pub fn build_identity_registration_with_seed(
     identity_index: u32,
     funding_amount: Duffs,
 ) -> Result<IdentityRegistrationInfo, TaskError> {
-    let dashpay_contract_id = app_context.dashpay_contract.id();
-    let key_specs = default_identity_key_specs(dashpay_contract_id);
+    let key_specs = combined_default_key_specs(app_context);
     let network = app_context.network;
 
     let wallet = wallet_arc.read()?;

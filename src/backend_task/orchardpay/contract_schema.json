@@ -1,0 +1,66 @@
+{
+  "shieldedAddress": {
+    "type": "object",
+    "documentsMutable": true,
+    "properties": {
+      "shieldedAddress": {
+        "type": "array",
+        "byteArray": true,
+        "minItems": 43,
+        "maxItems": 43,
+        "position": 0
+      },
+      "protocolVersion": { "type": "integer", "minimum": 1, "position": 1 }
+    },
+    "required": ["shieldedAddress", "protocolVersion", "$createdAt", "$updatedAt"],
+    "additionalProperties": false,
+    "indices": [
+      { "name": "byOwner", "properties": [{ "$ownerId": "asc" }], "unique": true }
+    ]
+  },
+  "contactAnchor": {
+    "type": "object",
+    "documentsMutable": false,
+    "properties": {
+      "encryptedPayload": {
+        "type": "array",
+        "byteArray": true,
+        "minItems": 32,
+        "maxItems": 512,
+        "position": 0
+      },
+      "protocolVersion": { "type": "integer", "minimum": 1, "position": 1 }
+    },
+    "required": ["encryptedPayload", "protocolVersion", "$createdAt"],
+    "additionalProperties": false,
+    "indices": [
+      { "name": "byOwnerAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+    ]
+  },
+  "encryptedMessage": {
+    "type": "object",
+    "documentsMutable": false,
+    "properties": {
+      "referenceId": {
+        "type": "array",
+        "byteArray": true,
+        "minItems": 32,
+        "maxItems": 32,
+        "position": 0
+      },
+      "encryptedPayload": {
+        "type": "array",
+        "byteArray": true,
+        "minItems": 32,
+        "maxItems": 5120,
+        "position": 1
+      },
+      "protocolVersion": { "type": "integer", "minimum": 1, "position": 2 }
+    },
+    "required": ["referenceId", "encryptedPayload", "protocolVersion", "$createdAt"],
+    "additionalProperties": false,
+    "indices": [
+      { "name": "byReferenceIdAndCreated", "properties": [{ "referenceId": "asc" }, { "$createdAt": "asc" }] }
+    ]
+  }
+}

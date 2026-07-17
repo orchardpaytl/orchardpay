@@ -57,6 +57,13 @@ pub struct NetworkConfig {
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
     pub wallet_private_key: Option<String>,
+    /// Base58-encoded ID of the OrchardPay data contract on this network.
+    /// Unlike DPNS/DashPay/etc., OrchardPay's contract is not SDK-embedded —
+    /// it must be registered once per network (via the generic "Register
+    /// Contract" screen) and its resulting ID recorded here. `None` means
+    /// OrchardPay's contact/messaging features are unavailable on this
+    /// network until that happens.
+    pub orchardpay_contract_id: Option<String>,
 }
 
 impl NetworkConfig {
@@ -347,6 +354,7 @@ mod tests {
             core_zmq_endpoint: Some("tcp://127.0.0.1:23708".to_string()),
             devnet_name: None,
             wallet_private_key: None,
+            orchardpay_contract_id: None,
         }
     }
 
