@@ -3,9 +3,9 @@
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use orchardpay::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
 use rand::prelude::*;
 
 /// Create identity, register a DPNS name, verify by searching.

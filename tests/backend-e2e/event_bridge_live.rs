@@ -8,7 +8,7 @@
 //! `WalletBackend`, whose upstream `SpvRuntime` drives the `EventBridge`.
 
 use crate::framework::harness::ctx;
-use dash_evo_tool::model::spv_status::SpvStatus;
+use orchardpay::model::spv_status::SpvStatus;
 use std::time::Duration;
 
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]

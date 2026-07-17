@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use dash_evo_tool::ui::MessageType;
-use dash_evo_tool::ui::components::{BannerStatus, Component, ComponentResponse, MessageBanner};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::MessageType;
+use orchardpay::ui::components::{BannerStatus, Component, ComponentResponse, MessageBanner};
 
 /// Test that show_global renders nothing and does not panic when no message is set.
 #[test]

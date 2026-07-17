@@ -13,7 +13,7 @@
 
 ## Description
 
-Jordan is building a decentralized application on Dash Platform. Jordan uses Dash Evo Tool as a companion tool during development -- not as a primary wallet for holding significant funds, but as a graphical interface for operations that would otherwise require scripting: registering test identities, funding Platform addresses, creating asset locks with specific amounts, inspecting state transitions, and verifying contract deployments.
+Jordan is building a decentralized application on Dash Platform. Jordan uses OrchardPay as a companion tool during development -- not as a primary wallet for holding significant funds, but as a graphical interface for operations that would otherwise require scripting: registering test identities, funding Platform addresses, creating asset locks with specific amounts, inspecting state transitions, and verifying contract deployments.
 
 Jordan's wallet typically holds small amounts of test Dash (tDash). The wallet is a means to an end: Jordan needs funded identities and Platform addresses to test dApp functionality. Jordan values speed and directness -- being able to create an identity, fund it, and verify the result without leaving the tool.
 

@@ -2,11 +2,11 @@
 
 use crate::framework::harness;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
-use dash_evo_tool::backend_task::core::CoreTask;
-use dash_evo_tool::backend_task::wallet::WalletTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use orchardpay::backend_task::core::CoreTask;
+use orchardpay::backend_task::wallet::WalletTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -777,7 +777,7 @@ async fn tc_019_wallet_task_error_unknown_seed_hash() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::WalletNotFound
+            orchardpay::backend_task::error::TaskError::WalletNotFound
         ),
         "TC-019: expected WalletNotFound, got: {:?}",
         err

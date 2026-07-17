@@ -1,8 +1,8 @@
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::RootScreenType;
 
 /// The onboarding welcome row sets the app-global role and persists it, sharing
 /// the same vocabulary as the Settings selector so a role picked here is
@@ -16,7 +16,7 @@ fn welcome_role_selector_sets_and_persists_role() {
         // A fresh data dir leaves onboarding incomplete, so the welcome screen
         // (not a main screen) renders on first frame.
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -50,6 +50,51 @@ fn welcome_role_selector_sets_and_persists_role() {
     });
 }
 
+/// The "Create Wallet" onboarding path must show the guided-setup stepper on
+/// the wallet screen it lands on, and the stepper must disappear once the
+/// user backs out of the chain (it must not linger and mislabel unrelated
+/// screens as part of onboarding).
+#[test]
+fn create_wallet_path_shows_and_clears_onboarding_stepper() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        harness.get_by_label("Create Wallet").click();
+        harness.run_steps(5);
+
+        assert!(
+            harness.query_by_label("Guided setup:").is_some(),
+            "picking 'Create Wallet' from the welcome screen must show the onboarding stepper"
+        );
+        assert!(
+            harness.query_by_label("Wallet").is_some(),
+            "the stepper must show 'Wallet' as the current step on the wallet-creation screen"
+        );
+
+        // Back out of the chain entirely — same end state `AppAction::GoToMainScreen`
+        // produces (e.g. the "Wallets" breadcrumb), driven directly rather than
+        // through a simulated click, since the accessibility tree exposes
+        // multiple ambiguous "Wallets"-labeled nodes (nav toggle + breadcrumb +
+        // a plain label) that aren't reliably distinguishable by label alone.
+        harness.state_mut().screen_stack.clear();
+        harness.run_steps(5);
+
+        assert!(
+            harness.query_by_label("Guided setup:").is_none(),
+            "the stepper must clear once the user leaves the onboarding chain"
+        );
+    });
+}
+
 /// The "Just Explore" onboarding path must land on the Identities hub — the
 /// single user-facing identity entry in the left nav. It previously landed on
 /// the DashPay profile screen, which the nav now hides, leaving the user with
@@ -63,7 +108,7 @@ fn just_explore_lands_on_identities_hub() {
         // A fresh data dir leaves onboarding incomplete, so the welcome screen
         // renders on the first frame.
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });

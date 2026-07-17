@@ -6,14 +6,14 @@
 //! way back to the identity view.
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use dash_evo_tool::app::AppAction;
-use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::app::AppAction;
+use orchardpay::ui::ScreenLike;
+use orchardpay::ui::identities::keys::keys_screen::KeysScreen;
 use std::cell::RefCell;
 use std::rc::Rc;
 

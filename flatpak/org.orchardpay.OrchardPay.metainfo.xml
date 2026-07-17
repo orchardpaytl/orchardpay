@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>org.dash.DashEvoTool</id>
-  <name>Dash Evo Tool</name>
+  <id>org.orchardpay.OrchardPay</id>
+  <name>OrchardPay</name>
   <summary>Graphical user interface for interacting with Dash Platform</summary>
 
   <metadata_license>MIT</metadata_license>
@@ -33,9 +33,9 @@
   <url type="homepage">https://github.com/dashpay/dash-evo-tool</url>
   <url type="bugtracker">https://github.com/dashpay/dash-evo-tool/issues</url>
 
-  <launchable type="desktop-id">org.dash.DashEvoTool.desktop</launchable>
+  <launchable type="desktop-id">org.orchardpay.OrchardPay.desktop</launchable>
 
-  <icon type="stock">org.dash.DashEvoTool</icon>
+  <icon type="stock">org.orchardpay.OrchardPay</icon>
 
   <content_rating type="oars-1.1" />
 

@@ -12,7 +12,7 @@ pub(super) fn format_service_error(e: rmcp::service::ServiceError) -> String {
     }
 }
 
-/// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
+/// Run as a standalone MCP stdio server (replaces the separate orchardpay-mcp binary).
 ///
 /// Always terminates via [`std::process::exit`] rather than returning — this
 /// bypasses Tokio runtime teardown and prevents coordinator OS threads
@@ -20,12 +20,12 @@ pub(super) fn format_service_error(e: rmcp::service::ServiceError) -> String {
 /// when they poll `tokio::time::sleep` against a shutting-down timer wheel.
 /// See `DashMcpService::shutdown_wallet_backend` for the full race analysis.
 pub(super) fn run_stdio_server() -> ! {
-    use dash_evo_tool::logging::initialize_logger;
+    use orchardpay::logging::initialize_logger;
 
     initialize_logger();
     tracing::info!(
-        version = dash_evo_tool::VERSION,
-        "Starting Dash Evo Tool MCP server (stdio)"
+        version = orchardpay::VERSION,
+        "Starting OrchardPay MCP server (stdio)"
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -38,7 +38,7 @@ pub(super) fn run_stdio_server() -> ! {
     // returning.  We do NOT call `runtime.shutdown_timeout` afterwards —
     // instead we hard-exit below so coordinator threads cannot race the
     // timer-wheel teardown.
-    let result = runtime.block_on(dash_evo_tool::mcp::start_stdio());
+    let result = runtime.block_on(orchardpay::mcp::start_stdio());
 
     let exit_code: i32 = match result {
         Ok(()) => 0,
@@ -56,7 +56,7 @@ pub(super) fn run_stdio_server() -> ! {
 }
 
 pub(super) async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {
-    use dash_evo_tool::mcp::server::DashMcpService;
+    use orchardpay::mcp::server::DashMcpService;
 
     // Create two duplex byte channels, cross-connected:
     // client writes to a, server reads from a; server writes to b, client reads from b.

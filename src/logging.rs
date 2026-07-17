@@ -17,7 +17,7 @@ static INIT_LOGGER: Once = Once::new();
 /// `-1` means no handle was preserved (capture skipped or `dup` failed).
 static ORIGINAL_STDERR_FD: AtomicI32 = AtomicI32::new(-1);
 
-/// Whether the tracing subscriber writes to the on-disk log file (`det.log`).
+/// Whether the tracing subscriber writes to the on-disk log file (`orchardpay.log`).
 ///
 /// `false` means the file could not be created and the logger fell back to
 /// stderr. In that case stderr must stay attached to the terminal so the
@@ -48,13 +48,13 @@ fn initialize_logger_internal() {
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(
-            "info,dash_evo_tool=trace,dash_sdk=debug,dash_sdk::platform::transition=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn,dash_spv=debug,key_wallet=debug,mempool_filter=debug",
+            "info,orchardpay=trace,dash_sdk=debug,dash_sdk::platform::transition=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn,dash_spv=debug,key_wallet=debug,mempool_filter=debug",
         )
         .unwrap_or_else(|_| EnvFilter::new("info"))
     });
 
     // Try to create a log file; fall back to stderr if it fails
-    let log_file_result = app_user_data_file_path("det.log").and_then(std::fs::File::create);
+    let log_file_result = app_user_data_file_path("orchardpay.log").and_then(std::fs::File::create);
 
     let (subscriber_set, log_file_path_for_msg) = match log_file_result {
         Ok(log_file) => {
@@ -67,7 +67,7 @@ fn initialize_logger_internal() {
             if set {
                 LOGGER_USES_FILE.store(true, Ordering::SeqCst);
             }
-            (set, Some(app_user_data_file_path("det.log").ok()))
+            (set, Some(app_user_data_file_path("orchardpay.log").ok()))
         }
         Err(e) => {
             // Fall back to stderr logging
@@ -123,12 +123,12 @@ fn initialize_logger_internal() {
         info!(
             version = VERSION,
             log_file = ?path,
-            "Dash-Evo-Tool logging initialized successfully"
+            "OrchardPay logging initialized successfully"
         );
     } else {
         info!(
             version = VERSION,
-            "Dash-Evo-Tool logging initialized (stderr fallback)"
+            "OrchardPay logging initialized (stderr fallback)"
         );
     }
 }
@@ -136,12 +136,12 @@ fn initialize_logger_internal() {
 /// Redirects the process's stderr (fd 2) to a persistent sidecar file so
 /// abnormal terminations leave evidence on disk.
 ///
-/// The tracing panic hook already records catchable Rust panics to `det.log`,
+/// The tracing panic hook already records catchable Rust panics to `orchardpay.log`,
 /// but native crashes — `SIGSEGV`/`SIGABRT` from FFI, `abort()` (including a
 /// `panic = abort` double-panic), allocation-failure aborts ("memory allocation
 /// of N bytes failed") and OOM — write to stderr or nowhere. In a GUI launch
 /// there is no terminal, so that output is lost. Pointing stderr at
-/// `det-stderr.log` captures all of it.
+/// `orchardpay-stderr.log` captures all of it.
 ///
 /// Call once, early in GUI startup, after [`initialize_logger`] and before the
 /// eframe/tokio runtime starts. CLI/stdio entry points should not call this:
@@ -158,7 +158,7 @@ pub fn capture_stderr_to_file() {
         return;
     }
 
-    let path = match app_user_data_file_path("det-stderr.log") {
+    let path = match app_user_data_file_path("orchardpay-stderr.log") {
         Ok(path) => path,
         Err(e) => {
             tracing::warn!(error = %e, "Could not resolve crash-stderr log path; capture disabled");
@@ -167,7 +167,7 @@ pub fn capture_stderr_to_file() {
     };
 
     if let Some(parent) = path.parent() {
-        rotate_log_in_dir(parent, "det-stderr");
+        rotate_log_in_dir(parent, "orchardpay-stderr");
     }
 
     redirect_stderr_to(&path);
@@ -316,7 +316,7 @@ fn install_fatal_signal_handler_impl() {
 /// own line, with no raw error text, no jargon, and no support redirect. Side
 /// effect free so it can be unit-tested directly.
 fn startup_failure_message(log_paths: &[PathBuf]) -> String {
-    let mut message = String::from("Dash Evo Tool failed to start.\n");
+    let mut message = String::from("OrchardPay failed to start.\n");
     if log_paths.is_empty() {
         message.push_str("Please try again, and report the problem if it keeps happening.\n");
         return message;
@@ -338,7 +338,7 @@ fn startup_failure_message(log_paths: &[PathBuf]) -> String {
 /// preserved terminal stderr (fd 2 is redirected to the sidecar during a normal
 /// run). Never panics; write errors are ignored.
 pub fn report_startup_failure_to_terminal() {
-    let log_paths: Vec<PathBuf> = ["det.log", "det-stderr.log"]
+    let log_paths: Vec<PathBuf> = ["orchardpay.log", "orchardpay-stderr.log"]
         .into_iter()
         .filter_map(|name| app_user_data_file_path(name).ok())
         .collect();
@@ -374,13 +374,13 @@ fn write_to_terminal(bytes: &[u8]) {
 }
 
 fn rotate_log_file() {
-    let Ok(log_path) = app_user_data_file_path("det.log") else {
+    let Ok(log_path) = app_user_data_file_path("orchardpay.log") else {
         return;
     };
     let Some(parent) = log_path.parent() else {
         return;
     };
-    rotate_log_in_dir(parent, "det");
+    rotate_log_in_dir(parent, "orchardpay");
 }
 
 /// Rotates `{stem}.log` in `dir` to a timestamped name and removes rotated
@@ -434,48 +434,51 @@ mod tests {
 
     #[test]
     fn rotated_name_is_zero_padded() {
-        assert_eq!(rotated_name("det", 42), "det.0000000042.log");
+        assert_eq!(rotated_name("orchardpay", 42), "orchardpay.0000000042.log");
         assert_eq!(
-            rotated_name("det-stderr", 1_700_000_000),
-            "det-stderr.1700000000.log"
+            rotated_name("orchardpay-stderr", 1_700_000_000),
+            "orchardpay-stderr.1700000000.log"
         );
     }
 
     #[test]
     fn parse_rotated_ts_round_trips() {
-        let name = rotated_name("det", 1_234_567_890);
-        assert_eq!(parse_rotated_ts(&name, "det"), Some(1_234_567_890));
+        let name = rotated_name("orchardpay", 1_234_567_890);
+        assert_eq!(parse_rotated_ts(&name, "orchardpay"), Some(1_234_567_890));
     }
 
     #[test]
     fn parse_rotated_ts_rejects_wrong_stem() {
-        // A det-stderr rotation must not be parsed under the "det" stem,
+        // An orchardpay-stderr rotation must not be parsed under the "orchardpay" stem,
         // otherwise the two logs would clean up each other's files.
-        let name = rotated_name("det-stderr", 1_700_000_000);
-        assert_eq!(parse_rotated_ts(&name, "det"), None);
+        let name = rotated_name("orchardpay-stderr", 1_700_000_000);
+        assert_eq!(parse_rotated_ts(&name, "orchardpay"), None);
     }
 
     #[test]
     fn parse_rotated_ts_rejects_non_matching_names() {
-        assert_eq!(parse_rotated_ts("det.log", "det"), None);
-        assert_eq!(parse_rotated_ts("det.notanumber.log", "det"), None);
-        assert_eq!(parse_rotated_ts("unrelated.txt", "det"), None);
+        assert_eq!(parse_rotated_ts("orchardpay.log", "orchardpay"), None);
+        assert_eq!(
+            parse_rotated_ts("orchardpay.notanumber.log", "orchardpay"),
+            None
+        );
+        assert_eq!(parse_rotated_ts("unrelated.txt", "orchardpay"), None);
     }
 
     #[test]
     fn rotate_log_in_dir_moves_current_log_aside() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let current = dir.path().join("det-stderr.log");
+        let current = dir.path().join("orchardpay-stderr.log");
         fs::write(&current, b"old contents").expect("write");
 
-        rotate_log_in_dir(dir.path(), "det-stderr");
+        rotate_log_in_dir(dir.path(), "orchardpay-stderr");
 
         assert!(!current.exists(), "current log should be renamed away");
         let rotated: Vec<_> = fs::read_dir(dir.path())
             .expect("read_dir")
             .flatten()
             .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| parse_rotated_ts(n, "det-stderr").is_some())
+            .filter(|n| parse_rotated_ts(n, "orchardpay-stderr").is_some())
             .collect();
         assert_eq!(rotated.len(), 1, "exactly one rotated file expected");
     }
@@ -486,15 +489,15 @@ mod tests {
         let old_ts = (Local::now() - Duration::days(LOG_RETENTION_DAYS + 1)).timestamp();
         let fresh_ts = Local::now().timestamp();
 
-        let old = dir.path().join(rotated_name("det-stderr", old_ts));
-        let fresh = dir.path().join(rotated_name("det-stderr", fresh_ts));
+        let old = dir.path().join(rotated_name("orchardpay-stderr", old_ts));
+        let fresh = dir.path().join(rotated_name("orchardpay-stderr", fresh_ts));
         // A different stem with an old timestamp must survive.
-        let other_stem = dir.path().join(rotated_name("det", old_ts));
+        let other_stem = dir.path().join(rotated_name("orchardpay", old_ts));
         fs::write(&old, b"x").expect("write old");
         fs::write(&fresh, b"x").expect("write fresh");
         fs::write(&other_stem, b"x").expect("write other");
 
-        rotate_log_in_dir(dir.path(), "det-stderr");
+        rotate_log_in_dir(dir.path(), "orchardpay-stderr");
 
         assert!(!old.exists(), "old same-stem rotation should be deleted");
         assert!(fresh.exists(), "fresh same-stem rotation should be kept");
@@ -507,8 +510,8 @@ mod tests {
     #[test]
     fn rotate_log_in_dir_noop_without_current_log() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // No det-stderr.log present; rotation should not create anything.
-        rotate_log_in_dir(dir.path(), "det-stderr");
+        // No orchardpay-stderr.log present; rotation should not create anything.
+        rotate_log_in_dir(dir.path(), "orchardpay-stderr");
         let count = fs::read_dir(dir.path()).expect("read_dir").count();
         assert_eq!(count, 0);
     }
@@ -547,8 +550,8 @@ mod tests {
     #[test]
     fn startup_failure_message_states_failure_and_lists_each_path() {
         let paths = vec![
-            PathBuf::from("/tmp/data/det.log"),
-            PathBuf::from("/tmp/data/det-stderr.log"),
+            PathBuf::from("/tmp/data/orchardpay.log"),
+            PathBuf::from("/tmp/data/orchardpay-stderr.log"),
         ];
         let message = startup_failure_message(&paths);
 
@@ -593,7 +596,7 @@ mod tests {
         LOGGER_USES_FILE.store(true, Ordering::SeqCst);
         assert!(
             should_capture_stderr(),
-            "must capture when logging owns the det.log file"
+            "must capture when logging owns the orchardpay.log file"
         );
 
         LOGGER_USES_FILE.store(saved, Ordering::SeqCst);

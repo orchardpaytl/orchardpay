@@ -105,7 +105,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 
 ## Architecture Overview
 
-**Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
+**OrchardPay** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
 ## Documentation
 
@@ -114,7 +114,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **docs/user-stories.md** catalogs user stories across feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
 - **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
 - **docs/gui-testing/** contains standing guidelines and a reusable scenario library for testing the real compiled app through a real display (not date-grouped — this is reusable practice, not a point-in-time design record). Read `docs/gui-testing/README.md` before driving the GUI directly for verification.
-- end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
+- end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/orchardpay , published at https://docs.dash.org/en/stable/docs/user/network/orchardpay/
 
 ### System Layers (top → bottom)
 
@@ -200,12 +200,12 @@ Build:
 cargo build --bin det-cli --features cli
 ```
 
-Then, with `MCP_API_KEY` unset (or empty — the default `.env` ships it empty, which means standalone), run the read-only checks. Point `DASH_EVO_DATA_DIR` at a throwaway dir to avoid touching real user data or contending with a running GUI / `det-cli serve` instance:
+Then, with `MCP_API_KEY` unset (or empty — the default `.env` ships it empty, which means standalone), run the read-only checks. Point `ORCHARDPAY_DATA_DIR` at a throwaway dir to avoid touching real user data or contending with a running GUI / `det-cli serve` instance:
 
 ```bash
 DET=$(mktemp -d) && cp .env.example "$DET/.env"
 BIN=target/debug/det-cli   # or "$CARGO_TARGET_DIR/debug/det-cli" if that env var is set
-run() { env -u MCP_API_KEY DASH_EVO_DATA_DIR="$DET" RUST_LOG=off "$BIN" "$@"; }
+run() { env -u MCP_API_KEY ORCHARDPAY_DATA_DIR="$DET" RUST_LOG=off "$BIN" "$@"; }
 
 run network-info                       # active network as JSON — no SPV sync (network-exempt)
 run tools                              # discovers all tools via tools/list
@@ -236,9 +236,9 @@ What each verifies:
 ### Configuration
 
 Environment config via `.env` in app directory:
-- macOS: `~/Library/Application Support/Dash-Evo-Tool/.env`
-- Linux: `~/.config/dash-evo-tool/.env`
-- Windows: `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env`
+- macOS: `~/Library/Application Support/OrchardPay/.env`
+- Linux: `~/.config/orchardpay/.env`
+- Windows: `C:\Users\<User>\AppData\Roaming\OrchardPay\config\.env`
 
 See `.env.example` for network configuration options.
 

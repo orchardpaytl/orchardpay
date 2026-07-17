@@ -13,7 +13,7 @@
 
 ## Description
 
-Priya is a technically fluent Dash community member who runs a masternode and actively participates in the Dash ecosystem. She manages multiple HD wallets and understands the relationship between derivation paths, addresses, and keys. She uses Dash Evo Tool as her primary desktop wallet because it offers Platform features (identities, DPNS, tokens) that command-line tools do not present in a unified interface.
+Priya is a technically fluent Dash community member who runs a masternode and actively participates in the Dash ecosystem. She manages multiple HD wallets and understands the relationship between derivation paths, addresses, and keys. She uses OrchardPay as her primary desktop wallet because it offers Platform features (identities, DPNS, tokens) that command-line tools do not present in a unified interface.
 
 Priya wants full visibility into her wallet's internal structure. She needs to see account breakdowns, individual addresses, balances per address, and UTXO details. She creates asset locks deliberately to fund identities and Platform addresses. She understands the difference between Core chain funds and Platform credits and needs to manage both.
 

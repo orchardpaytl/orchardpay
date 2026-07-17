@@ -6,9 +6,9 @@
 //! classification plus a sync-and-read primitive ([`force_shielded_sync`]) that
 //! drives a coordinator pass and returns the resulting push-snapshot balance.
 
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::context::feature_gate::FeatureGate;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use orchardpay::context::AppContext;
+use orchardpay::context::feature_gate::FeatureGate;
+use orchardpay::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
 /// Check whether the connected platform supports shielded operations
@@ -49,10 +49,8 @@ pub fn skip_if_shielded_disabled() -> bool {
 /// typed variants for "unsupported state transition type" or deserialization
 /// failures on unknown variants. Once the SDK adds typed errors for these
 /// cases, replace the string checks with proper pattern matching.
-pub fn is_platform_shielded_unsupported(
-    err: &dash_evo_tool::backend_task::error::TaskError,
-) -> bool {
-    use dash_evo_tool::backend_task::error::TaskError;
+pub fn is_platform_shielded_unsupported(err: &orchardpay::backend_task::error::TaskError) -> bool {
+    use orchardpay::backend_task::error::TaskError;
 
     match err {
         // Typed variants that clearly indicate infrastructure unavailability

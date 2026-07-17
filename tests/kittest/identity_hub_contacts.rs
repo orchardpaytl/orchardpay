@@ -17,12 +17,12 @@
 //! - No request cards or active contacts list rendered (the populated-state
 //!   section headings and the search placeholder must be absent).
 
-use dash_evo_tool::ui::identity::contacts;
-use dash_evo_tool::ui::identity::social_profile_gate_card::{
-    HEADING as GATE_HEADING, PRIMARY_LABEL as GATE_PRIMARY,
-};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::identity::contacts;
+use orchardpay::ui::identity::social_profile_gate_card::{
+    HEADING as GATE_HEADING, PRIMARY_LABEL as GATE_PRIMARY,
+};
 
 #[test]
 fn it_contacts_01_gated_renders_when_no_social_profile() {

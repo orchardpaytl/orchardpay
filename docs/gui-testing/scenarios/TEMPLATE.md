@@ -22,9 +22,9 @@ cp .env.example "$DATADIR/.env"
 # ... any .env adjustments this scenario needs ...
 
 # Confirm no conflicting instance is already using this display/data dir
-pgrep -af dash-evo-tool
+pgrep -af orchardpay
 
-DISPLAY=:99 DASH_EVO_DATA_DIR="$DATADIR" nohup /data/target/debug/dash-evo-tool >/tmp/<scenario-slug>.log 2>&1 &
+DISPLAY=:99 ORCHARDPAY_DATA_DIR="$DATADIR" nohup /data/target/debug/orchardpay >/tmp/<scenario-slug>.log 2>&1 &
 ```
 
 ## Procedure

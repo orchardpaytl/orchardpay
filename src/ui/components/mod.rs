@@ -15,6 +15,7 @@ pub mod info_popup;
 pub mod left_panel;
 pub mod message_banner;
 pub mod modal_chrome;
+pub mod onboarding_progress;
 pub mod passphrase_modal;
 pub mod password_input;
 pub mod progress_overlay;

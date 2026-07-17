@@ -108,7 +108,7 @@ const STATUS_NOT_FOUND: u8 = 3;
 /// that the actual bytes a real user has on disk still decode here.
 ///
 /// To regenerate: build a throwaway crate (not a workspace member) depending on
-/// `dash-evo-tool` tag `v0.9.3`, construct the identity below — id
+/// `orchardpay` tag `v0.9.3`, construct the identity below — id
 /// [`IDENTITY_ID`], voter id [`VOTER_IDENTITY_ID`], type `Masternode`, alias
 /// `my-masternode`, `associated_owner_key_id = Some(0)`, an `OWNER` key (id 0,
 /// `Clear`([`OWNER_PRIVATE_KEY`]), `ECDSA_HASH160`) on

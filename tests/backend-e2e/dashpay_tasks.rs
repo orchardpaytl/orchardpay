@@ -16,11 +16,11 @@ use crate::framework::dashpay_helpers;
 use crate::framework::fixtures;
 use crate::framework::harness;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
-use dash_evo_tool::backend_task::dashpay::DashPayTask;
-use dash_evo_tool::backend_task::identity::IdentityTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
-use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use orchardpay::backend_task::dashpay::DashPayTask;
+use orchardpay::backend_task::identity::IdentityTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
+use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -148,7 +148,7 @@ async fn tc_033_search_profiles() {
             // Production bug: search_profiles returns normalizedLabel (with
             // homograph conversion, e.g. i→1) instead of the original label.
             // Compare against both original and normalized forms until fixed.
-            let normalized_a = dash_evo_tool::model::dpns::normalize_dpns_label(&pair.username_a);
+            let normalized_a = orchardpay::model::dpns::normalize_dpns_label(&pair.username_a);
             let found = results.iter().any(|(_id, _profile, username)| {
                 let u = username.trim_end_matches(".dash");
                 u == pair.username_a || u == normalized_a
@@ -213,7 +213,7 @@ async fn tc_034_load_contacts_empty() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_046_load_contacts_offline_serves_cache() {
-    use dash_evo_tool::wallet_backend::CachedContactProfile;
+    use orchardpay::wallet_backend::CachedContactProfile;
 
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
@@ -828,7 +828,7 @@ async fn tc_041_load_payment_history_empty() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_045_detect_incoming_contact_payment() {
-    use dash_evo_tool::model::dashpay::DetectedIncomingOutput;
+    use orchardpay::model::dashpay::DetectedIncomingOutput;
 
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
@@ -987,8 +987,8 @@ async fn tc_043_reject_contact_request() {
     tracing::info!("TC-043: registering DPNS name '{}' for C...", username_c);
 
     let dpns_task = BackendTask::IdentityTask(
-        dash_evo_tool::backend_task::identity::IdentityTask::RegisterDpnsName(
-            dash_evo_tool::backend_task::identity::RegisterDpnsNameInput {
+        orchardpay::backend_task::identity::IdentityTask::RegisterDpnsName(
+            orchardpay::backend_task::identity::RegisterDpnsNameInput {
                 qualified_identity: qi_c.clone(),
                 name_input: username_c.clone(),
             },
@@ -1015,7 +1015,7 @@ async fn tc_043_reject_contact_request() {
         let search = run_task(
             &ctx.app_context,
             BackendTask::IdentityTask(
-                dash_evo_tool::backend_task::identity::IdentityTask::SearchIdentityByDpnsName(
+                orchardpay::backend_task::identity::IdentityTask::SearchIdentityByDpnsName(
                     username_c.clone(),
                     None,
                 ),

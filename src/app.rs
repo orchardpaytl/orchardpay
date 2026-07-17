@@ -672,6 +672,11 @@ pub struct AppState {
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
     pub welcome_screen: Option<WelcomeScreen>,
+    /// Whether the guided wallet -> identity -> DPNS name setup chain is
+    /// active. Set when the user picks "Create Wallet"/"Import Wallet" from
+    /// the welcome screen; cleared automatically once the visible screen
+    /// falls outside that chain (back out, or reach the end).
+    onboarding_active: bool,
     /// Connection-status banner reconciler (state-transition driven).
     connection_banner: ConnectionBanner,
     /// Blocking SPV-sync overlay reconciler. Hard-blocks the UI while a
@@ -1079,10 +1084,10 @@ impl AppState {
         // frame, even without VoiceOver or other assistive technology running.
         // Without this flag, AccessKit activates lazily when a real assistive
         // client connects (which is the normal behavior).
-        // Gated behind DASH_EVO_TOOL_ACCESSIBILITY=1 to avoid per-frame cost
+        // Gated behind ORCHARDPAY_ACCESSIBILITY=1 to avoid per-frame cost
         // when not needed for automation tooling.
         let accessibility_enforced =
-            std::env::var("DASH_EVO_TOOL_ACCESSIBILITY").unwrap_or_default() == "1";
+            std::env::var("ORCHARDPAY_ACCESSIBILITY").unwrap_or_default() == "1";
         if accessibility_enforced {
             ctx.enable_accesskit();
         }
@@ -1107,6 +1112,9 @@ impl AppState {
         let token_search_screen = TokensScreen::new(&active_context, TokensSubscreen::SearchTokens);
         let token_creator_screen =
             TokensScreen::new(&active_context, TokensSubscreen::TokenCreator);
+        // ORCHARDPAY-TODO(dashpay-legacy): DashPay screen wiring below is superseded
+        // by OrchardPay's ZK-based contact model (see docs/orchardpay/PROTOCOL_DESIGN.md
+        // and docs/ORCHARDPAY_MIGRATION.md). Kept in place until parity is reached.
         let contracts_dashpay_screen =
             DashPayScreen::new(&active_context, DashPaySubscreen::Profile);
         let dashpay_contacts_screen =
@@ -1340,6 +1348,7 @@ impl AppState {
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
+            onboarding_active: false,
             connection_banner: ConnectionBanner::new(),
             // Arm the block for the boot SPV sync when it auto-starts (F-SPV-A:
             // scoped to user-initiated sync, not ambient reconnect).
@@ -2272,6 +2281,21 @@ impl App for AppState {
         {
             actions.push(welcome_screen.ui(ui));
         } else {
+            if self.onboarding_active {
+                match crate::ui::components::onboarding_progress::onboarding_step_for_screen(
+                    self.visible_screen_mut(),
+                ) {
+                    Some(step) => {
+                        let dark_mode = ctx.global_style().visuals.dark_mode;
+                        egui::Panel::top("onboarding_progress_panel").show(ui, |ui| {
+                            crate::ui::components::onboarding_progress::render_onboarding_progress(
+                                ui, dark_mode, step,
+                            );
+                        });
+                    }
+                    None => self.onboarding_active = false,
+                }
+            }
             actions.push(self.visible_screen_mut().ui(ui));
         };
 
@@ -2405,6 +2429,10 @@ impl App for AppState {
                     self.show_welcome_screen = false;
                     self.welcome_screen = None;
                     self.set_main_screen(main_screen);
+                    self.onboarding_active = matches!(
+                        add_screen.as_deref(),
+                        Some(ScreenType::AddNewWallet) | Some(ScreenType::ImportMnemonic)
+                    );
                     if let Some(screen_type) = add_screen {
                         let screen = screen_type.create_screen(self.current_app_context());
                         self.screen_stack.push(screen);

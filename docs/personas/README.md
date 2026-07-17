@@ -1,6 +1,6 @@
 # User Personas
 
-This directory contains persona documents for the Dash Evo Tool wallet screen redesign, representing three primary user archetypes.
+This directory contains persona documents for the OrchardPay wallet screen redesign, representing three primary user archetypes.
 
 ## Personas
 

@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 
 use axum::{Router, middleware, routing::get};
-use dash_evo_tool::mcp::auth::{ApiKey, bearer_auth};
+use orchardpay::mcp::auth::{ApiKey, bearer_auth};
 
 const TOKEN: &str = "test-api-key-0123456789";
 

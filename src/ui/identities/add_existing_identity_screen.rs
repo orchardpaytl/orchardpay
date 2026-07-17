@@ -168,11 +168,11 @@ impl AddExistingIdentityScreen {
                     );
                     let response = crate::ui::helpers::info_icon_button(
                         ui,
-                        "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys.",
+                        "When enabled, OrchardPay scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys.",
                     );
                     if response.clicked() {
                         self.show_pop_up_info = Some(
-                            "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys."
+                            "When enabled, OrchardPay scans the selected unlocked wallet (or all unlocked wallets) right now to find matching keys."
                                 .to_string(),
                         );
                     }
@@ -327,11 +327,11 @@ impl AddExistingIdentityScreen {
                     ui.label("Alias (optional):");
                     let response = crate::ui::helpers::info_icon_button(
                         ui,
-                        "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform.",
+                        "Alias is optional. It is only used to help identify the identity in OrchardPay. It isn't saved to Dash Platform.",
                     );
                     if response.clicked() {
                         self.show_pop_up_info = Some(
-                            "Alias is optional. It is only used to help identify the identity in Dash Evo Tool. It isn't saved to Dash Platform."
+                            "Alias is optional. It is only used to help identify the identity in OrchardPay. It isn't saved to Dash Platform."
                                 .to_string(),
                         );
                     }
@@ -718,11 +718,11 @@ impl AddExistingIdentityScreen {
                 );
                 let response = crate::ui::helpers::info_icon_button(
                     ui,
-                    "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) to find matching keys.",
+                    "When enabled, OrchardPay scans the selected unlocked wallet (or all unlocked wallets) to find matching keys.",
                 );
                 if response.clicked() {
                     self.show_pop_up_info = Some(
-                        "When enabled, Dash Evo Tool scans the selected unlocked wallet (or all unlocked wallets) to find matching keys."
+                        "When enabled, OrchardPay scans the selected unlocked wallet (or all unlocked wallets) to find matching keys."
                             .to_string(),
                     );
                 }

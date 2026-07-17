@@ -1194,7 +1194,7 @@ impl AddNewIdentityScreen {
     ///
     /// Rendered by each funding-method branch just before its Create/Register
     /// button, once the amount or lock for that method is chosen. This is a
-    /// Dash Evo Tool alias stored locally, not a DPNS username.
+    /// OrchardPay alias stored locally, not a DPNS username.
     fn render_alias_input(&mut self, ui: &mut egui::Ui, step_number: u32) {
         ui.add_space(10.0);
         ui.separator();
@@ -1204,7 +1204,7 @@ impl AddNewIdentityScreen {
             ui.heading(format!("{step_number}. Set a local alias (optional)."));
             crate::ui::helpers::info_icon_button(
                 ui,
-                "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
+                "This is a local alias stored only in OrchardPay to help you identify this identity.\n\n\
                 This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
                 You can change this alias anytime from the identity details screen.",
             );
@@ -1227,7 +1227,7 @@ impl AddNewIdentityScreen {
 
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
-            egui::RichText::new("Note: This is a Dash Evo Tool alias, not a DPNS username.")
+            egui::RichText::new("Note: This is a OrchardPay alias, not a DPNS username.")
                 .small()
                 .color(DashColors::text_secondary(dark_mode)),
         );

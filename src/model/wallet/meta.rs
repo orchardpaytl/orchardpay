@@ -32,7 +32,7 @@ const LABEL_HASH_PREFIX_BYTES: usize = 6;
 /// even be loaded yet).
 ///
 /// ```
-/// # use dash_evo_tool::model::wallet::meta::wallet_label;
+/// # use orchardpay::model::wallet::meta::wallet_label;
 /// assert_eq!(wallet_label("paycheque", &[0x9E; 32]), "paycheque");
 /// assert_eq!(wallet_label("", &[0x9E; 32]), "9e9e9e9e9e9e…");
 /// ```

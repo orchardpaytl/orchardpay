@@ -146,7 +146,7 @@ impl UserRole {
 /// threads; the atomic encoding is an implementation detail.
 ///
 /// ```
-/// # use dash_evo_tool::model::user_role::{UserRole, UserRoleCell};
+/// # use orchardpay::model::user_role::{UserRole, UserRoleCell};
 /// let cell = UserRoleCell::new(UserRole::Everyday);
 /// let sibling = cell.clone();
 /// cell.set(UserRole::Developer);

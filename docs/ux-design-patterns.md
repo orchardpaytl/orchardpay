@@ -1,6 +1,6 @@
 # UX Design Patterns
 
-Quick reference for Dash Evo Tool UI/UX conventions — **when and how** to use each pattern. For exact values (pixel sizes, hex codes, padding), refer to the source files listed below; this document explains usage, not implementation constants.
+Quick reference for OrchardPay UI/UX conventions — **when and how** to use each pattern. For exact values (pixel sizes, hex codes, padding), refer to the source files listed below; this document explains usage, not implementation constants.
 
 ## 1. Design Tokens
 

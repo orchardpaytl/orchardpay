@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use dash_evo_tool::*;
+use orchardpay::*;
 
 use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
@@ -21,7 +21,7 @@ fn main() -> eframe::Result<()> {
     tracing::info!(
         version = VERSION,
         data_dir = %app_data_dir.display(),
-        "Starting dash-evo-tool"
+        "Starting orchardpay"
     );
     check_cpu_compatibility();
     // Initialize the Tokio runtime
@@ -34,9 +34,9 @@ fn main() -> eframe::Result<()> {
     // Run the native application
     let result = runtime.block_on(start(&app_data_dir));
     if let Err(e) = &result {
-        // Full technical detail to det.log; the returned Err's Debug repr still
-        // reaches the redirected det-stderr.log via default termination.
-        tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        // Full technical detail to orchardpay.log; the returned Err's Debug repr still
+        // reaches the redirected orchardpay-stderr.log via default termination.
+        tracing::error!(error = ?e, "OrchardPay failed to start");
         // Generic, actionable notice to the real terminal (fd 2 is redirected
         // to the sidecar log, so this writes to the preserved original stderr).
         report_startup_failure_to_terminal();
@@ -69,7 +69,7 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         persistence_path: Some(app_data_dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
-            .with_app_id("org.dash.DashEvoTool"),
+            .with_app_id("org.orchardpay.OrchardPay"),
         // Use wgpu instead of glow (OpenGL) to avoid platform-specific rendering
         // issues, e.g. NSOpenGLContext idle/sleep crashes on macOS (#629)
         renderer: eframe::Renderer::Wgpu,
@@ -77,7 +77,7 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        &format!("Dash Evo Tool v{}", VERSION),
+        &format!("OrchardPay v{}", VERSION),
         native_options,
         Box::new(|cc| Ok(Box::new(crate::boot::BootApp::new(cc.egui_ctx.clone())?))),
     )

@@ -5,17 +5,17 @@
 //! the hub: a page-driven segment-1 label and a page-scoped object pill.
 
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
-use dash_evo_tool::app::AppAction;
-use dash_evo_tool::ui::RootScreenType;
-use dash_evo_tool::ui::components::global_nav_switcher::{self, GlobalNavEffect};
-use dash_evo_tool::ui::components::top_panel::apply_global_nav_effect;
-use dash_evo_tool::ui::state::global_nav::{
-    IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
-};
-use dash_evo_tool::ui::state::hub_selection::HubSelection;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::app::AppAction;
+use orchardpay::ui::RootScreenType;
+use orchardpay::ui::components::global_nav_switcher::{self, GlobalNavEffect};
+use orchardpay::ui::components::top_panel::apply_global_nav_effect;
+use orchardpay::ui::state::global_nav::{
+    IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
+};
+use orchardpay::ui::state::hub_selection::HubSelection;
 
 /// TC-NAV-01 foundation — segment-1 is page-driven: a spec labelled
 /// `Masternodes` renders that label, not the hub's literal `Identities`.

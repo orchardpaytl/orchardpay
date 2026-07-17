@@ -8,14 +8,14 @@
 
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::identity::IdentityTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use orchardpay::backend_task::identity::IdentityTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::wallet::{Wallet, WalletSeedHash};
 use std::sync::{Arc, RwLock};
 
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::QualifiedIdentity;
 
 /// Register an identity with DashPay encryption/decryption keys.
 ///

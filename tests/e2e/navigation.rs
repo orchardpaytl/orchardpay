@@ -14,7 +14,7 @@ fn test_basic_navigation() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -47,7 +47,7 @@ fn test_navigation_responsive_layout() {
             let _guard = rt.enter();
 
             let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-                dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
                     .with_animations(false)
             });
@@ -66,7 +66,7 @@ fn test_rapid_frame_navigation() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(300).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -88,7 +88,7 @@ fn test_extended_navigation_stability() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(500).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -112,7 +112,7 @@ fn test_minimum_size_navigation() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });

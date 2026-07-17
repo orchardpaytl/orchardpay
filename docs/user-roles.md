@@ -1,6 +1,6 @@
 # User Roles (Interface Mode)
 
-Dash Evo Tool adapts its interface to how you use it. Instead of a single
+OrchardPay adapts its interface to how you use it. Instead of a single
 "Expert mode" on/off switch, the app offers three interface modes, each
 revealing more advanced controls than the one before it:
 
@@ -65,6 +65,6 @@ The application directory holding `.env` is:
 
 | Operating System | Path |
 | - | - |
-| macOS | `~/Library/Application Support/Dash-Evo-Tool/.env` |
-| Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env` |
-| Linux | `~/.config/dash-evo-tool/.env` |
+| macOS | `~/Library/Application Support/OrchardPay/.env` |
+| Windows | `C:\Users\<User>\AppData\Roaming\OrchardPay\config\.env` |
+| Linux | `~/.config/orchardpay/.env` |

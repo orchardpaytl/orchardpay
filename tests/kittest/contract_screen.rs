@@ -18,32 +18,29 @@
 //! moves) once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::contracts_documents::document_action_screen::{
-    DocumentActionScreen, DocumentActionType,
-};
-use dash_evo_tool::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use dash_evo_tool::ui::contracts_documents::register_contract_screen::RegisterDataContractScreen;
-use dash_evo_tool::ui::contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::contracts_documents::document_action_screen::{
+    DocumentActionScreen, DocumentActionType,
+};
+use orchardpay::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
+use orchardpay::ui::contracts_documents::register_contract_screen::RegisterDataContractScreen;
+use orchardpay::ui::contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Mount a minimal AppState with the wallet backend wired up, then return the
 /// live context. Mirrors `identity_hub_switcher::mount_hub` but doesn't force a
 /// particular root screen — we construct screens directly.
-fn mount_context() -> (
-    Harness<'static, dash_evo_tool::app::AppState>,
-    Arc<AppContext>,
-) {
+fn mount_context() -> (Harness<'static, orchardpay::app::AppState>, Arc<AppContext>) {
     let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        orchardpay::app::AppState::new(ctx.egui_ctx.clone())
             .expect("AppState builds")
             .with_animations(false)
     });

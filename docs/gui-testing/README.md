@@ -34,10 +34,10 @@ them against a live network.
 
 ## Non-negotiable safety rules
 
-1. **Always use an isolated data directory.** Never point `DASH_EVO_DATA_DIR`
+1. **Always use an isolated data directory.** Never point `ORCHARDPAY_DATA_DIR`
    at a real user's default location. Use a fresh `mktemp -d` per run, copy
    `.env.example` into it, and adjust network config as the scenario requires.
-2. **Never touch an already-running instance.** Check `pgrep -af dash-evo-tool`
+2. **Never touch an already-running instance.** Check `pgrep -af orchardpay`
    before launching; if one is already running, leave it alone and launch a
    second, separately-windowed instance for your test.
 3. **Never hardcode secrets in a scenario file.** Reference environment
@@ -55,7 +55,7 @@ them against a live network.
    owner-key withdrawal forcing the registered payout address), use that path
    over one where you type an arbitrary address by hand.
 7. **Check the logs, not just the screen.** A crash or panic doesn't always
-   show a UI error — check `det-stderr.log` / `det.log` in the test's data
+   show a UI error — check `orchardpay-stderr.log` / `orchardpay.log` in the test's data
    directory (or the default location if unset) for a Rust panic
    (`location=...` line) even when the UI appeared to work.
 

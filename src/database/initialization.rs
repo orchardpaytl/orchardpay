@@ -610,7 +610,7 @@ impl Database {
                 table: None,
                 details: format!(
                     "database is at version {original_version} but this build \
-                     only supports up to version {to_version} — please update dash-evo-tool"
+                     only supports up to version {to_version} — please update orchardpay"
                 ),
                 source: rusqlite::Error::InvalidQuery,
             }),

@@ -1,10 +1,10 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use dash_evo_tool::model::secret::Secret;
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::secret::Secret;
+use orchardpay::model::wallet::Wallet;
+use orchardpay::ui::ScreenLike;
+use orchardpay::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use std::sync::{Arc, RwLock};
 
 fn wallet_screen_harness(password: Option<&Secret>) -> Harness<'static, WalletsBalancesScreen> {
@@ -123,7 +123,7 @@ fn test_wallets_screen_renders() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -141,7 +141,7 @@ fn test_app_stability_over_many_frames() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -161,7 +161,7 @@ fn test_rapid_frame_stepping() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });

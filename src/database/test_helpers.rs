@@ -16,7 +16,7 @@ use tempfile::TempDir;
 ///
 /// # Example
 /// ```
-/// use dash_evo_tool::database::test_helpers::create_test_database;
+/// use orchardpay::database::test_helpers::create_test_database;
 ///
 /// let db = create_test_database().unwrap();
 /// // Use db for testing...
@@ -44,7 +44,7 @@ pub fn create_test_database() -> rusqlite::Result<Database> {
 ///
 /// # Example
 /// ```
-/// use dash_evo_tool::database::test_helpers::create_temp_database;
+/// use orchardpay::database::test_helpers::create_temp_database;
 ///
 /// let (db, _temp_dir) = create_temp_database().unwrap();
 /// // Use db for testing...

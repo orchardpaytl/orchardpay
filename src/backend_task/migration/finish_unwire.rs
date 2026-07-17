@@ -261,9 +261,7 @@ pub enum MigrationError {
 
     /// A password-protected wallet needs an egui frame loop to collect its
     /// password, but the caller is a standalone MCP/CLI process.
-    #[error(
-        "Open the Dash Evo Tool desktop app once to finish the storage update, then try again."
-    )]
+    #[error("Open the OrchardPay desktop app once to finish the storage update, then try again.")]
     InteractivePromptUnavailable,
 
     /// A pass reported an error that is not a [`MigrationError`]. Every pass is
@@ -4588,7 +4586,7 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version."
+            "This saved data was created by a much older version of OrchardPay and can't be upgraded directly. Please install OrchardPay 0.9.3 first and open your data with it once, then upgrade to this version."
         );
         assert!(
             std::error::Error::source(&error).is_some(),
@@ -4628,7 +4626,7 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "Your saved data was created by a newer version of Dash Evo Tool. Update to the latest version to open it."
+            "Your saved data was created by a newer version of OrchardPay. Update to the latest version to open it."
         );
         assert!(
             std::error::Error::source(&error).is_some(),
@@ -5066,7 +5064,7 @@ mod tests {
         assert!(
             result
                 .to_string()
-                .contains("Open the Dash Evo Tool desktop app once")
+                .contains("Open the OrchardPay desktop app once")
         );
         assert!(
             !matches!(

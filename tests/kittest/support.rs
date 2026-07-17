@@ -3,9 +3,9 @@
 #[path = "../common/data_dir.rs"]
 mod data_dir;
 
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
+use orchardpay::context::AppContext;
+use orchardpay::ui::RootScreenType;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +28,7 @@ const WALLET_BACKEND_WIRE_TIMEOUT: Duration = Duration::from_secs(30);
 /// deterministically — `wallet_backend().is_ok()` is the exact precondition that
 /// seeding needs.
 pub fn wait_for_wallet_backend(
-    harness: &mut Harness<'static, dash_evo_tool::app::AppState>,
+    harness: &mut Harness<'static, orchardpay::app::AppState>,
 ) -> Arc<AppContext> {
     let deadline = Instant::now() + WALLET_BACKEND_WIRE_TIMEOUT;
     loop {
@@ -51,14 +51,14 @@ pub fn wait_for_wallet_backend(
 /// construction only — callers that need a runtime alive afterwards (e.g. to
 /// seed the DB through `AppContext` methods that spawn tasks) must enter their
 /// own around the call, same as any other kittest.
-pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool::app::AppState> {
+pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, orchardpay::app::AppState> {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
 
     let mut harness = Harness::builder()
         .with_max_steps(100)
         .build_eframe(move |ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            let mut app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false);
             app.show_welcome_screen = false;
@@ -80,7 +80,7 @@ pub fn fresh_app_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let guard = rt.enter();
     let mut bootstrap = Harness::builder().with_max_steps(20).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        orchardpay::app::AppState::new(ctx.egui_ctx.clone())
             .expect("Failed to create AppState")
             .with_animations(false)
     });

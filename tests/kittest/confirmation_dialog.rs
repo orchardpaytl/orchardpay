@@ -1,10 +1,10 @@
-use dash_evo_tool::ui::components::Component;
-use dash_evo_tool::ui::components::component_trait::ComponentResponse;
-use dash_evo_tool::ui::components::confirmation_dialog::{
-    ConfirmationDialog, ConfirmationStatus, NOTHING,
-};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::components::Component;
+use orchardpay::ui::components::component_trait::ComponentResponse;
+use orchardpay::ui::components::confirmation_dialog::{
+    ConfirmationDialog, ConfirmationStatus, NOTHING,
+};
 
 #[test]
 fn test_renders_title_and_message() {

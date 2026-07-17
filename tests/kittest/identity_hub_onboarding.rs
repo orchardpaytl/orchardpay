@@ -20,12 +20,12 @@
 //! identity picker work.
 
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::RootScreenType;
-use dash_evo_tool::ui::components::styled::island_central_panel;
-use dash_evo_tool::ui::identity::onboarding;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::RootScreenType;
+use orchardpay::ui::components::styled::island_central_panel;
+use orchardpay::ui::identity::onboarding;
 use std::sync::{Arc, Mutex};
 
 /// IT-ONBOARD-01: the onboarding empty state renders all required copy and

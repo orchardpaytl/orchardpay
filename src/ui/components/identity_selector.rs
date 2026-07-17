@@ -18,10 +18,10 @@ use egui::{ComboBox, Response, TextEdit, Ui, Widget, WidgetText};
 ///
 /// # Example
 /// ```rust
-/// use dash_evo_tool::ui::components::identity_selector::IdentitySelector;
+/// use orchardpay::ui::components::identity_selector::IdentitySelector;
 /// use dash_sdk::query_types::IndexMap;
 /// use dash_sdk::platform::Identifier;
-/// use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
+/// use orchardpay::model::qualified_identity::QualifiedIdentity;
 /// use egui::{RichText, Color32};
 ///
 /// // This example shows the API usage, but cannot be run in doctest
@@ -342,30 +342,30 @@ mod tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-    use crate::test_support::DASH_EVO_DATA_DIR_LOCK;
+    use crate::test_support::ORCHARDPAY_DATA_DIR_LOCK;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
 
     // ── Isolation helpers ─────────────────────────────────────────────────────
     //
-    // `make_ctx` resolves its data dir through `DASH_EVO_DATA_DIR`. Tests
+    // `make_ctx` resolves its data dir through `ORCHARDPAY_DATA_DIR`. Tests
     // that construct an `AppContext` must serialize on a process-global lock and
     // redirect to a throwaway temp dir to avoid opening the real user data dir or
     // racing with parallel test threads.
 
     /// Runs `f` in a unique temp data dir with a Tokio runtime in context.
     /// Serialized by the crate-level lock so that parallel test threads don't
-    /// race on `DASH_EVO_DATA_DIR`. `make_ctx` wires the wallet backend via an
+    /// race on `ORCHARDPAY_DATA_DIR`. `make_ctx` wires the wallet backend via an
     /// `.await`, so a multi-thread runtime must be entered before calling it.
     fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
-        let lock = DASH_EVO_DATA_DIR_LOCK
+        let lock = ORCHARDPAY_DATA_DIR_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = tempfile::tempdir().expect("create temp data dir");
-        let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
+        let prior = std::env::var("ORCHARDPAY_DATA_DIR").ok();
         // Safety: serialized by `lock`; env var restored below before drop.
         unsafe {
-            std::env::set_var("DASH_EVO_DATA_DIR", tmp.path());
+            std::env::set_var("ORCHARDPAY_DATA_DIR", tmp.path());
         }
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
@@ -374,8 +374,8 @@ mod tests {
         drop(rt);
         unsafe {
             match &prior {
-                Some(v) => std::env::set_var("DASH_EVO_DATA_DIR", v),
-                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+                Some(v) => std::env::set_var("ORCHARDPAY_DATA_DIR", v),
+                None => std::env::remove_var("ORCHARDPAY_DATA_DIR"),
             }
         }
         drop(lock);
@@ -403,7 +403,8 @@ mod tests {
         use crate::utils::tasks::TaskManager;
 
         let data_dir = std::path::PathBuf::from(
-            std::env::var("DASH_EVO_DATA_DIR").expect("with_isolated_dir sets DASH_EVO_DATA_DIR"),
+            std::env::var("ORCHARDPAY_DATA_DIR")
+                .expect("with_isolated_dir sets ORCHARDPAY_DATA_DIR"),
         );
         ensure_env_file(&data_dir);
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));

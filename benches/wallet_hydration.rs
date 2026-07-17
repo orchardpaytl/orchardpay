@@ -5,7 +5,7 @@
 //! `platform-wallet` migration:
 //!
 //! - `hydrate_hd_wallets` exercises
-//!   [`hydrate_hd_wallets_from_views`](dash_evo_tool::wallet_backend::hydration::hydrate_hd_wallets_from_views),
+//!   [`hydrate_hd_wallets_from_views`](orchardpay::wallet_backend::hydration::hydrate_hd_wallets_from_views),
 //!   the free-function version of `WalletBackend::hydrate_wallets_for_network`
 //!   (T-W-01). Setup writes N HD wallets through the
 //!   [`WalletSeedView`] + [`WalletMetaView`] sidecars; the measured
@@ -30,14 +30,14 @@ use dash_sdk::dpp::dashcore::{Network, PrivateKey};
 use platform_wallet_storage::secrets::SecretStore;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::model::wallet::meta::WalletMeta;
-use dash_evo_tool::model::wallet::seed_envelope::StoredSeedEnvelope;
-use dash_evo_tool::wallet_backend::DetKv;
-use dash_evo_tool::wallet_backend::hydration::hydrate_hd_wallets_from_views;
-use dash_evo_tool::wallet_backend::single_key::{SingleKeyView, open_secret_store};
-use dash_evo_tool::wallet_backend::wallet_meta::WalletMetaView;
-use dash_evo_tool::wallet_backend::wallet_seed_store::WalletSeedView;
+use orchardpay::model::wallet::Wallet;
+use orchardpay::model::wallet::meta::WalletMeta;
+use orchardpay::model::wallet::seed_envelope::StoredSeedEnvelope;
+use orchardpay::wallet_backend::DetKv;
+use orchardpay::wallet_backend::hydration::hydrate_hd_wallets_from_views;
+use orchardpay::wallet_backend::single_key::{SingleKeyView, open_secret_store};
+use orchardpay::wallet_backend::wallet_meta::WalletMetaView;
+use orchardpay::wallet_backend::wallet_seed_store::WalletSeedView;
 
 /// Wall-clock budget per measured sample. The 100-wallet case writes
 /// the most sidecar rows at setup and benefits from the longer window;

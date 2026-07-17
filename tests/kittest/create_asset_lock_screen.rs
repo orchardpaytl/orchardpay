@@ -9,7 +9,7 @@ fn test_create_asset_lock_screen_renders() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -27,7 +27,7 @@ fn test_create_asset_lock_screen_resize() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -55,7 +55,7 @@ fn test_create_asset_lock_screen_frame_stability() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });

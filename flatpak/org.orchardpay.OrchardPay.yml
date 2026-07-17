@@ -1,9 +1,9 @@
-# Flatpak manifest for Dash Evo Tool
-# Build with: flatpak-builder --user --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
-# Install locally: flatpak-builder --user --install --force-clean build-dir flatpak/org.dash.DashEvoTool.yml
-# Create bundle: flatpak build-bundle flatpak-repo dash-evo-tool.flatpak org.dash.DashEvoTool
+# Flatpak manifest for OrchardPay
+# Build with: flatpak-builder --user --force-clean --repo=flatpak-repo build-dir flatpak/org.orchardpay.OrchardPay.yml
+# Install locally: flatpak-builder --user --install --force-clean build-dir flatpak/org.orchardpay.OrchardPay.yml
+# Create bundle: flatpak build-bundle flatpak-repo orchardpay.flatpak org.orchardpay.OrchardPay
 
-app-id: org.dash.DashEvoTool
+app-id: org.orchardpay.OrchardPay
 runtime: org.freedesktop.Platform
 runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
@@ -11,7 +11,7 @@ sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.llvm21
 
-command: dash-evo-tool
+command: orchardpay
 
 finish-args:
   # X11 shared memory for display
@@ -29,7 +29,7 @@ build-options:
   build-args:
     - --share=network
   env:
-    CARGO_HOME: /run/build/dash-evo-tool/cargo
+    CARGO_HOME: /run/build/orchardpay/cargo
     PROTOC: /app/bin/protoc
     PROTOC_INCLUDE: /app/include
 
@@ -63,8 +63,8 @@ modules:
         url: https://github.com/jedisct1/libsodium/releases/download/1.0.20-RELEASE/libsodium-1.0.20.tar.gz
         sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
 
-  # Module 3: Build dash-evo-tool from source
-  - name: dash-evo-tool
+  # Module 3: Build orchardpay from source
+  - name: orchardpay
     buildsystem: simple
     sources:
       - type: dir
@@ -76,7 +76,7 @@ modules:
           - target
     build-commands:
       - cargo build --release --locked
-      - install -Dm755 target/release/dash-evo-tool /app/bin/dash-evo-tool
-      - install -Dm644 flatpak/org.dash.DashEvoTool.desktop /app/share/applications/org.dash.DashEvoTool.desktop
-      - install -Dm644 flatpak/org.dash.DashEvoTool.metainfo.xml /app/share/metainfo/org.dash.DashEvoTool.metainfo.xml
-      - install -Dm644 assets/DET_LOGO.png /app/share/icons/hicolor/512x512/apps/org.dash.DashEvoTool.png
+      - install -Dm755 target/release/orchardpay /app/bin/orchardpay
+      - install -Dm644 flatpak/org.orchardpay.OrchardPay.desktop /app/share/applications/org.orchardpay.OrchardPay.desktop
+      - install -Dm644 flatpak/org.orchardpay.OrchardPay.metainfo.xml /app/share/metainfo/org.orchardpay.OrchardPay.metainfo.xml
+      - install -Dm644 assets/DET_LOGO.png /app/share/icons/hicolor/512x512/apps/org.orchardpay.OrchardPay.png

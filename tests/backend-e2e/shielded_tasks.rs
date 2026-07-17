@@ -21,11 +21,11 @@
 use crate::framework::harness::ctx;
 use crate::framework::shielded_helpers;
 use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::shielded::ShieldedTask;
-use dash_evo_tool::backend_task::wallet::WalletTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::Network;
+use orchardpay::backend_task::shielded::ShieldedTask;
+use orchardpay::backend_task::wallet::WalletTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::wallet::WalletSeedHash;
 
 // ---------------------------------------------------------------------------
 // Lifecycle test — shield → transfer → unshield → withdraw, with balance checks
@@ -348,7 +348,7 @@ async fn tc_083_error_unknown_wallet() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::WalletNotFound
+            orchardpay::backend_task::error::TaskError::WalletNotFound
         ) || shielded_helpers::is_platform_shielded_unsupported(&err),
         "TC-083: expected WalletNotFound or shielded-unsupported error, got: {:?}",
         err

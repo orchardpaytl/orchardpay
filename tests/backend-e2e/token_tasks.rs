@@ -9,23 +9,23 @@ use crate::framework::harness;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use crate::framework::token_helpers;
-use dash_evo_tool::backend_task::tokens::TokenTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::qualified_contract::QualifiedContract;
-use dash_evo_tool::ui::tokens::tokens_screen::{
-    IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo,
-};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
+use orchardpay::backend_task::tokens::TokenTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::qualified_contract::QualifiedContract;
+use orchardpay::ui::tokens::tokens_screen::{
+    IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo,
+};
 
 /// Module-level storage for a second identity used across freeze/transfer/purchase tests.
 static SECOND_IDENTITY: tokio::sync::OnceCell<SecondIdentity> = tokio::sync::OnceCell::const_new();
 
 struct SecondIdentity {
-    qualified_identity: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    qualified_identity: orchardpay::model::qualified_identity::QualifiedIdentity,
     signing_key: dash_sdk::platform::IdentityPublicKey,
 }
 
@@ -41,7 +41,7 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
                 build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
 
             let task = BackendTask::IdentityTask(
-                dash_evo_tool::backend_task::identity::IdentityTask::RegisterIdentity(reg_info),
+                orchardpay::backend_task::identity::IdentityTask::RegisterIdentity(reg_info),
             );
             let result = run_task(&ctx.app_context, task)
                 .await
@@ -779,7 +779,7 @@ async fn tc_065_mint_unauthorized() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::PlatformRejected { .. }
+            orchardpay::backend_task::error::TaskError::PlatformRejected { .. }
         ),
         "TC-065: expected PlatformRejected for unauthorized mint, got: {:?}",
         err

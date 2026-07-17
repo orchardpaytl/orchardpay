@@ -9,7 +9,7 @@ use crate::bundled::BundledResource;
 
 const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
-const APPLICATION: &str = "Dash-Evo-Tool";
+const APPLICATION: &str = "OrchardPay";
 
 #[cfg(not(target_os = "linux"))]
 const CORE_APPLICATION: &str = "DashCore";
@@ -26,11 +26,11 @@ fn user_data_dir_path(app: &str) -> Result<PathBuf, std::io::Error> {
 
 /// Returns the application data directory path.
 ///
-/// Checks `DASH_EVO_DATA_DIR` first; falls back to the platform default
-/// (`~/.config/Dash-Evo-Tool` on Linux). The env var override is intended
+/// Checks `ORCHARDPAY_DATA_DIR` first; falls back to the platform default
+/// (`~/.config/OrchardPay` on Linux). The env var override is intended
 /// for tests and CI so they don't touch the real user data directory.
 pub fn app_user_data_dir_path() -> Result<PathBuf, std::io::Error> {
-    if let Ok(dir) = std::env::var("DASH_EVO_DATA_DIR") {
+    if let Ok(dir) = std::env::var("ORCHARDPAY_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     user_data_dir_path(APPLICATION)

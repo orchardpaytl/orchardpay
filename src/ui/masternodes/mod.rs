@@ -17,7 +17,7 @@ use crate::model::qualified_identity::MasternodeKeyPresence;
 
 /// Tooltip copy for the Dash Core DIP-3 ProRegTx key roles, shared by the detail
 /// view's "Manage keys" list and the load form's key fields so both surfaces use
-/// the same wording. These are the roles Dash Evo Tool manages on behalf of the
+/// the same wording. These are the roles OrchardPay manages on behalf of the
 /// masternode's Platform identity; the operator BLS key and Platform node key are
 /// held by the node operator and are not entered here.
 pub const TIP_OWNER_KEY: &str = "The owner key authorizes changes to this masternode's registration on Dash Core, such as \

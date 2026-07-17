@@ -55,6 +55,9 @@ pub enum RootScreenType {
     RootScreenTokenCreator,
     RootScreenToolsContractVisualizerScreen,
     RootScreenToolsPlatformInfoScreen,
+    // ORCHARDPAY-TODO(dashpay-legacy): superseded by OrchardPay's ZK-based
+    // contact model (see docs/orchardpay/PROTOCOL_DESIGN.md and
+    // docs/ORCHARDPAY_MIGRATION.md). Kept until parity is reached.
     RootScreenDashPayContacts,
     RootScreenDashPayProfile,
     RootScreenDashPayPayments,

@@ -35,9 +35,6 @@
 //! in `contract_screen.rs`, `dashpay_screen.rs`, and `tokens_screen.rs`.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::components::identity_selector::IdentitySelector;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -46,6 +43,9 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::components::identity_selector::IdentitySelector;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -96,7 +96,7 @@ fn combo_change_writes_selection_to_app_context() {
         // first wiring. Running 5 steps ensures that happens BEFORE we seed the
         // identity, so our seed is not overwritten by the async initialization.
         let mut setup = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("AppState builds")
                 .with_animations(false)
         });

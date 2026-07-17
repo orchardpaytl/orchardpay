@@ -16,24 +16,24 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use dash_evo_tool::ui::components::ProgressOverlay;
-use dash_evo_tool::ui::components::passphrase_modal::{
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use orchardpay::ui::components::ProgressOverlay;
+use orchardpay::ui::components::passphrase_modal::{
     KEEP_UNLOCKED_LABEL, PassphraseModalConfig, drop_activation_frame_pointer_click,
     passphrase_modal,
 };
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 
 #[cfg(feature = "testing")]
-use dash_evo_tool::context::migration_status::MigrationState;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::secret::Secret;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::wallet::Wallet;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
-#[cfg(feature = "testing")]
 use dash_sdk::dpp::dashcore::Network;
+#[cfg(feature = "testing")]
+use orchardpay::context::migration_status::MigrationState;
+#[cfg(feature = "testing")]
+use orchardpay::model::secret::Secret;
+#[cfg(feature = "testing")]
+use orchardpay::model::wallet::Wallet;
+#[cfg(feature = "testing")]
+use orchardpay::model::wallet::birth_height::WalletOrigin;
 
 /// The modal renders the scope body, the hint, the retry error, and the
 /// remember checkbox.
@@ -370,7 +370,7 @@ fn appstate_jit_prompt_activation_drops_transition_frame_click() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -421,7 +421,7 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
         let mut harness = Harness::builder()
             .with_max_steps(100)
             .build_eframe(move |ctx| {
-                let app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                let app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
                     .with_animations(false);
 
@@ -554,7 +554,7 @@ fn primed_prompt_blocks_the_same_injected_click_sequence() {
 /// controls stay live.
 #[test]
 fn cancellable_passphrase_modal_still_dismisses_from_its_own_controls() {
-    use dash_evo_tool::ui::components::passphrase_modal::PassphraseModalOutcome;
+    use orchardpay::ui::components::passphrase_modal::PassphraseModalOutcome;
 
     let cancelled = Rc::new(Cell::new(false));
     let cancelled_ui = Rc::clone(&cancelled);
@@ -605,7 +605,7 @@ fn cancellable_passphrase_modal_still_dismisses_from_its_own_controls() {
 fn passphrase_modal_password_field_focuses_and_blocks_background() {
     use std::cell::RefCell;
 
-    use dash_evo_tool::ui::components::passphrase_modal::PassphraseModalOutcome;
+    use orchardpay::ui::components::passphrase_modal::PassphraseModalOutcome;
 
     let outcome = Rc::new(RefCell::new(PassphraseModalOutcome::Pending));
     let outcome_ui = Rc::clone(&outcome);

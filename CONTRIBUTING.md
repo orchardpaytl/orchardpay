@@ -1,4 +1,4 @@
-# Contributing to Dash Evo Tool
+# Contributing to OrchardPay
 
 Contributions are welcome! This guide covers how to set up a development environment, build the project, run tests, and submit changes.
 
@@ -49,8 +49,8 @@ sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
 Clone the repository and build:
 
 ```shell
-git clone https://github.com/dashpay/dash-evo-tool.git
-cd dash-evo-tool
+git clone <TODO: OrchardPay repo URL not yet published>
+cd orchardpay
 cargo build --release
 ```
 
@@ -62,12 +62,12 @@ cargo run
 
 ## Feature flags
 
-The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional features enable additional capabilities:
+The default `cargo build` produces only the `orchardpay` GUI binary. Optional features enable additional capabilities:
 
 | Feature | Binary | What it adds |
 |---|---|---|
-| _(none)_ | `dash-evo-tool` | GUI application (default) |
-| `mcp` | `dash-evo-tool` | Embeds an MCP HTTP server in the GUI app. Activated at runtime by setting `MCP_API_KEY`. See [docs/MCP.md](docs/MCP.md). |
+| _(none)_ | `orchardpay` | GUI application (default) |
+| `mcp` | `orchardpay` | Embeds an MCP HTTP server in the GUI app. Activated at runtime by setting `MCP_API_KEY`. See [docs/MCP.md](docs/MCP.md). |
 | `cli` | `det-cli` | Standalone CLI binary. Includes an in-process MCP service (no server needed), HTTP client mode, `det-cli serve` stdio server, tool caching, and shell completion. See [docs/CLI.md](docs/CLI.md). |
 | `headless` | `det-cli` | Combines `cli` + `mcp` for headless HTTP server mode via `det-cli headless`. No GUI required; `MCP_API_KEY` must be set. See [docs/MCP.md](docs/MCP.md). |
 | `testing` | — | Test-only utilities (not for production builds) |
@@ -104,7 +104,7 @@ Test locations:
 
 ## Local network (development only)
 
-For development and testing you can connect Dash Evo Tool to a dashmate-managed local network running in regtest mode. See the [Local Network Guide](docs/local-network.md) for full setup instructions.
+For development and testing you can connect OrchardPay to a dashmate-managed local network running in regtest mode. See the [Local Network Guide](docs/local-network.md) for full setup instructions.
 
 ## Submitting changes
 

@@ -10,11 +10,11 @@
 //!   accessibility tree.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::ui::wallets::import_single_key::ImportSingleKeyDialog;
-use dash_evo_tool::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use dash_sdk::dpp::dashcore::{Network, PrivateKey};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::wallets::import_single_key::ImportSingleKeyDialog;
+use orchardpay::ui::wallets::wallets_screen::WalletsBalancesScreen;
 
 const KNOWN_TESTNET_WIF: &str = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK";
 
@@ -145,7 +145,7 @@ fn imported_single_key_is_visible_in_session() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("create AppState")
                 .with_animations(false)
         });

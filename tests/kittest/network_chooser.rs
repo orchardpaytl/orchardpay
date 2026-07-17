@@ -1,8 +1,8 @@
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::RootScreenType;
 
 /// Test that the network chooser screen renders without panicking
 #[test]
@@ -14,7 +14,7 @@ fn test_network_chooser_renders() {
 
         // Create a test harness for the egui app
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -63,7 +63,7 @@ fn test_app_handles_frame_stepping() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false)
         });
@@ -97,7 +97,7 @@ fn test_app_renders_at_various_sizes() {
             let _guard = rt.enter();
 
             let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-                dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
                     .with_animations(false)
             });

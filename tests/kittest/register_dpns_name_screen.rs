@@ -12,22 +12,22 @@
 //! app's own SPV block can't perturb the `has_global` assertions.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::app::AppState;
-use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::MessageType;
-use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::components::ProgressOverlay;
-use dash_evo_tool::ui::identities::register_dpns_name_screen::{
-    RegisterDpnsNameScreen, RegisterDpnsNameSource,
-};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use orchardpay::app::AppState;
+use orchardpay::backend_task::{BackendTaskSuccessResult, FeeResult};
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::MessageType;
+use orchardpay::ui::ScreenLike;
+use orchardpay::ui::components::ProgressOverlay;
+use orchardpay::ui::identities::register_dpns_name_screen::{
+    RegisterDpnsNameScreen, RegisterDpnsNameSource,
+};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -119,7 +119,7 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("AppState builds")
                 .with_animations(false)
         });

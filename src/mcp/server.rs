@@ -261,7 +261,7 @@ impl ServerHandler for DashMcpService {
                 env!("CARGO_PKG_VERSION").to_string(),
             ))
             .with_instructions(
-                "Dash Evo Tool MCP server. Provides wallet and core operations for the Dash blockchain.".to_string(),
+                "OrchardPay MCP server. Provides wallet and core operations for the Dash blockchain.".to_string(),
             )
     }
 
@@ -344,7 +344,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         if e.is_secret_store_wrong_passphrase() {
             McpError::internal_error(
                 "Your saved keys are protected by a passphrase set in an earlier version. \
-                 Open the Dash Evo Tool desktop app and enter the passphrase to unlock them, \
+                 Open the OrchardPay desktop app and enter the passphrase to unlock them, \
                  then run this command again."
                     .to_string(),
                 None,

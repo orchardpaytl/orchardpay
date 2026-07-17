@@ -446,7 +446,7 @@ fn render_no_eligible_key_group(
 
             if has_eligible_public_keys_without_private {
                 ui.label(
-                    "This identity has an eligible public key, but its private key isn't loaded into Dash Evo Tool yet.",
+                    "This identity has an eligible public key, but its private key isn't loaded into OrchardPay yet.",
                 );
                 ui.label(
                     "Load the private key from the Identities screen, or add a new key with the button below.",

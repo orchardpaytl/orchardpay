@@ -130,20 +130,20 @@ async fn re_registration_is_idempotent_for_funded_wallet() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
-    use dash_evo_tool::app::TaskResult;
-    use dash_evo_tool::app_dir::ensure_env_file;
-    use dash_evo_tool::context::AppContext;
-    use dash_evo_tool::context::connection_status::ConnectionStatus;
-    use dash_evo_tool::database::test_helpers::{
-        create_database_at_path, seed_legacy_unprotected_hd_wallet_row,
-    };
-    use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
-    use dash_evo_tool::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::{
         ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
     };
+    use orchardpay::app::TaskResult;
+    use orchardpay::app_dir::ensure_env_file;
+    use orchardpay::context::AppContext;
+    use orchardpay::context::connection_status::ConnectionStatus;
+    use orchardpay::database::test_helpers::{
+        create_database_at_path, seed_legacy_unprotected_hd_wallet_row,
+    };
+    use orchardpay::utils::egui_mpsc::EguiMpscAsync;
+    use orchardpay::utils::tasks::TaskManager;
 
     // Ensure the shared framework backend is up first — it owns the funded
     // framework wallet and a synced SPV view; reading the mnemonic from the
@@ -170,7 +170,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     // xpub against the seed's derivation).
     let seed_hash = {
         let w =
-            dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+            orchardpay::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
                 .expect("build wallet for hash");
         w.seed_hash()
     };
@@ -210,7 +210,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
         egui_ctx,
         app_kv,
         secret_store,
-        dash_evo_tool::model::user_role::UserRoleCell::default(),
+        orchardpay::model::user_role::UserRoleCell::default(),
     )
     .expect("create cold-boot AppContext");
 
@@ -233,7 +233,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
 
     // Run the cold-start migration — it must import the wallet AND re-run the
     // reconciliation so the wallet is registered without a restart.
-    dash_evo_tool::backend_task::migration::finish_unwire::run(&app_context)
+    orchardpay::backend_task::migration::finish_unwire::run(&app_context)
         .await
         .expect("cold-start migration should succeed");
 

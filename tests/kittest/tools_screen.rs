@@ -26,24 +26,21 @@
 //! list. Testing requires a HD wallet fixture (TI-1 gap); deferred.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::tools::grovestark_screen::GroveSTARKScreen;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::tools::grovestark_screen::GroveSTARKScreen;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn build_ctx() -> (
-    Harness<'static, dash_evo_tool::app::AppState>,
-    Arc<AppContext>,
-) {
+fn build_ctx() -> (Harness<'static, orchardpay::app::AppState>, Arc<AppContext>) {
     let mut h = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        orchardpay::app::AppState::new(ctx.egui_ctx.clone())
             .expect("AppState builds")
             .with_animations(false)
     });

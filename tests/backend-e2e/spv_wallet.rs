@@ -18,7 +18,7 @@ async fn test_spv_sync_and_create_wallet() {
         Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation should succeed");
     let seed = mnemonic.to_seed("");
 
-    let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+    let wallet = orchardpay::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
         Some("SPV E2E Test Wallet".to_string()),
@@ -36,7 +36,7 @@ async fn test_spv_sync_and_create_wallet() {
         .register_wallet(
             wallet,
             &seed,
-            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+            orchardpay::model::wallet::birth_height::WalletOrigin::Imported,
         )
         .expect("register_wallet should succeed");
 
@@ -53,7 +53,7 @@ async fn test_spv_sync_and_create_wallet() {
     // DET no longer writes the legacy `data.db.wallet` row — the upstream
     // persistor plus the wallet-meta/seed-envelope sidecars own wallet state.
     {
-        let meta = dash_evo_tool::wallet_backend::WalletMetaView::new(&app_context.app_kv())
+        let meta = orchardpay::wallet_backend::WalletMetaView::new(&app_context.app_kv())
             .get(Network::Testnet, &seed_hash);
         assert!(
             meta.is_some(),

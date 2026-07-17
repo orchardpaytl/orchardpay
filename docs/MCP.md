@@ -1,6 +1,6 @@
 # MCP Server
 
-Dash Evo Tool exposes wallet and core operations via the [Model Context Protocol](https://modelcontextprotocol.io/). Two modes are available:
+OrchardPay exposes wallet and core operations via the [Model Context Protocol](https://modelcontextprotocol.io/). Two modes are available:
 
 ## HTTP mode (`mcp` feature)
 
@@ -169,7 +169,7 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "dash-evo-tool": {
+    "orchardpay": {
       "command": "det-cli",
       "args": ["serve"]
     }

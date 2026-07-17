@@ -1,8 +1,8 @@
-# Dash Evo Tool
+# OrchardPay
 
-**Dash Evo Tool** is a cross-platform GUI application for interacting with [Dash Evolution](https://www.dash.org/). It supports Mainnet, Testnet, Devnet, and local regtest networks.
+**OrchardPay** is a cross-platform GUI application for interacting with [Dash Evolution](https://www.dash.org/). It supports Mainnet, Testnet, Devnet, and local regtest networks.
 
-See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/) for setup and usage instructions.
+See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/orchardpay/) for setup and usage instructions.
 
 ## Features
 
@@ -49,35 +49,35 @@ See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/d
 
 ## Getting prebuilt binaries
 
-Download the latest release from the [Releases](https://github.com/dashpay/dash-evo-tool/releases) page.
+Download the latest release from the Releases page (TODO: OrchardPay repo not yet published).
 
 ### Install via Flatpak (Linux)
 
-The easiest way to run Dash Evo Tool on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the [latest release](https://github.com/dashpay/dash-evo-tool/releases) and install it:
+The easiest way to run OrchardPay on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the latest release (TODO: OrchardPay repo not yet published) and install it:
 
 ``` shell
 # x86_64
-flatpak install dash-evo-tool-linux-x86_64.flatpak
+flatpak install orchardpay-linux-x86_64.flatpak
 
 # aarch64 (ARM)
-flatpak install dash-evo-tool-linux-aarch64.flatpak
+flatpak install orchardpay-linux-aarch64.flatpak
 ```
 
 To run:
 
 ``` shell
-flatpak run org.dash.DashEvoTool
+flatpak run org.orchardpay.OrchardPay
 ```
 
 To uninstall:
 
 ``` shell
-flatpak uninstall org.dash.DashEvoTool
+flatpak uninstall org.orchardpay.OrchardPay
 ```
 
-The Flatpak version runs in SPV (light client) mode — no full Dash Core node is required. Application data is stored in `~/.var/app/org.dash.DashEvoTool/config/dash-evo-tool/`.
+The Flatpak version runs in SPV (light client) mode — no full Dash Core node is required. Application data is stored in `~/.var/app/org.orchardpay.OrchardPay/config/orchardpay/`.
 
-> **Note:** The Flatpak data path differs from native Linux builds, which use `~/.config/dash-evo-tool/`.
+> **Note:** The Flatpak data path differs from native Linux builds, which use `~/.config/orchardpay/`.
 
 ### Windows runtime dependencies
 
@@ -97,15 +97,15 @@ When the application runs for the first time, it creates an application director
 
 | Operating System | Application Directory Path |
 | - | - |
-| macOS | `~/Library/Application Support/Dash-Evo-Tool/` |
-| Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
-| Linux | `/home/<user>/.config/dash-evo-tool/` |
+| macOS | `~/Library/Application Support/OrchardPay/` |
+| Windows | `C:\Users\<User>\AppData\Roaming\OrchardPay\config` |
+| Linux | `/home/<user>/.config/orchardpay/` |
 
 ## Environment Variables
 
 | Variable | Values | Default | Description |
 | - | - | - | - |
-| `DASH_EVO_TOOL_ACCESSIBILITY` | `1` / unset | unset | Force-enable accessibility support. Activates AccessKit eagerly so the UI element tree is populated every frame and (on macOS) forces the platform accessibility adapter to initialize. Without this flag, accessibility still works normally — VoiceOver and other assistive technologies trigger AccessKit's lazy activation automatically. This flag is needed for tools that query the accessibility tree without registering as assistive technology clients (e.g. AXUIElement-based automation like Peekaboo). |
+| `ORCHARDPAY_ACCESSIBILITY` | `1` / unset | unset | Force-enable accessibility support. Activates AccessKit eagerly so the UI element tree is populated every frame and (on macOS) forces the platform accessibility adapter to initialize. Without this flag, accessibility still works normally — VoiceOver and other assistive technologies trigger AccessKit's lazy activation automatically. This flag is needed for tools that query the accessibility tree without registering as assistive technology clients (e.g. AXUIElement-based automation like Peekaboo). |
 
 The interface mode (Default view / Detailed view / Developer tools) is not an
 environment variable — it is chosen in the app and stored with your settings.
@@ -122,7 +122,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Support
 
-- **Issues**: Open an issue on [GitHub Issues](https://github.com/dashpay/dash-evo-tool/issues).
+- **Issues**: Open an issue on GitHub Issues (TODO: OrchardPay repo not yet published).
 - **Community**: Join the Dash community forums or Discord server for discussions.
 
 ## Security Note

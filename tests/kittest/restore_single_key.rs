@@ -7,11 +7,11 @@
 //! `src/context/wallet_lifecycle.rs`; this exercises the rendered UI.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::backend_task::migration::single_key_restore::PendingProtectedRestore;
-use dash_evo_tool::ui::wallets::restore_single_key::RestoreSingleKeyDialog;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::backend_task::migration::single_key_restore::PendingProtectedRestore;
+use orchardpay::ui::wallets::restore_single_key::RestoreSingleKeyDialog;
 
 fn targeted_dialog() -> RestoreSingleKeyDialog {
     let mut dialog = RestoreSingleKeyDialog::new();

@@ -46,7 +46,7 @@ use super::{
 /// Drives platform-level accessibility (AccessKit) activation on the first
 /// frames so tooling can see the tree without a live assistive client.
 pub(super) struct AccessibilityActivator {
-    /// Force-enable requested via `DASH_EVO_TOOL_ACCESSIBILITY=1`.
+    /// Force-enable requested via `ORCHARDPAY_ACCESSIBILITY=1`.
     enforced: bool,
     /// Whether activation has already succeeded.
     activated: bool,
@@ -797,7 +797,7 @@ mod tests {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(700.0, 260.0))
             .build_ui(MessageBanner::show_global);
-        let message = "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version.";
+        let message = "This saved data was created by a much older version of OrchardPay and can't be upgraded directly. Please install OrchardPay 0.9.3 first and open your data with it once, then upgrade to this version.";
         let state = MigrationState::Failed {
             error: Arc::new(
                 crate::backend_task::migration::MigrationError::LegacyDataTooOld {

@@ -2,16 +2,16 @@
 //! empty state + card grid (B3).
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::kittest::Queryable;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::{RootScreenType, ScreenLike};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -207,7 +207,7 @@ fn de_gating_falls_back_to_identity_hub() {
 /// list (the direct field-set bypasses `set_main_screen`, so drive the screen's
 /// arrival refresh explicitly — the same call `set_main_screen` makes).
 fn activate_masternodes_tab(
-    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+    harness: &mut egui_kittest::Harness<'static, orchardpay::app::AppState>,
     app_context: &Arc<AppContext>,
 ) {
     app_context.set_user_role(UserRole::Power);
@@ -741,7 +741,7 @@ fn remove_flow_deletes_associated_voter_identity() {
 /// `KeyInfoScreen` is pushed and its "Key Information" heading renders.
 #[test]
 fn manage_keys_button_opens_key_info_screen() {
-    use dash_evo_tool::ui::Screen;
+    use orchardpay::ui::Screen;
 
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");

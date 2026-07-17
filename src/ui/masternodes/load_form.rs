@@ -356,7 +356,7 @@ impl MasternodeLoadForm {
             ui.add(
                 egui::TextEdit::singleline(&mut self.alias_input)
                     .hint_text(
-                        "An alias helps you recognize this node inside Dash Evo Tool. It is not \
+                        "An alias helps you recognize this node inside OrchardPay. It is not \
                          saved to the Dash network.",
                     )
                     .desired_width(f32::INFINITY),

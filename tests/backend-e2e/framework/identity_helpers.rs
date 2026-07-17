@@ -1,10 +1,10 @@
 //! Helpers for constructing identity registration data in tests.
 
-use dash_evo_tool::backend_task::identity::{
+use orchardpay::backend_task::identity::{
     IdentityRegistrationInfo, build_identity_registration as build_identity_registration_inner,
 };
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use orchardpay::context::AppContext;
+use orchardpay::model::wallet::{Wallet, WalletSeedHash};
 use std::sync::{Arc, RwLock};
 
 /// Asset lock amount in duffs for the e2e registration fixture. Platform

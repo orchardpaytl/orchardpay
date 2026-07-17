@@ -31,25 +31,25 @@ use std::rc::Rc;
 #[cfg(feature = "testing")]
 use std::time::Duration;
 
-use dash_evo_tool::ui::MessageType;
-use dash_evo_tool::ui::components::passphrase_modal::{PassphraseModalConfig, passphrase_modal};
-use dash_evo_tool::ui::components::{
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use orchardpay::ui::MessageType;
+use orchardpay::ui::components::passphrase_modal::{PassphraseModalConfig, passphrase_modal};
+use orchardpay::ui::components::{
     Component, ComponentResponse, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
     ProgressOverlay,
 };
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 
 #[cfg(feature = "testing")]
-use dash_evo_tool::context::migration_status::MigrationState;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::secret::Secret;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::wallet::Wallet;
-#[cfg(feature = "testing")]
-use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
-#[cfg(feature = "testing")]
 use dash_sdk::dpp::dashcore::Network;
+#[cfg(feature = "testing")]
+use orchardpay::context::migration_status::MigrationState;
+#[cfg(feature = "testing")]
+use orchardpay::model::secret::Secret;
+#[cfg(feature = "testing")]
+use orchardpay::model::wallet::Wallet;
+#[cfg(feature = "testing")]
+use orchardpay::model::wallet::birth_height::WalletOrigin;
 #[cfg(feature = "testing")]
 use std::cell::Cell as StdCell;
 
@@ -1518,7 +1518,7 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            let mut app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false);
             // A secret prompt is active (renders above the overlay, needs keyboard).
@@ -1578,7 +1578,7 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
         let mut harness = Harness::builder()
             .with_max_steps(100)
             .build_eframe(move |ctx| {
-                let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                let mut app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
                     .with_animations(false);
                 app.show_welcome_screen = false;
@@ -1716,7 +1716,7 @@ fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            let mut app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false);
             // A secret prompt is active (renders above the overlay, needs keyboard).
@@ -1733,9 +1733,9 @@ fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
             OverlayConfig::new()
                 .with_secondary_action(
                     "Continue in the background",
-                    dash_evo_tool::app::SPV_CONTINUE_BACKGROUND_ACTION,
+                    orchardpay::app::SPV_CONTINUE_BACKGROUND_ACTION,
                 )
-                .with_keyboard_escape(dash_evo_tool::app::SPV_CONTINUE_BACKGROUND_ACTION),
+                .with_keyboard_escape(orchardpay::app::SPV_CONTINUE_BACKGROUND_ACTION),
         );
         harness.run_steps(5);
 
@@ -1786,7 +1786,7 @@ fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
 #[cfg(feature = "testing")]
 #[test]
 fn task9_spv_overlay_armed_scope_disarm_and_escape() {
-    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    use orchardpay::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -1796,8 +1796,8 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
             .build_ui(|ui| {
                 ProgressOverlay::render_global(ui.ctx(), false);
             });
-        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
-            .expect("Failed to create AppState");
+        let mut app =
+            orchardpay::app::AppState::new(harness.ctx.clone()).expect("Failed to create AppState");
         // Separate Arc clone so we can force connection state without borrowing app.
         let app_context = app.current_app_context().clone();
         let set_state = |s| app_context.connection_status().set_overall_state(s);
@@ -1899,7 +1899,7 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
 #[cfg(feature = "testing")]
 #[test]
 fn fspv_a_onboarding_auto_start_arms_spv_block() {
-    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    use orchardpay::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -1909,8 +1909,8 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
             .build_ui(|ui| {
                 ProgressOverlay::render_global(ui.ctx(), false);
             });
-        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
-            .expect("Failed to create AppState");
+        let mut app =
+            orchardpay::app::AppState::new(harness.ctx.clone()).expect("Failed to create AppState");
         let app_context = app.current_app_context().clone();
 
         // Fresh boot before onboarding completes: the block is NOT armed (boot
@@ -1953,7 +1953,7 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
 #[cfg(feature = "testing")]
 #[test]
 fn task9_spv_escape_is_keyboard_activatable() {
-    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    use orchardpay::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -1965,8 +1965,8 @@ fn task9_spv_escape_is_keyboard_activatable() {
                 ProgressOverlay::claim_input(ui.ctx());
                 ProgressOverlay::render_global(ui.ctx(), false);
             });
-        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
-            .expect("Failed to create AppState");
+        let mut app =
+            orchardpay::app::AppState::new(harness.ctx.clone()).expect("Failed to create AppState");
         let app_context = app.current_app_context().clone();
         app_context
             .connection_status()
@@ -2014,13 +2014,13 @@ fn task9_spv_escape_is_keyboard_activatable() {
 #[cfg(feature = "testing")]
 #[test]
 fn item_a_armed_episode_blocks_and_paints_same_frame() {
-    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    use orchardpay::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            let mut app = orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false);
             // Arm a user-initiated episode and force Connecting, exactly as the

@@ -1,4 +1,4 @@
-//! det-cli -- Command-line client for Dash Evo Tool's MCP server.
+//! det-cli -- Command-line client for OrchardPay's MCP server.
 //!
 //! Connects to the MCP server, discovers tools dynamically, and calls them.
 //! Mode is selected automatically: HTTP when MCP_API_KEY is set, in-process otherwise.
@@ -23,7 +23,7 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "det-cli",
     version,
-    about = "Command-line interface for Dash Evo Tool",
+    about = "Command-line interface for OrchardPay",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -31,7 +31,7 @@ struct Cli {
     #[arg(short, long)]
     standalone: bool,
 
-    /// Dash Evo Tool GUI address [env: MCP_LISTEN]
+    /// OrchardPay GUI address [env: MCP_LISTEN]
     #[arg(short, long)]
     addr: Option<String>,
 
@@ -77,7 +77,7 @@ fn resolve_addr(addr: Option<String>) -> String {
 
 /// Load the app's .env file. Shell env vars take precedence (dotenvy won't override).
 fn load_app_env() {
-    if let Ok(data_dir) = dash_evo_tool::app_dir::app_user_data_dir_path() {
+    if let Ok(data_dir) = orchardpay::app_dir::app_user_data_dir_path() {
         let env_path = data_dir.join(".env");
         if env_path.exists() {
             let _ = dotenvy::from_path(&env_path);

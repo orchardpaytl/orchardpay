@@ -9,11 +9,6 @@ use crate::framework::harness;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::run_task;
 use crate::framework::token_helpers;
-use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -22,6 +17,11 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use orchardpay::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::PrivateKeyTarget;
+use orchardpay::model::wallet::{Wallet, WalletSeedHash};
 use std::sync::{Arc, RwLock};
 
 // --- SharedIdentity ---
@@ -35,7 +35,7 @@ static SHARED_IDENTITY: tokio::sync::OnceCell<SharedIdentity> = tokio::sync::Onc
 
 /// A single registered identity reused across identity/token/broadcast tests.
 pub struct SharedIdentity {
-    pub qualified_identity: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    pub qualified_identity: orchardpay::model::qualified_identity::QualifiedIdentity,
     pub wallet_arc: Arc<RwLock<Wallet>>,
     pub wallet_seed_hash: WalletSeedHash,
     pub signing_key: IdentityPublicKey,
@@ -181,8 +181,8 @@ static SHARED_DASHPAY_PAIR: tokio::sync::OnceCell<SharedDashPayPair> =
 
 /// Two identities (A, B) with DashPay keys and DPNS names.
 pub struct SharedDashPayPair {
-    pub identity_a: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
-    pub identity_b: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    pub identity_a: orchardpay::model::qualified_identity::QualifiedIdentity,
+    pub identity_b: orchardpay::model::qualified_identity::QualifiedIdentity,
     pub username_a: String,
     pub username_b: String,
     pub signing_key_a: IdentityPublicKey,
@@ -307,7 +307,7 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 /// specifically. MASTER is included as a last resort fallback but Platform
 /// rejects it for most state transitions (tokens, data contracts, etc.).
 pub fn find_authentication_public_key(
-    qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    qi: &orchardpay::model::qualified_identity::QualifiedIdentity,
 ) -> IdentityPublicKey {
     for target_level in [
         SecurityLevel::CRITICAL,
@@ -334,7 +334,7 @@ async fn create_dashpay_member(
 ) -> (
     WalletSeedHash,
     Arc<RwLock<Wallet>>,
-    dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    orchardpay::model::qualified_identity::QualifiedIdentity,
 ) {
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
     let qi = dashpay_helpers::create_dashpay_identity(app_context, &wallet, seed_hash).await;
@@ -344,7 +344,7 @@ async fn create_dashpay_member(
 /// Register a DPNS name for a qualified identity.
 async fn register_dpns_name(
     app_context: &Arc<AppContext>,
-    qi: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    qi: orchardpay::model::qualified_identity::QualifiedIdentity,
     name: String,
     label: &str,
 ) {

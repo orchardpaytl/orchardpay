@@ -1,6 +1,6 @@
-use dash_evo_tool::ui::components::info_popup::InfoPopup;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::components::info_popup::InfoPopup;
 
 fn info_popup(title: impl Into<egui::WidgetText>, message: impl Into<String>) -> InfoPopup {
     InfoPopup::new(egui::Id::new("kittest_info_popup"), title, message)

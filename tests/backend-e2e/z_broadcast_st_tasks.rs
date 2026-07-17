@@ -7,10 +7,6 @@
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
-use dash_evo_tool::backend_task::identity::IdentityTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
-use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -22,6 +18,10 @@ use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
 use dash_sdk::platform::{Fetch, IdentityPublicKey};
+use orchardpay::backend_task::identity::IdentityTask;
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
+use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 
 // --- TC-066 step functions ---
 

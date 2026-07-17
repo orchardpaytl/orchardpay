@@ -5,8 +5,8 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>org.dashcoregroup.DashEvoTool</string>
+    <string>org.orchardpay.OrchardPay</string>
     <key>CFBundleName</key>
-    <string>Dash Evo Tool</string>
+    <string>OrchardPay</string>
 </dict>
 </plist>

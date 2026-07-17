@@ -5,18 +5,18 @@
 //! step-label table or the action-button plumbing fails here without
 //! needing a full `AppState` harness.
 
-use dash_evo_tool::app::{
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use orchardpay::app::{
     MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
     MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
     migration_failed_with_unreadable_identities_text, migration_running_text,
     migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
     migration_unreadable_votes_text,
 };
-use dash_evo_tool::context::migration_status::MigrationStep;
-use dash_evo_tool::ui::MessageType;
-use dash_evo_tool::ui::components::MessageBanner;
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use orchardpay::context::migration_status::MigrationStep;
+use orchardpay::ui::MessageType;
+use orchardpay::ui::components::MessageBanner;
 
 /// TC-MIG-001 — when the migration enters its first step the banner
 /// surfaces an Info-typed banner with the "The app is checking your wallet data."

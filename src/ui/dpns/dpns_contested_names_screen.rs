@@ -1534,7 +1534,7 @@ impl DPNSScreen {
             .iter()
             .any(|o| matches!(o, VoteOption::Scheduled { .. }))
         {
-            ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+            ui.colored_label(Color32::DARK_RED, "NOTE: OrchardPay must remain running and connected for scheduled votes to execute on time.");
             ui.add_space(10.0);
         }
 

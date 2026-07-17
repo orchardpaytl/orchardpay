@@ -7,7 +7,7 @@
 //! the full populated layouts arrive as each tab's content lands (T8–T11).
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::ui::RootScreenType;
+use orchardpay::ui::RootScreenType;
 
 /// IT-ONBOARD-01 / IT-HOME-01 combined smoke: the hub renders without
 /// panicking on the default first-run database (no identities loaded → should
@@ -47,7 +47,7 @@ fn legacy_nav_entries_coexist_with_hub() {
 fn identity_hub_screen_type_creates_hub_screen() {
     // Guard against a future refactor that silently drops the hub case from
     // `ScreenType::create_screen`. If that happens, this test regresses.
-    use dash_evo_tool::ui::ScreenType;
+    use orchardpay::ui::ScreenType;
     // The assert-that-it-compiles-and-matches is enough; the dispatcher
     // expects a Screen with IdentityHub variant.
     let screen_type = ScreenType::IdentityHub;

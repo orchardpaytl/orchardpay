@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Configure Dash Evo Tool for a local dashmate network.
+# Configure OrchardPay for a local dashmate network.
 # Reads ports and credentials from dashmate config, then updates the .env file.
 #
 # Usage: ./configure-local.sh [config_name]
@@ -16,8 +16,8 @@ DASHMATE="${DASHMATE_CMD:-dashmate}"
 
 # Detect .env path
 case "$(uname)" in
-  Darwin) ENV_DIR="$HOME/Library/Application Support/Dash-Evo-Tool" ;;
-  *)      ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/dash-evo-tool" ;;
+  Darwin) ENV_DIR="$HOME/Library/Application Support/OrchardPay" ;;
+  *)      ENV_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/orchardpay" ;;
 esac
 ENV_FILE="$ENV_DIR/.env"
 

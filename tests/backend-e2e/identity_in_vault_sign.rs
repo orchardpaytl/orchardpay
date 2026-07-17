@@ -18,9 +18,6 @@
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::{run_on_large_stack, run_task_with_nonce_retry};
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
-use dash_evo_tool::wallet_backend::IdentityKeyView;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -32,6 +29,9 @@ use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
 use dash_sdk::platform::{Fetch, IdentityPublicKey};
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+use orchardpay::wallet_backend::IdentityKeyView;
 
 /// TS-SIGN-E2E-01.
 #[ignore]
@@ -144,11 +144,11 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     // of possession; the MASTER signer key is the InVault one we just migrated.
     qi.private_keys.insert_non_encrypted(
         (
-            dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            orchardpay::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
             new_ipk.id(),
         ),
         (
-            dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(new_ipk.clone()),
+            orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(new_ipk.clone()),
             new_private_key_bytes,
         ),
     );
@@ -223,12 +223,12 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
 /// path), so the signature it later produces verifies.
 async fn materialize_master_key_as_clear(
     ctx: &crate::framework::harness::BackendTestContext,
-    wallet_seed_hash: &dash_evo_tool::model::wallet::WalletSeedHash,
-    qi: &mut dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    wallet_seed_hash: &orchardpay::model::wallet::WalletSeedHash,
+    qi: &mut orchardpay::model::qualified_identity::QualifiedIdentity,
 ) {
-    use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-    use dash_evo_tool::wallet_backend::SecretScope;
     use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+    use orchardpay::model::qualified_identity::PrivateKeyTarget;
+    use orchardpay::wallet_backend::SecretScope;
 
     let network = ctx.app_context.network();
 
@@ -261,7 +261,7 @@ async fn materialize_master_key_as_clear(
             |plaintext| {
                 let seed = plaintext
                     .expose_hd_seed()
-                    .ok_or(dash_evo_tool::backend_task::error::TaskError::WalletLocked)?;
+                    .ok_or(orchardpay::backend_task::error::TaskError::WalletLocked)?;
                 let xprv = master_path
                     .derive_priv_ecdsa_for_master_seed(seed, network)
                     .expect("derive master private key from seed");

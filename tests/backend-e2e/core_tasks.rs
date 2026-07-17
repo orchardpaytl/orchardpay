@@ -3,9 +3,9 @@
 use crate::framework::fixtures;
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
+use orchardpay::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use orchardpay::backend_task::{BackendTask, BackendTaskSuccessResult};
+use orchardpay::model::wallet::single_key::SingleKeyWallet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -107,7 +107,7 @@ async fn test_tc003_refresh_single_key_wallet_info() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::SingleKeyWalletsUnsupported
+            orchardpay::backend_task::error::TaskError::SingleKeyWalletsUnsupported
         ),
         "Expected SingleKeyWalletsUnsupported, got: {:?}",
         err
@@ -243,7 +243,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::SingleKeyWalletsUnsupported
+            orchardpay::backend_task::error::TaskError::SingleKeyWalletsUnsupported
         ),
         "Expected SingleKeyWalletsUnsupported, got: {:?}",
         err

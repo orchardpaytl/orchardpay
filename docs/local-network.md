@@ -1,6 +1,6 @@
 # Connecting to a Local Network (Development Only)
 
-This document describes how to connect Dash Evo Tool to a local Dash Platform network for development and testing. Local networks are not intended for production use. They run in regtest mode on a single machine using [dashmate](https://github.com/dashpay/platform/tree/master/packages/dashmate) and are useful for rapid iteration without needing testnet or mainnet funds.
+This document describes how to connect OrchardPay to a local Dash Platform network for development and testing. Local networks are not intended for production use. They run in regtest mode on a single machine using [dashmate](https://github.com/dashpay/platform/tree/master/packages/dashmate) and are useful for rapid iteration without needing testnet or mainnet funds.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ This document describes how to connect Dash Evo Tool to a local Dash Platform ne
    dashmate group start
    ```
 
-2. **Dash Evo Tool** built from source (see [Contributing Guide](../CONTRIBUTING.md)).
+2. **OrchardPay** built from source (see [Contributing Guide](../CONTRIBUTING.md)).
 
 ## Configuration
 
@@ -19,9 +19,9 @@ Local network configuration is stored in the application `.env` file using the `
 
 | OS      | Path                                                    |
 |---------|---------------------------------------------------------|
-| Linux   | `~/.config/dash-evo-tool/.env`                          |
-| macOS   | `~/Library/Application Support/Dash-Evo-Tool/.env`      |
-| Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env` |
+| Linux   | `~/.config/orchardpay/.env`                          |
+| macOS   | `~/Library/Application Support/OrchardPay/.env`      |
+| Windows | `C:\Users\<User>\AppData\Roaming\OrchardPay\config\.env` |
 
 ### Required environment variables
 
@@ -77,7 +77,7 @@ dashmate config get core.zmq.port --config=local_seed
 
 ## Connecting in the UI
 
-1. Start Dash Evo Tool. If the `LOCAL_` configuration is valid, the **"Local"** option appears in the network dropdown on the **Network Chooser** screen.
+1. Start OrchardPay. If the `LOCAL_` configuration is valid, the **"Local"** option appears in the network dropdown on the **Network Chooser** screen.
 
 2. Select **Local** from the network dropdown.
 

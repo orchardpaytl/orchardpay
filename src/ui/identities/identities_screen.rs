@@ -810,7 +810,7 @@ impl IdentitiesScreen {
                                                 }
 
                                                 // Remove
-                                                if ui.button("Remove").clickable_tooltip("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
+                                                if ui.button("Remove").clickable_tooltip("Remove this identity from OrchardPay (it'll still exist on Dash Platform)").clicked() {
                                                     let message = format!(
                                                         "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
                                                         qualified_identity.identity_type,

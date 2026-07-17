@@ -348,7 +348,7 @@ pub enum TaskError {
     /// context init surfaces it with its own passphrase-specific message — so
     /// this text is shown only for the remaining (non-passphrase) failures.
     #[error(
-        "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
+        "Your saved keys could not be opened. Make sure no other copy of OrchardPay is running, then open the app again."
     )]
     SecretStore {
         #[source]
@@ -2093,7 +2093,7 @@ pub enum TaskError {
     /// The legacy database is older than the direct storage update supports.
     /// Version diagnostics stay in the typed source and out of the banner text.
     #[error(
-        "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version."
+        "This saved data was created by a much older version of OrchardPay and can't be upgraded directly. Please install OrchardPay 0.9.3 first and open your data with it once, then upgrade to this version."
     )]
     SavedDataTooOld {
         #[source]
@@ -2102,7 +2102,7 @@ pub enum TaskError {
 
     /// The legacy database was written by a newer build than this one.
     #[error(
-        "Your saved data was created by a newer version of Dash Evo Tool. Update to the latest version to open it."
+        "Your saved data was created by a newer version of OrchardPay. Update to the latest version to open it."
     )]
     SavedDataTooNew {
         #[source]
@@ -2125,7 +2125,7 @@ pub enum TaskError {
     /// A standalone process found password-protected data whose storage update
     /// requires the desktop application's interactive password prompt.
     #[error(
-        "Open the Dash Evo Tool desktop app once to finish the storage update, then try again."
+        "Open the OrchardPay desktop app once to finish the storage update, then try again."
     )]
     StorageUpdateNeedsDesktop {
         #[source]
@@ -2248,7 +2248,7 @@ pub enum TaskError {
     /// passphrase, so the operation cannot proceed here. Fieldless: this
     /// carries no upstream diagnostic and, by design, never any secret.
     #[error(
-        "This wallet is protected by a passphrase, which can only be entered in the app window. Open Dash Evo Tool and run this action there."
+        "This wallet is protected by a passphrase, which can only be entered in the app window. Open OrchardPay and run this action there."
     )]
     SecretPromptUnavailable,
 }

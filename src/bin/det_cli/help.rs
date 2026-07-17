@@ -70,7 +70,7 @@ pub(super) fn print_tool_help(mcp_name: &str) -> bool {
 /// When `tools` is `Some`, uses the provided list (live from server).
 /// When `None`, falls back to the disk cache.
 pub(super) fn print_help(tools: Option<&[Tool]>) {
-    println!("det-cli -- Command-line interface for Dash Evo Tool (v{PKG_VERSION})");
+    println!("det-cli -- Command-line interface for OrchardPay (v{PKG_VERSION})");
     println!();
     println!("Usage: det-cli [command] [key=value ...]");
 
@@ -135,7 +135,7 @@ pub(super) fn print_help(tools: Option<&[Tool]>) {
     );
     help_line(
         "-a, --addr <url>",
-        "Dash Evo Tool GUI address [env: MCP_LISTEN]",
+        "OrchardPay GUI address [env: MCP_LISTEN]",
     );
     help_line(
         "-b, --bearer <key>",
@@ -145,7 +145,7 @@ pub(super) fn print_help(tools: Option<&[Tool]>) {
     help_line("-V, --version", "Print version");
     println!();
     println!("By default, det-cli runs standalone using the last network from the GUI.");
-    println!("Set MCP_API_KEY to connect to a running Dash Evo Tool instance.");
+    println!("Set MCP_API_KEY to connect to a running OrchardPay instance.");
     println!("See docs/CLI.md for details.");
 }
 

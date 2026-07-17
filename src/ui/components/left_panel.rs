@@ -23,6 +23,13 @@ use std::sync::Arc;
 /// direct screen construction). The Identities hub
 /// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
 /// `Identities` entry.
+///
+/// ORCHARDPAY-TODO(dashpay-legacy): the hidden `Dashpay` entry above is
+/// superseded by OrchardPay's ZK-based contact model (see
+/// docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
+/// This is also the eventual insertion point for OrchardPay's own nav entry
+/// (`RootScreenType::RootScreenOrchardPay`, Milestone D of the OrchardPay
+/// plan) once contact establishment + messaging land.
 fn nav_button_specs() -> &'static [(
     &'static str,
     RootScreenType,

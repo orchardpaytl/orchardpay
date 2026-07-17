@@ -1,6 +1,6 @@
 # User Stories
 
-This document catalogs user stories for Dash Evo Tool, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
+This document catalogs user stories for OrchardPay, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
 
 See [docs/personas/](personas/) for full persona descriptions.
 
@@ -1244,10 +1244,10 @@ As a developer, I want to fund multiple addresses in one operation so that I can
 - Specify N addresses and amount per address.
 - Single action distributes funds.
 
-### NET-015: Use Dash Evo Tool without a local Dash Core node [Implemented]
+### NET-015: Use OrchardPay without a local Dash Core node [Implemented]
 **Persona:** Alex (Everyday User)
 
-As an everyday user, I want to install and use Dash Evo Tool without having to run or configure a local Dash Core node.
+As an everyday user, I want to install and use OrchardPay without having to run or configure a local Dash Core node.
 
 - Fresh install connects to the Dash network via the built-in SPV light client with zero configuration.
 - The user sees sync progress and status clearly; the default everyday-user UI avoids mentions of SPV, RPC, or nodes.

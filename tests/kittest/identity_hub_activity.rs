@@ -18,9 +18,9 @@
 //! the test scoped to the Activity tab's own contract.
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use dash_evo_tool::ui::identity::activity;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::ui::identity::activity;
 
 /// IT-ACTIVITY-01
 #[test]

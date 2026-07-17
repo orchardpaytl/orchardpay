@@ -1,4 +1,4 @@
-//! Backend E2E tests for Dash Evo Tool.
+//! Backend E2E tests for OrchardPay.
 //!
 //! These tests exercise backend task flows directly (no GUI) against a live
 //! network. They are marked `#[ignore]` and must be run explicitly:

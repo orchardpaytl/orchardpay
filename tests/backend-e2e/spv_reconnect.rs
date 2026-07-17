@@ -28,14 +28,14 @@
 //! ```
 
 use crate::framework::wait;
-use dash_evo_tool::app::TaskResult;
-use dash_evo_tool::app_dir::ensure_env_file;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::context::connection_status::ConnectionStatus;
-use dash_evo_tool::database::test_helpers::create_database_at_path;
-use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
-use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
+use orchardpay::app::TaskResult;
+use orchardpay::app_dir::ensure_env_file;
+use orchardpay::context::AppContext;
+use orchardpay::context::connection_status::ConnectionStatus;
+use orchardpay::database::test_helpers::create_database_at_path;
+use orchardpay::utils::egui_mpsc::EguiMpscAsync;
+use orchardpay::utils::tasks::TaskManager;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,7 +75,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
             egui_ctx.clone(),
             app_kv,
             secret_store,
-            dash_evo_tool::model::user_role::UserRoleCell::default(),
+            orchardpay::model::user_role::UserRoleCell::default(),
         )
         .expect("create isolated AppContext"),
     );

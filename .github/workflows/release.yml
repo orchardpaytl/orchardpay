@@ -1,4 +1,4 @@
-name: Release Dash Evo Tool
+name: Release OrchardPay
 
 on:
   push:
@@ -47,7 +47,7 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build and Release Dash Evo Tool
+    name: Build and Release OrchardPay
     strategy:
       matrix:
         include:
@@ -121,7 +121,7 @@ jobs:
 
       - name: Setup prerequisites
         run: |
-          mkdir -p dash-evo-tool/
+          mkdir -p orchardpay/
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -155,14 +155,14 @@ jobs:
       - name: Build GUI
         run: |
           cargo build --release --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+          mv target/${{ matrix.target }}/release/orchardpay${{ matrix.ext }} orchardpay/orchardpay${{ matrix.ext }}
         env:
           OPENSSL_STATIC: "1"
 
       - name: Build CLI (det-cli)
         run: |
           cargo build --release --features headless --bin det-cli --target ${{ matrix.target }}
-          mv target/${{ matrix.target }}/release/det-cli${{ matrix.ext }} dash-evo-tool/det-cli${{ matrix.ext }}
+          mv target/${{ matrix.target }}/release/det-cli${{ matrix.ext }} orchardpay/det-cli${{ matrix.ext }}
         env:
           OPENSSL_STATIC: "1"
 
@@ -170,7 +170,7 @@ jobs:
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
         run: |
           echo "Checking DLL imports..."
-          IMPORTS=$(x86_64-w64-mingw32-objdump -p dash-evo-tool/dash-evo-tool.exe | grep "DLL Name:" | sort -u)
+          IMPORTS=$(x86_64-w64-mingw32-objdump -p orchardpay/orchardpay.exe | grep "DLL Name:" | sort -u)
           echo "$IMPORTS"
           # Fail if any null DLL imports (broken import table)
           if echo "$IMPORTS" | grep -q "(null)"; then
@@ -190,7 +190,7 @@ jobs:
         if: ${{ contains(matrix.target, 'linux') }}
         run: |
           echo "Checking shared library dependencies..."
-          DEPS=$(ldd dash-evo-tool/dash-evo-tool)
+          DEPS=$(ldd orchardpay/orchardpay)
           echo "$DEPS"
           # Allowlist: only standard system libraries should appear
           UNEXPECTED=$(echo "$DEPS" | grep "=>" | grep -v "not found" | awk '{print $1}' | grep -Ev "^(linux-vdso|libm|libc|libdl|librt|libpthread|libgcc_s|libstdc\+\+|ld-linux|libz|libssl|libcrypto)\.so" || true)
@@ -208,18 +208,18 @@ jobs:
 
       - name: Package release
         run: |
-          zip -r dash-evo-tool-${{ matrix.platform }}.zip dash-evo-tool/
+          zip -r orchardpay-${{ matrix.platform }}.zip orchardpay/
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: "dash-evo-tool-${{ matrix.platform }}.zip"
+          subject-path: "orchardpay-${{ matrix.platform }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-${{ matrix.platform }}.zip
-          path: dash-evo-tool-${{ matrix.platform }}.zip
+          name: orchardpay-${{ matrix.platform }}.zip
+          path: orchardpay-${{ matrix.platform }}.zip
           retention-days: 14
 
   build-macos-arm64:
@@ -276,7 +276,7 @@ jobs:
       - name: Extract version from Cargo.toml
         id: version
         run: |
-          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "orchardpay") | .version')
           if [ -z "$VERSION" ]; then
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1
@@ -322,8 +322,8 @@ jobs:
         run: |
           cargo build --release --target aarch64-apple-darwin
           mkdir -p build
-          cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
-          chmod +x build/dash-evo-tool
+          cp target/aarch64-apple-darwin/release/orchardpay build/orchardpay
+          chmod +x build/orchardpay
 
       - name: Build CLI (det-cli)
         run: |
@@ -340,16 +340,16 @@ jobs:
           rm -rf target/debug
 
           # Remove the actual binary from target since we copied it
-          rm -f target/aarch64-apple-darwin/release/dash-evo-tool
+          rm -f target/aarch64-apple-darwin/release/orchardpay
           rm -f target/aarch64-apple-darwin/release/det-cli
 
           # Create app bundle structure
-          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
-          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+          mkdir -p "build/OrchardPay.app/Contents/MacOS"
+          mkdir -p "build/OrchardPay.app/Contents/Resources"
 
           # Move binary into app bundle
-          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
-          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
+          cp build/orchardpay "build/OrchardPay.app/Contents/MacOS/orchardpay"
+          cp build/det-cli "build/OrchardPay.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
@@ -366,24 +366,24 @@ jobs:
           sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
           sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
           iconutil -c icns AppIcon.iconset
-          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+          cp AppIcon.icns "build/OrchardPay.app/Contents/Resources/AppIcon.icns"
 
           # Create Info.plist
-          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          cat > "build/OrchardPay.app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key>
-            <string>dash-evo-tool</string>
+            <string>orchardpay</string>
             <key>CFBundleIconFile</key>
             <string>AppIcon</string>
             <key>CFBundleIdentifier</key>
             <string>org.dash.evo-tool</string>
             <key>CFBundleName</key>
-            <string>Dash Evo Tool</string>
+            <string>OrchardPay</string>
             <key>CFBundleDisplayName</key>
-            <string>Dash Evo Tool</string>
+            <string>OrchardPay</string>
             <key>CFBundleVersion</key>
             <string>${{ steps.version.outputs.build_number }}</string>
             <key>CFBundleShortVersionString</key>
@@ -406,7 +406,7 @@ jobs:
       - name: Verify macOS binary dependencies
         run: |
           echo "Checking dynamic library dependencies..."
-          DEPS=$(otool -L build/dash-evo-tool)
+          DEPS=$(otool -L build/orchardpay)
           echo "$DEPS"
           # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
           UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
@@ -457,10 +457,10 @@ jobs:
           codesign --force --deep --options runtime --timestamp \
             --sign "${{ steps.signid.outputs.IDENTITY }}" \
             --entitlements entitlements.plist \
-            "build/Dash Evo Tool.app"
+            "build/OrchardPay.app"
 
           # Verify the signature
-          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+          codesign --verify --deep --strict --verbose=2 "build/OrchardPay.app"
 
       - name: Free up disk space before DMG creation
         run: |
@@ -505,36 +505,36 @@ jobs:
       - name: Create DMG
         run: |
           # Get app size for sparse image
-          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          APP_SIZE=$(du -sm "build/OrchardPay.app" | cut -f1)
           DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
 
           # Create a sparse image instead of using srcfolder
           # Sparse images only use disk space as needed
-          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "OrchardPay" temp.sparseimage
 
           # Mount the sparse image
-          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"OrchardPay"
 
           # Copy app to mounted volume
-          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
-          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+          cp -r "build/OrchardPay.app" /Volumes/"OrchardPay"/
+          ln -s /Applications /Volumes/"OrchardPay"/Applications
 
           # Remove macOS metadata directories that get created automatically
-          rm -rf /Volumes/"Dash Evo Tool"/.fseventsd
-          rm -rf /Volumes/"Dash Evo Tool"/.Spotlight-V100
-          rm -f /Volumes/"Dash Evo Tool"/.DS_Store
+          rm -rf /Volumes/"OrchardPay"/.fseventsd
+          rm -rf /Volumes/"OrchardPay"/.Spotlight-V100
+          rm -f /Volumes/"OrchardPay"/.DS_Store
 
           # Unmount
-          hdiutil detach /Volumes/"Dash Evo Tool"
+          hdiutil detach /Volumes/"OrchardPay"
 
           # Convert sparse image to compressed DMG
-          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-arm64.dmg
+          hdiutil convert temp.sparseimage -format UDZO -o orchardpay-macos-arm64.dmg
 
           # Clean up sparse image
           rm -f temp.sparseimage
 
           # Sign the DMG
-          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-arm64.dmg
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" orchardpay-macos-arm64.dmg
 
       - name: Validate Apple credentials
         run: |
@@ -555,25 +555,25 @@ jobs:
       - name: Notarize DMG
         run: |
           echo "Submitting DMG for notarization..."
-          xcrun notarytool submit dash-evo-tool-macos-arm64.dmg \
+          xcrun notarytool submit orchardpay-macos-arm64.dmg \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
             --wait --verbose
 
           echo "Stapling notarization ticket..."
-          xcrun stapler staple dash-evo-tool-macos-arm64.dmg
+          xcrun stapler staple orchardpay-macos-arm64.dmg
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: "dash-evo-tool-macos-arm64.dmg"
+          subject-path: "orchardpay-macos-arm64.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-macos-arm64.dmg
-          path: dash-evo-tool-macos-arm64.dmg
+          name: orchardpay-macos-arm64.dmg
+          path: orchardpay-macos-arm64.dmg
           retention-days: 14
 
   build-macos-x86:
@@ -630,7 +630,7 @@ jobs:
       - name: Extract version from Cargo.toml
         id: version
         run: |
-          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "orchardpay") | .version')
           if [ -z "$VERSION" ]; then
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1
@@ -676,8 +676,8 @@ jobs:
         run: |
           cargo build --release --features cli --target x86_64-apple-darwin
           mkdir -p build
-          cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
-          chmod +x build/dash-evo-tool
+          cp target/x86_64-apple-darwin/release/orchardpay build/orchardpay
+          chmod +x build/orchardpay
           cp target/x86_64-apple-darwin/release/det-cli build/det-cli
           chmod +x build/det-cli
 
@@ -690,16 +690,16 @@ jobs:
           rm -rf target/debug
 
           # Remove the actual binary from target since we copied it
-          rm -f target/x86_64-apple-darwin/release/dash-evo-tool
+          rm -f target/x86_64-apple-darwin/release/orchardpay
           rm -f target/x86_64-apple-darwin/release/det-cli
 
           # Create app bundle structure
-          mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
-          mkdir -p "build/Dash Evo Tool.app/Contents/Resources"
+          mkdir -p "build/OrchardPay.app/Contents/MacOS"
+          mkdir -p "build/OrchardPay.app/Contents/Resources"
 
           # Move binary into app bundle
-          cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
-          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
+          cp build/orchardpay "build/OrchardPay.app/Contents/MacOS/orchardpay"
+          cp build/det-cli "build/OrchardPay.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
@@ -716,24 +716,24 @@ jobs:
           sips -z 512 512   assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512.png
           sips -z 1024 1024 assets/DET_LOGO.png --out AppIcon.iconset/icon_512x512@2x.png
           iconutil -c icns AppIcon.iconset
-          cp AppIcon.icns "build/Dash Evo Tool.app/Contents/Resources/AppIcon.icns"
+          cp AppIcon.icns "build/OrchardPay.app/Contents/Resources/AppIcon.icns"
 
           # Create Info.plist
-          cat > "build/Dash Evo Tool.app/Contents/Info.plist" <<EOF
+          cat > "build/OrchardPay.app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>CFBundleExecutable</key>
-            <string>dash-evo-tool</string>
+            <string>orchardpay</string>
             <key>CFBundleIconFile</key>
             <string>AppIcon</string>
             <key>CFBundleIdentifier</key>
             <string>org.dash.evo-tool</string>
             <key>CFBundleName</key>
-            <string>Dash Evo Tool</string>
+            <string>OrchardPay</string>
             <key>CFBundleDisplayName</key>
-            <string>Dash Evo Tool</string>
+            <string>OrchardPay</string>
             <key>CFBundleVersion</key>
             <string>${{ steps.version.outputs.build_number }}</string>
             <key>CFBundleShortVersionString</key>
@@ -756,7 +756,7 @@ jobs:
       - name: Verify macOS binary dependencies
         run: |
           echo "Checking dynamic library dependencies..."
-          DEPS=$(otool -L build/dash-evo-tool)
+          DEPS=$(otool -L build/orchardpay)
           echo "$DEPS"
           # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
           UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
@@ -807,10 +807,10 @@ jobs:
           codesign --force --deep --options runtime --timestamp \
             --sign "${{ steps.signid.outputs.IDENTITY }}" \
             --entitlements entitlements.plist \
-            "build/Dash Evo Tool.app"
+            "build/OrchardPay.app"
 
           # Verify the signature
-          codesign --verify --deep --strict --verbose=2 "build/Dash Evo Tool.app"
+          codesign --verify --deep --strict --verbose=2 "build/OrchardPay.app"
 
       - name: Free up disk space before DMG creation
         run: |
@@ -855,31 +855,31 @@ jobs:
       - name: Create DMG
         run: |
           # Get app size for sparse image
-          APP_SIZE=$(du -sm "build/Dash Evo Tool.app" | cut -f1)
+          APP_SIZE=$(du -sm "build/OrchardPay.app" | cut -f1)
           DMG_SIZE=$((APP_SIZE + 50))  # Add 50MB padding
 
           # Create a sparse image instead of using srcfolder
           # Sparse images only use disk space as needed
-          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "Dash Evo Tool" temp.sparseimage
+          hdiutil create -size ${DMG_SIZE}m -type SPARSE -fs HFS+ -volname "OrchardPay" temp.sparseimage
 
           # Mount the sparse image
-          hdiutil mount temp.sparseimage -mountpoint /Volumes/"Dash Evo Tool"
+          hdiutil mount temp.sparseimage -mountpoint /Volumes/"OrchardPay"
 
           # Copy app to mounted volume
-          cp -r "build/Dash Evo Tool.app" /Volumes/"Dash Evo Tool"/
-          ln -s /Applications /Volumes/"Dash Evo Tool"/Applications
+          cp -r "build/OrchardPay.app" /Volumes/"OrchardPay"/
+          ln -s /Applications /Volumes/"OrchardPay"/Applications
 
           # Unmount
-          hdiutil detach /Volumes/"Dash Evo Tool"
+          hdiutil detach /Volumes/"OrchardPay"
 
           # Convert sparse image to compressed DMG
-          hdiutil convert temp.sparseimage -format UDZO -o dash-evo-tool-macos-x86_64.dmg
+          hdiutil convert temp.sparseimage -format UDZO -o orchardpay-macos-x86_64.dmg
 
           # Clean up sparse image
           rm -f temp.sparseimage
 
           # Sign the DMG
-          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" dash-evo-tool-macos-x86_64.dmg
+          codesign --force --sign "${{ steps.signid.outputs.IDENTITY }}" orchardpay-macos-x86_64.dmg
 
       - name: Validate Apple credentials
         run: |
@@ -900,25 +900,25 @@ jobs:
       - name: Notarize DMG
         run: |
           echo "Submitting DMG for notarization..."
-          xcrun notarytool submit dash-evo-tool-macos-x86_64.dmg \
+          xcrun notarytool submit orchardpay-macos-x86_64.dmg \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
             --wait --verbose
 
           echo "Stapling notarization ticket..."
-          xcrun stapler staple dash-evo-tool-macos-x86_64.dmg
+          xcrun stapler staple orchardpay-macos-x86_64.dmg
 
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: "dash-evo-tool-macos-x86_64.dmg"
+          subject-path: "orchardpay-macos-x86_64.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dash-evo-tool-macos-x86_64.dmg
-          path: dash-evo-tool-macos-x86_64.dmg
+          name: orchardpay-macos-x86_64.dmg
+          path: orchardpay-macos-x86_64.dmg
           retention-days: 14
 
   release:
@@ -929,23 +929,23 @@ jobs:
       - name: Download Linux AMD64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-linux-x86_64.zip
+          name: orchardpay-linux-x86_64.zip
       - name: Download Linux Arm64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-linux-arm64.zip
+          name: orchardpay-linux-arm64.zip
       - name: Download macOS ARM64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-macos-arm64.dmg
+          name: orchardpay-macos-arm64.dmg
       - name: Download macOS x86_64 Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-macos-x86_64.dmg
+          name: orchardpay-macos-x86_64.dmg
       - name: Download Windows Artifact
         uses: actions/download-artifact@v4
         with:
-          name: dash-evo-tool-windows.zip
+          name: orchardpay-windows.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v1
@@ -955,10 +955,10 @@ jobs:
         with:
           tag_name: ${{ inputs.tag }}
           files: |
-            ./dash-evo-tool-linux-x86_64.zip
-            ./dash-evo-tool-linux-arm64.zip
-            ./dash-evo-tool-macos-arm64.dmg
-            ./dash-evo-tool-macos-x86_64.dmg
-            ./dash-evo-tool-windows.zip
+            ./orchardpay-linux-x86_64.zip
+            ./orchardpay-linux-arm64.zip
+            ./orchardpay-macos-arm64.dmg
+            ./orchardpay-macos-x86_64.dmg
+            ./orchardpay-windows.zip
           draft: ${{ inputs.draft || false }}
           prerelease: true

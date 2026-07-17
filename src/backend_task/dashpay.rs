@@ -1,3 +1,7 @@
+//! LEGACY: superseded by OrchardPay's ZK-based contact model (see
+//! docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
+//! Kept in place, fully functional, until OrchardPay reaches parity.
+
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;

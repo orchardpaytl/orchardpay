@@ -1,8 +1,8 @@
 //! Polling helpers for waiting on async state changes.
 
-use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use orchardpay::backend_task::error::TaskError;
+use orchardpay::context::AppContext;
+use orchardpay::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -163,7 +163,7 @@ pub async fn wait_for_spv_running(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    use dash_evo_tool::model::spv_status::SpvStatus;
+    use orchardpay::model::spv_status::SpvStatus;
     timeout(wait_timeout, async {
         loop {
             if app_context.connection_status().spv_status() == SpvStatus::Running {
@@ -196,7 +196,7 @@ pub async fn wait_for_spv_peers(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    use dash_evo_tool::model::spv_status::SpvStatus;
+    use orchardpay::model::spv_status::SpvStatus;
     let cs = app_context.connection_status();
     timeout(wait_timeout, async {
         loop {

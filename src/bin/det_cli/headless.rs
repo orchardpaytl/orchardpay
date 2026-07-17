@@ -8,9 +8,9 @@
 /// shutting-down timer wheel.  See `DashMcpService::shutdown_wallet_backend`
 /// for the race analysis.
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
-    use dash_evo_tool::logging::initialize_logger;
-    use dash_evo_tool::mcp::server::init_app_context;
-    use dash_evo_tool::mcp::{McpConfig, start_http_server};
+    use orchardpay::logging::initialize_logger;
+    use orchardpay::mcp::server::init_app_context;
+    use orchardpay::mcp::{McpConfig, start_http_server};
 
     // Require MCP_API_KEY -- headless without auth is not allowed.
     let config = McpConfig::from_env()
@@ -18,9 +18,9 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
 
     initialize_logger();
     tracing::info!(
-        version = dash_evo_tool::VERSION,
+        version = orchardpay::VERSION,
         listen = %config.listen_addr,
-        "Starting headless Dash Evo Tool (HTTP MCP server)"
+        "Starting headless OrchardPay (HTTP MCP server)"
     );
 
     let runtime = tokio::runtime::Builder::new_multi_thread()

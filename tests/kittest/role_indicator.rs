@@ -3,9 +3,9 @@
 //! Settings is reflected live in the bottom-left corner.
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::RootScreenType;
 
 /// Regression: the bottom-left indicator must read the live shared role and
 /// change when the role changes. Below Power it is absent; at Power it reads

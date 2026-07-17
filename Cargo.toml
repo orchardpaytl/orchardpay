@@ -1,9 +1,9 @@
 [package]
-name = "dash-evo-tool"
+name = "orchardpay"
 version = "1.0.0-dev"
 license = "MIT"
 edition = "2024"
-default-run = "dash-evo-tool"
+default-run = "orchardpay"
 rust-version = "1.92"
 
 [dependencies]

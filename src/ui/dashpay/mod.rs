@@ -1,3 +1,7 @@
+//! LEGACY: superseded by OrchardPay's ZK-based contact model (see
+//! docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
+//! Kept in place, fully functional, until OrchardPay reaches parity.
+
 pub mod add_contact_screen;
 pub mod contact_details;
 pub mod contact_profile_viewer;

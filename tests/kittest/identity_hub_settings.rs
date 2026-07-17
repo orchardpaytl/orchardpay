@@ -25,8 +25,8 @@
 //!    the default selection and that clicking it does not crash the hub.
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::ui::RootScreenType;
-use dash_evo_tool::ui::identity::IdentityHubTab;
+use orchardpay::ui::RootScreenType;
+use orchardpay::ui::identity::IdentityHubTab;
 
 /// IT-SETTINGS-01 (adapted) — mounting the hub with `Settings` pre-selected
 /// must not panic, regardless of whether the harness starts on the Onboarding

@@ -23,17 +23,6 @@
 //!   widget renders another" gap the original bug lived in.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
-use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use dash_evo_tool::model::qualified_identity::{
-    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
-};
-use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::components::MessageBanner;
-use dash_evo_tool::ui::helpers::format_key_label;
-use dash_evo_tool::ui::identities::withdraw_screen::WithdrawalScreen;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
@@ -43,6 +32,17 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use orchardpay::model::qualified_identity::{
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
+use orchardpay::model::user_role::UserRole;
+use orchardpay::ui::ScreenLike;
+use orchardpay::ui::components::MessageBanner;
+use orchardpay::ui::helpers::format_key_label;
+use orchardpay::ui::identities::withdraw_screen::WithdrawalScreen;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -136,7 +136,7 @@ fn fresh_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let guard = rt.enter();
     let mut bootstrap = Harness::builder().with_max_steps(20).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        orchardpay::app::AppState::new(ctx.egui_ctx.clone())
             .expect("AppState builds")
             .with_animations(false)
     });

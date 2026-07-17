@@ -9,18 +9,18 @@
 //! actually paints the popup — exercising the real pill layout/paint path and
 //! guarding against panics there.
 
-use dash_evo_tool::model::address::AddressKind;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::ui::components::Component;
-use dash_evo_tool::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::address::AddressKind;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::model::wallet::Wallet;
+use orchardpay::ui::components::Component;
+use orchardpay::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;

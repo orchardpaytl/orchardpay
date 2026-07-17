@@ -1,6 +1,6 @@
 # det-cli
 
-`det-cli` is the command-line interface for Dash Evo Tool. Run wallet and platform commands from the terminal — no GUI needed.
+`det-cli` is the command-line interface for OrchardPay. Run wallet and platform commands from the terminal — no GUI needed.
 
 ## Build
 
@@ -40,9 +40,9 @@ Config precedence (highest to lowest):
 When no `MCP_API_KEY` is set, `det-cli` runs its own backend in-process. No running GUI app or server required.
 Saved wallets are hydrated from the shared data directory on demand, so one-shot commands can see wallets imported by earlier `det-cli` or GUI runs.
 
-### Connected to Dash Evo Tool GUI
+### Connected to OrchardPay GUI
 
-Set `MCP_API_KEY` (in `.env` or shell) to connect to a running Dash Evo Tool instance instead. This shares the app's live state — wallets, network, database.
+Set `MCP_API_KEY` (in `.env` or shell) to connect to a running OrchardPay instance instead. This shares the app's live state — wallets, network, database.
 
 The GUI address defaults to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 

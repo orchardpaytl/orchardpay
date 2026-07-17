@@ -17,15 +17,15 @@
 //! additionally require; that is still out of reach here (see the QA report).
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::RootScreenType;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::kittest::Queryable;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::RootScreenType;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

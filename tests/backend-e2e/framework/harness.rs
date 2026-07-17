@@ -16,18 +16,18 @@ use crate::framework::funding;
 use crate::framework::task_runner::run_task;
 use crate::framework::wait;
 use bip39::{Language, Mnemonic};
-use dash_evo_tool::app::TaskResult;
-use dash_evo_tool::app_dir::ensure_env_file;
-use dash_evo_tool::backend_task::BackendTask;
-use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::context::connection_status::ConnectionStatus;
-use dash_evo_tool::database::test_helpers::create_database_at_path;
-use dash_evo_tool::model::wallet::WalletSeedHash;
-use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
-use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
+use orchardpay::app::TaskResult;
+use orchardpay::app_dir::ensure_env_file;
+use orchardpay::backend_task::BackendTask;
+use orchardpay::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use orchardpay::backend_task::error::TaskError;
+use orchardpay::context::AppContext;
+use orchardpay::context::connection_status::ConnectionStatus;
+use orchardpay::database::test_helpers::create_database_at_path;
+use orchardpay::model::wallet::WalletSeedHash;
+use orchardpay::utils::egui_mpsc::EguiMpscAsync;
+use orchardpay::utils::tasks::TaskManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -82,9 +82,8 @@ static SPV_CANCEL: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>
 /// fails at `start()` with "Data directory locked". Before constructing a
 /// new backend, a retry calls `shutdown()` on the leaked predecessor stored
 /// here to release the lock.
-static LEAKED_BACKEND: tokio::sync::Mutex<
-    Option<Arc<dash_evo_tool::wallet_backend::WalletBackend>>,
-> = tokio::sync::Mutex::const_new(None);
+static LEAKED_BACKEND: tokio::sync::Mutex<Option<Arc<orchardpay::wallet_backend::WalletBackend>>> =
+    tokio::sync::Mutex::const_new(None);
 
 /// Number of distinct workdir slots `pick_available_workdir` cycles through.
 /// The scan wraps modulo this value, so the preferred floor can climb without
@@ -145,13 +144,13 @@ fn is_transient_registration_error(error: &TaskError) -> bool {
 /// as-is so callers can treat it as the idempotent success it is.
 async fn register_wallet_with_retry(
     app_context: &Arc<AppContext>,
-    wallet: dash_evo_tool::model::wallet::Wallet,
+    wallet: orchardpay::model::wallet::Wallet,
     seed: &[u8; 64],
-    origin: dash_evo_tool::model::wallet::birth_height::WalletOrigin,
+    origin: orchardpay::model::wallet::birth_height::WalletOrigin,
 ) -> Result<
     (
         WalletSeedHash,
-        Arc<std::sync::RwLock<dash_evo_tool::model::wallet::Wallet>>,
+        Arc<std::sync::RwLock<orchardpay::model::wallet::Wallet>>,
     ),
     TaskError,
 > {
@@ -262,7 +261,7 @@ impl BackendTestContext {
             egui_ctx,
             app_kv,
             secret_store,
-            dash_evo_tool::model::user_role::UserRoleCell::default(),
+            orchardpay::model::user_role::UserRoleCell::default(),
         )
         .expect("Failed to create AppContext for testnet");
 
@@ -282,7 +281,7 @@ impl BackendTestContext {
             .expect("Invalid E2E_WALLET_MNEMONIC");
         let seed = mnemonic.to_seed("");
         let framework_wallet_hash = {
-            let tmp_wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            let tmp_wallet = orchardpay::model::wallet::Wallet::new_from_seed(
                 seed,
                 Network::Testnet,
                 None,
@@ -335,7 +334,7 @@ impl BackendTestContext {
         // from the persister at `WalletBackend::new` time and the upstream
         // manager monitors its addresses from the first sync.
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+        let wallet = orchardpay::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
             Some("E2E Framework Wallet".to_string()),
@@ -346,7 +345,7 @@ impl BackendTestContext {
             &app_context,
             wallet,
             &seed,
-            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+            orchardpay::model::wallet::birth_height::WalletOrigin::Imported,
         )
         .await
         {
@@ -523,7 +522,7 @@ impl BackendTestContext {
         amount_duffs: u64,
     ) -> (
         WalletSeedHash,
-        Arc<std::sync::RwLock<dash_evo_tool::model::wallet::Wallet>>,
+        Arc<std::sync::RwLock<orchardpay::model::wallet::Wallet>>,
     ) {
         let app_context = &self.app_context;
 
@@ -532,7 +531,7 @@ impl BackendTestContext {
             Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation failed");
         let seed = mnemonic.to_seed("");
 
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+        let wallet = orchardpay::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
             Some("E2E Test Wallet".to_string()),
@@ -544,7 +543,7 @@ impl BackendTestContext {
             app_context,
             wallet,
             &seed,
-            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+            orchardpay::model::wallet::birth_height::WalletOrigin::Imported,
         )
         .await
         .expect("Failed to register test wallet");

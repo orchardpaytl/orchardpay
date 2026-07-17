@@ -7,26 +7,26 @@
 //! `ScreenLike` default (always `false`), so the classification never ran.
 
 use crate::support::with_isolated_data_dir;
-use dash_evo_tool::backend_task::dashpay::errors::DashPayError;
-use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::ScreenLike;
-use dash_evo_tool::ui::dashpay::add_contact_screen::AddContactScreen;
-use dash_evo_tool::ui::dashpay::contact_requests::ContactRequests;
-use dash_evo_tool::ui::dashpay::contacts_list::ContactsList;
-use dash_evo_tool::ui::dashpay::profile_screen::ProfileScreen;
-use dash_evo_tool::ui::dashpay::profile_search::ProfileSearchScreen;
-use dash_evo_tool::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
-use dash_evo_tool::ui::dashpay::qr_scanner::QRScannerScreen;
-use dash_evo_tool::ui::dashpay::send_payment::PaymentHistory;
-use dash_evo_tool::ui::dashpay::{DashPayScreen, DashPaySubscreen};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use orchardpay::backend_task::dashpay::errors::DashPayError;
+use orchardpay::backend_task::error::TaskError;
+use orchardpay::context::AppContext;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::ScreenLike;
+use orchardpay::ui::dashpay::add_contact_screen::AddContactScreen;
+use orchardpay::ui::dashpay::contact_requests::ContactRequests;
+use orchardpay::ui::dashpay::contacts_list::ContactsList;
+use orchardpay::ui::dashpay::profile_screen::ProfileScreen;
+use orchardpay::ui::dashpay::profile_search::ProfileSearchScreen;
+use orchardpay::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
+use orchardpay::ui::dashpay::qr_scanner::QRScannerScreen;
+use orchardpay::ui::dashpay::send_payment::PaymentHistory;
+use orchardpay::ui::dashpay::{DashPayScreen, DashPaySubscreen};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -41,7 +41,7 @@ fn missing_encryption_key_error_routes_to_embedded_contact_requests() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("create AppState")
                 .with_animations(false)
         });
@@ -97,12 +97,9 @@ fn seed_dp_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Ide
 }
 
 /// Build a harness and return the live context (wallet backend wired).
-fn build_ctx() -> (
-    Harness<'static, dash_evo_tool::app::AppState>,
-    Arc<AppContext>,
-) {
+fn build_ctx() -> (Harness<'static, orchardpay::app::AppState>, Arc<AppContext>) {
     let mut h = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        orchardpay::app::AppState::new(ctx.egui_ctx.clone())
             .expect("AppState builds")
             .with_animations(false)
     });
@@ -417,7 +414,7 @@ fn profile_subscreen_does_not_claim_dashpay_errors() {
         let _guard = rt.enter();
 
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            orchardpay::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("create AppState")
                 .with_animations(false)
         });

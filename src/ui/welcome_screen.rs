@@ -52,7 +52,7 @@ impl WelcomeScreen {
 
                         // Title
                         ui.label(
-                            RichText::new("Welcome to Dash Evo Tool")
+                            RichText::new("Welcome to OrchardPay")
                                 .size(28.0)
                                 .strong()
                                 .color(DashColors::text_primary(dark_mode)),

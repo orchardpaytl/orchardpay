@@ -345,7 +345,7 @@ pub async fn send_contact_request_with_proof(
         .ok_or_else(|| {
             TaskError::DashPay(DashPayError::PrivateKeyResolution {
                 key_purpose: "ENCRYPTION".to_string(),
-                reason: "Private key not loaded into Dash Evo Tool".to_string(),
+                reason: "Private key not loaded into OrchardPay".to_string(),
             })
         })?;
 

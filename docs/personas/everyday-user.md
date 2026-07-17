@@ -15,7 +15,7 @@
 
 Alex is a regular Dash holder who primarily uses the currency for occasional payments, receiving freelance payments from clients who prefer crypto, and long-term holding. Alex does not understand or care about derivation paths, BIP standards, or the internal structure of HD wallets. Alex registered a DPNS username to make receiving payments easier and may explore DashPay for social payments in the future.
 
-Alex installed Dash Evo Tool because it was recommended for managing DPNS names and because the mobile wallet does not support all Platform features. Alex expects the wallet experience to feel similar to familiar fintech apps (Exodus, DashPay mobile): show the balance with a fiat equivalent, let them send, let them receive. Alex has used the DashPay mobile wallet and appreciates being able to send to a username instead of an address.
+Alex installed OrchardPay because it was recommended for managing DPNS names and because the mobile wallet does not support all Platform features. Alex expects the wallet experience to feel similar to familiar fintech apps (Exodus, DashPay mobile): show the balance with a fiat equivalent, let them send, let them receive. Alex has used the DashPay mobile wallet and appreciates being able to send to a username instead of an address.
 
 ## Primary Goals
 
@@ -40,7 +40,7 @@ Alex installed Dash Evo Tool because it was recommended for managing DPNS names 
 5. **Technical jargon.** Terms like "Asset Lock," "BIP44," "derivation path," "Platform credits," "duffs," and "seed hash" appear in the UI. These are meaningless to Alex. (Industry terminology standards recommend "Recovery phrase" not "mnemonic," "Main Account" not "BIP44," "Platform deposit" not "Asset Lock.")
 6. **No transaction history by default.** Transaction history only appears in developer mode. Alex has no way to review past payments. (Transaction history is a Level 0 feature in every competitor wallet.)
 7. **Receive flow shows too many addresses.** The receive dialog shows all BIP44 external addresses with balances and a "New Address" button. Alex does not know which address to use or why there are many. (Competitors show exactly one address by default.)
-8. **No send-to-username support.** The DashPay mobile wallet allows sending to DPNS usernames, but Dash Evo Tool requires raw addresses even though it supports DPNS on the Contracts screen.
+8. **No send-to-username support.** The DashPay mobile wallet allows sending to DPNS usernames, but OrchardPay requires raw addresses even though it supports DPNS on the Contracts screen.
 
 ## Success Metrics
 

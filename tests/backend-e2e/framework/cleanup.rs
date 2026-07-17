@@ -7,10 +7,10 @@
 use crate::framework::identity_helpers::get_receive_address;
 use crate::framework::task_runner::run_task;
 use crate::framework::wait;
-use dash_evo_tool::backend_task::BackendTask;
-use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use orchardpay::backend_task::BackendTask;
+use orchardpay::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use orchardpay::context::AppContext;
+use orchardpay::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,9 +99,9 @@ pub async fn cleanup_test_wallets(
         // wallet engine cannot subtract the fee from the amount, so reserve
         // the estimated L1 fee here and send the remainder.
         let utxo_count = app_context.snapshot_utxo_count(&hash);
-        let Some(sweep_amount) = dash_evo_tool::model::fee_estimation::core_max_send_amount_duffs(
-            spendable, utxo_count, 1,
-        ) else {
+        let Some(sweep_amount) =
+            orchardpay::model::fee_estimation::core_max_send_amount_duffs(spendable, utxo_count, 1)
+        else {
             // Spendable funds do not cover the network fee — skip this run.
             continue;
         };
