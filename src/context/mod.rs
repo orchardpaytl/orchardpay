@@ -1474,36 +1474,13 @@ impl AppContext {
             .map(|wb| wb.address_paths(seed_hash))
             .unwrap_or_default()
     }
-}
-
-/// Test-only accessors for fields that are normally `pub(crate)`.
-#[cfg(any(test, feature = "testing"))]
-impl AppContext {
-    /// Returns a clone of the current SDK instance.
-    pub fn sdk(&self) -> Sdk {
-        self.sdk.load().as_ref().clone()
-    }
-
-    /// Returns a reference to the database.
-    pub fn db(&self) -> &Arc<Database> {
-        &self.db
-    }
-
-    /// Returns a reference to the wallets map.
-    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
-        &self.wallets
-    }
-
-    /// Returns the DashPay contract identifier.
-    pub fn dashpay_contract_id(&self) -> Identifier {
-        self.dashpay_contract.id()
-    }
 
     /// Returns the OrchardPay contract identifier configured for this
-    /// network, if any. Unlike `dashpay_contract_id`, this is not always
-    /// present — OrchardPay's contract is registered per network (not
-    /// SDK-embedded), so a fresh network has no configured ID until someone
-    /// registers it and records the resulting ID in network config.
+    /// network, if any. Unlike DPNS/DashPay/etc., OrchardPay's contract is
+    /// not SDK-embedded — it's registered once per network via the generic
+    /// contract-registration screen, so a fresh network has no configured ID
+    /// until someone does that and records the resulting ID in network
+    /// config.
     pub fn orchardpay_contract_id(&self) -> Option<Identifier> {
         let id_str = self.config.read().ok()?.orchardpay_contract_id.clone()?;
         match Identifier::from_string(&id_str, Encoding::Base58) {
@@ -1527,6 +1504,30 @@ impl AppContext {
             .inspect_err(|e| tracing::warn!("Failed to resolve OrchardPay contract: {e}"))
             .ok()
             .flatten()
+    }
+}
+
+/// Test-only accessors for fields that are normally `pub(crate)`.
+#[cfg(any(test, feature = "testing"))]
+impl AppContext {
+    /// Returns a clone of the current SDK instance.
+    pub fn sdk(&self) -> Sdk {
+        self.sdk.load().as_ref().clone()
+    }
+
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Returns a reference to the wallets map.
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+        &self.wallets
+    }
+
+    /// Returns the DashPay contract identifier.
+    pub fn dashpay_contract_id(&self) -> Identifier {
+        self.dashpay_contract.id()
     }
 }
 
