@@ -61,7 +61,7 @@ Because CI always runs the full sweep, locally you should:
 
 - Run only the **narrowest scope covering your change** — `cargo test <test_name> --all-features`, or `cargo test --test kittest --all-features` for a UI change. Running the whole workspace suite locally only duplicates the run CI is about to do anyway.
 - Always run `cargo fmt --all` before committing (honors the `rust-toolchain.toml` pin). It needs no compile, and `clippy.yml` fails the build on unformatted code.
-- Run `cargo clippy` locally only for the scope you touched, or when you expect lint fallout. This repo has no `[workspace]`, so there's no `-p <crate>` to narrow with — scope by target instead (e.g. `--bin dash-evo-tool`). CI owns the `--all-features --all-targets` sweep.
+- Run `cargo clippy` locally only for the scope you touched, or when you expect lint fallout. This repo has no `[workspace]`, so there's no `-p <crate>` to narrow with — scope by target instead (e.g. `--bin orchardpay`). CI owns the `--all-features --all-targets` sweep.
 - After pushing, watch the PR checks instead of re-running the suite locally.
 
 Two gaps where CI will **not** cover you:
