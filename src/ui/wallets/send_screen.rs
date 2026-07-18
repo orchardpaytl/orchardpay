@@ -1482,6 +1482,7 @@ impl WalletSendScreen {
                     seed_hash,
                     amount: amount_credits,
                     recipient_address_bytes: recipient_bytes,
+                    memo: [0u8; 36],
                 },
             ),
         ))

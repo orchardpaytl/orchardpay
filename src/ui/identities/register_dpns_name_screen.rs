@@ -63,6 +63,12 @@ pub struct RegisterDpnsNameScreen {
     completed_fee_result: Option<FeeResult>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
+    /// True when this screen was reached via the guided onboarding chain
+    /// (new wallet -> new identity -> DPNS name), as opposed to registering
+    /// a name for an already-established identity. Only in the former case
+    /// does the success screen offer to continue on to setting up a private
+    /// shielded address.
+    pub from_onboarding: bool,
     /// Bucket A overlay-adoption pattern: a button-less full-window block raised
     /// when the bounded registration is dispatched and torn down on every
     /// terminal result. It replaces the old progress banner and, by blocking the
@@ -140,6 +146,7 @@ impl RegisterDpnsNameScreen {
             show_advanced_options: false,
             completed_fee_result: None,
             source,
+            from_onboarding: false,
             op_overlay: None,
         }
     }
@@ -319,27 +326,46 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let mut buttons = vec![("Back".to_string(), AppAction::PopScreenAndRefresh)];
+        if self.from_onboarding {
+            buttons.push((
+                "Set Up Private Address".to_string(),
+                AppAction::Custom("orchardpay_shielded_setup".to_string()),
+            ));
+        } else {
+            buttons.push((
+                "Register another name".to_string(),
+                AppAction::Custom("register_another".to_string()),
+            ));
+        }
+
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
             "DPNS Name Registered!".to_string(),
-            vec![
-                ("Back".to_string(), AppAction::PopScreenAndRefresh),
-                (
-                    "Register another name".to_string(),
-                    AppAction::Custom("register_another".to_string()),
-                ),
-            ],
+            buttons,
             None,
         );
 
-        // Handle the custom action to reset the form
-        if let AppAction::Custom(ref s) = action
-            && s == "register_another"
-        {
-            self.name_input = String::new();
-            self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
-            self.completed_fee_result = None;
-            return AppAction::None;
+        if let AppAction::Custom(ref s) = action {
+            if s == "register_another" {
+                self.name_input = String::new();
+                self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+                self.completed_fee_result = None;
+                return AppAction::None;
+            }
+            if s == "orchardpay_shielded_setup"
+                && let Some(identity) = self.selected_qualified_identity.clone()
+            {
+                let screen =
+                    crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen::new(
+                        identity,
+                        &self.app_context,
+                    );
+                return AppAction::PopThenAddScreenToMainScreen(
+                    crate::ui::RootScreenType::RootScreenIdentities,
+                    crate::ui::Screen::ShieldedAddressSetupScreen(screen),
+                );
+            }
         }
 
         action

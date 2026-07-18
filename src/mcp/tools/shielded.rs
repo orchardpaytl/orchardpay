@@ -287,6 +287,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
             seed_hash,
             amount: param.amount_credits,
             recipient_address_bytes: recipient_bytes,
+            memo: [0u8; 36],
         });
 
         let result = dispatch_task(&ctx, task)

@@ -3,7 +3,54 @@
 //! `docs/ORCHARDPAY_MIGRATION.md` for how it relates to (and eventually
 //! replaces) the legacy DashPay contact-request model.
 
+pub mod errors;
 pub mod keys;
+pub mod shielded_address;
+
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
+use crate::context::AppContext;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
+use dash_sdk::Sdk;
+use dash_sdk::platform::IdentityPublicKey;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrchardPayTask {
+    /// Publish or rotate the caller's own `shieldedAddress` document to
+    /// their wallet's current default Orchard address.
+    PublishShieldedAddress {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        seed_hash: WalletSeedHash,
+    },
+}
+
+impl AppContext {
+    pub async fn run_orchardpay_task(
+        self: &Arc<Self>,
+        task: OrchardPayTask,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        match task {
+            OrchardPayTask::PublishShieldedAddress {
+                qualified_identity,
+                identity_key,
+                seed_hash,
+            } => {
+                shielded_address::publish_own_shielded_address(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    seed_hash,
+                )
+                .await
+            }
+        }
+    }
+}
 
 /// The contract JSON checked in at `contract_schema.json`, ready to paste
 /// into the "Register Contract" screen. `id`/`ownerId` are placeholders —

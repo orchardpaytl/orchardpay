@@ -6,6 +6,7 @@ use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::dashpay::{DashPayTask, ContactData};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformInfoTaskResult};
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
@@ -168,6 +169,7 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::IdentityTask(_)
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
+            | BackendTask::OrchardPayTask(_)
     )
 }
 
@@ -252,6 +254,7 @@ pub enum BackendTask {
     ContestedResourceTask(ContestedResourceTask),
     CoreTask(CoreTask),
     DashPayTask(Box<DashPayTask>),
+    OrchardPayTask(Box<OrchardPayTask>),
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
@@ -939,6 +942,9 @@ impl AppContext {
             BackendTask::CoreTask(core_task) => Ok(self.run_core_task(core_task).await?),
             BackendTask::DashPayTask(dashpay_task) => {
                 Ok(self.run_dashpay_task(*dashpay_task, sdk).await?)
+            }
+            BackendTask::OrchardPayTask(orchardpay_task) => {
+                Ok(self.run_orchardpay_task(*orchardpay_task, sdk).await?)
             }
             BackendTask::BroadcastStateTransition(state_transition) => Ok(self
                 .broadcast_state_transition(state_transition, sdk)

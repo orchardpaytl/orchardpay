@@ -12,13 +12,15 @@ pub enum OnboardingStep {
     Wallet,
     Identity,
     DpnsName,
+    PrivateAddress,
 }
 
 impl OnboardingStep {
-    pub const ALL: [OnboardingStep; 3] = [
+    pub const ALL: [OnboardingStep; 4] = [
         OnboardingStep::Wallet,
         OnboardingStep::Identity,
         OnboardingStep::DpnsName,
+        OnboardingStep::PrivateAddress,
     ];
 
     fn label(&self) -> &'static str {
@@ -26,6 +28,7 @@ impl OnboardingStep {
             OnboardingStep::Wallet => "Wallet",
             OnboardingStep::Identity => "Identity",
             OnboardingStep::DpnsName => "Name",
+            OnboardingStep::PrivateAddress => "Private Address",
         }
     }
 
@@ -45,6 +48,7 @@ pub fn onboarding_step_for_screen(screen: &Screen) -> Option<OnboardingStep> {
         }
         Screen::AddNewIdentityScreen(_) => Some(OnboardingStep::Identity),
         Screen::RegisterDpnsNameScreen(_) => Some(OnboardingStep::DpnsName),
+        Screen::ShieldedAddressSetupScreen(_) => Some(OnboardingStep::PrivateAddress),
         _ => None,
     }
 }

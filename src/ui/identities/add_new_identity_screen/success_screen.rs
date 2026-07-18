@@ -31,6 +31,7 @@ impl AddNewIdentityScreen {
             // Use Identities source since we came from the Add New Identity flow
             let mut screen =
                 RegisterDpnsNameScreen::new(&self.app_context, RegisterDpnsNameSource::Identities);
+            screen.from_onboarding = true;
             if let Some(identity_id) = self.successful_qualified_identity_id {
                 screen.select_identity(identity_id);
                 screen.show_identity_selector = false;

@@ -27,6 +27,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
 use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
@@ -84,6 +85,7 @@ pub mod identities;
 pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
+pub mod orchardpay;
 pub mod state;
 pub mod theme;
 pub mod tokens;
@@ -161,6 +163,7 @@ pub enum ScreenType {
     RegisterContract,
     UpdateContract,
     TopUpIdentity(QualifiedIdentity),
+    ShieldedAddressSetup(QualifiedIdentity),
     ScheduledVotes,
     AddContracts,
     ProofVisualizer,
@@ -236,6 +239,7 @@ impl PartialEq for ScreenType {
             (Keys(a), Keys(b)) => a == b,
             (RegisterDpnsName(a), RegisterDpnsName(b)) => a == b,
             (TopUpIdentity(a), TopUpIdentity(b)) => a == b,
+            (ShieldedAddressSetup(a), ShieldedAddressSetup(b)) => a == b,
             (TransferTokensScreen(a), TransferTokensScreen(b)) => a == b,
             (MintTokensScreen(a), MintTokensScreen(b)) => a == b,
             (BurnTokensScreen(a), BurnTokensScreen(b)) => a == b,
@@ -286,6 +290,9 @@ impl ScreenType {
             ScreenType::TopUpIdentity(identity) => {
                 Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(identity.clone(), app_context))
             }
+            ScreenType::ShieldedAddressSetup(identity) => Screen::ShieldedAddressSetupScreen(
+                ShieldedAddressSetupScreen::new(identity.clone(), app_context),
+            ),
             ScreenType::AddExistingIdentity => {
                 Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(app_context))
             }
@@ -538,6 +545,7 @@ pub enum Screen {
     GroupActionsScreen(GroupActionsScreen),
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
+    ShieldedAddressSetupScreen(ShieldedAddressSetupScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -711,6 +719,7 @@ impl Screen {
             DocumentActionScreen,
             GroupActionsScreen,
             TopUpIdentityScreen,
+            ShieldedAddressSetupScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -884,6 +893,9 @@ impl Screen {
             Screen::TopUpIdentityScreen(screen) => {
                 ScreenType::TopUpIdentity(screen.identity.clone())
             }
+            Screen::ShieldedAddressSetupScreen(screen) => {
+                ScreenType::ShieldedAddressSetup(screen.identity.clone())
+            }
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
@@ -1034,6 +1046,7 @@ macro_rules! delegate_to_screen {
             Screen::GroupActionsScreen($screen) => $call,
             Screen::WithdrawalScreen($screen) => $call,
             Screen::TopUpIdentityScreen($screen) => $call,
+            Screen::ShieldedAddressSetupScreen($screen) => $call,
             Screen::TransferScreen($screen) => $call,
             Screen::AddKeyScreen($screen) => $call,
             Screen::TransitionVisualizerScreen($screen) => $call,

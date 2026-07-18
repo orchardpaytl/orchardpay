@@ -843,6 +843,10 @@ pub enum TaskError {
     #[error(transparent)]
     DashPay(#[from] crate::backend_task::dashpay::errors::DashPayError),
 
+    /// OrchardPay domain errors.
+    #[error(transparent)]
+    OrchardPay(#[from] crate::backend_task::orchardpay::errors::OrchardPayError),
+
     /// Configuration errors.
     #[error(transparent)]
     Config(#[from] crate::config::ConfigError),

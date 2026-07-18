@@ -112,6 +112,7 @@ async fn tc_074_shielded_lifecycle() {
         seed_hash,
         amount: 50_000,
         recipient_address_bytes,
+        memo: [0u8; 36],
     });
     match run_task(app_context, task).await {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {

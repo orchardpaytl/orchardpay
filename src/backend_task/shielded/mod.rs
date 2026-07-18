@@ -38,6 +38,11 @@ pub enum ShieldedTask {
         amount: u64,
         /// Serialized Orchard payment address (43 raw bytes).
         recipient_address_bytes: Vec<u8>,
+        /// 36-byte structured memo (4-byte type tag + 32-byte payload).
+        /// `[0u8; 36]` means empty/no memo. OrchardPay tags this with a
+        /// `contactAnchor` DocumentID when establishing contact (Milestone D);
+        /// plain sends pass an all-zero memo.
+        memo: [u8; 36],
     },
 
     /// Unshield credits to a platform address (Type 17).
@@ -145,6 +150,7 @@ impl AppContext {
                 seed_hash,
                 amount,
                 recipient_address_bytes,
+                memo,
             } => {
                 let recipient_raw: [u8; 43] = recipient_address_bytes
                     .as_slice()
@@ -152,7 +158,7 @@ impl AppContext {
                     .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
                 backend
-                    .shielded_transfer(&seed_hash, 0, &recipient_raw, amount, [0u8; 36])
+                    .shielded_transfer(&seed_hash, 0, &recipient_raw, amount, memo)
                     .await?;
 
                 self.refresh_shielded_balance_snapshot(&seed_hash).await;
