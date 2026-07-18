@@ -1,105 +1,112 @@
 {
-  "shieldedAddress": {
-    "type": "object",
-    "documentsKeepHistory": false,
-    "documentsMutable": true,
-    "canBeDeleted": true,
+  "$formatVersion": "1",
+  "id": "BmKTJeLL3GfH8FxEx7SUbTog4eAKj8vJRDi97gYkxB9p",
+  "ownerId": "BmKTJeLL3GfH8FxEx7SUbTog4eAKj8vJRDi97gYkxB9p",
+  "version": 1,
 
-    "properties": {
-      "shieldedAddress": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 40,
-        "maxItems": 250,
-        "position": 0
-      }
+  "documentSchemas": {
+    "shieldedAddress": {
+      "type": "object",
+      "documentsKeepHistory": false,
+      "documentsMutable": true,
+      "canBeDeleted": true,
+
+      "properties": {
+        "shieldedAddress": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 40,
+          "maxItems": 250,
+          "position": 0
+        }
+      },
+
+      "required": ["shieldedAddress", "$updatedAt"],
+      "additionalProperties": false,
+
+      "indices": [
+        { "name": "byOwner", "properties": [{ "$ownerId": "asc" }], "unique": true }
+      ]
     },
 
-    "required": ["shieldedAddress", "$updatedAt"],
-    "additionalProperties": false,
+    "contactAnchor": {
+      "type": "object",
+      "documentsKeepHistory": false,
+      "documentsMutable": true,
+      "canBeDeleted": false,
 
-    "indices": [
-      { "name": "byOwner", "properties": [{ "$ownerId": "asc" }], "unique": true }
-    ]
-  },
+      "requiresIdentityEncryptionBoundedKey": 2,
+      "requiresIdentityDecryptionBoundedKey": 2,
 
-  "contactAnchor": {
-    "type": "object",
-    "documentsKeepHistory": false,
-    "documentsMutable": true,
-    "canBeDeleted": false,
-
-    "requiresIdentityEncryptionBoundedKey": 2,
-    "requiresIdentityDecryptionBoundedKey": 2,
-
-    "properties": {
-      "data": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 32,
-        "maxItems": 5120,
-        "position": 0
+      "properties": {
+        "data": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 5120,
+          "position": 0
+        },
+        "anchorData": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 0,
+          "maxItems": 5120,
+          "position": 1
+        },
+        "extra": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 0,
+          "maxItems": 5120,
+          "position": 2
+        }
       },
-      "anchorData": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 0,
-        "maxItems": 5120,
-        "position": 1
-      },
-      "extra": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 0,
-        "maxItems": 5120,
-        "position": 2
-      }
+
+      "required": ["data", "anchorData", "extra", "$updatedAt", "$createdAt"],
+      "additionalProperties": false,
+
+      "indices": [
+        { "name": "byOwner", "properties": [{ "$ownerId": "asc" }] }
+      ]
     },
 
-    "required": ["data", "anchorData", "extra", "$updatedAt", "$createdAt"],
-    "additionalProperties": false,
+    "encryptedMessage": {
+      "type": "object",
+      "documentsKeepHistory": false,
+      "documentsMutable": true,
+      "canBeDeleted": true,
 
-    "indices": [
-      { "name": "byOwner", "properties": [{ "$ownerId": "asc" }] }
-    ]
-  },
-
-  "encryptedMessage": {
-    "type": "object",
-    "documentsKeepHistory": false,
-    "documentsMutable": true,
-    "canBeDeleted": true,
-
-    "properties": {
-      "refId": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 32,
-        "maxItems": 32,
-        "position": 0
+      "properties": {
+        "refId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "position": 0
+        },
+        "msgData": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 1,
+          "maxItems": 5120,
+          "position": 1
+        },
+        "extra": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 0,
+          "maxItems": 5120,
+          "position": 2
+        }
       },
-      "msgData": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 1,
-        "maxItems": 5120,
-        "position": 1
-      },
-      "extra": {
-        "type": "array",
-        "byteArray": true,
-        "minItems": 0,
-        "maxItems": 5120,
-        "position": 2
-      }
-    },
 
-    "required": ["refId", "msgData", "$updatedAt", "$createdAt"],
-    "additionalProperties": false,
+      "required": ["refId", "msgData", "$updatedAt", "$createdAt"],
+      "additionalProperties": false,
 
-    "indices": [
-      { "name": "byReferenceIdAndCreated", "properties": [{ "refId": "asc" }, { "$createdAt": "asc" }] },
-      { "name": "byOwnerIdAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
-    ]
+      "indices": [
+        { "name": "byReferenceIdAndCreated", "properties": [{ "refId": "asc" }, { "$createdAt": "asc" }] },
+        { "name": "byOwnerIdAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+      ]
+    }
   }
 }
