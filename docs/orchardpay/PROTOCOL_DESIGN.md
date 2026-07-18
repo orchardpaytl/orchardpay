@@ -253,20 +253,26 @@ future use; no defined content yet.
 
 ## 3. `encryptedMessage` — polymorphic payload, indistinguishable across use-cases
 
-`documentsMutable: false`. `refId` is the **one** plaintext field beyond the
-platform-mandatory `$ownerId`/`$createdAt` — it's a shared secret established
-via the anchor's decrypted payload, so indexing it in the clear is safe: an
-outside observer can enumerate documents matching a given `refId`, but cannot
-derive or guess that value without already being one of the two parties. This
-is what makes the channel extensible to any future message type without
-protocol changes — new message kinds are just new variants inside `msgData`,
-no contract migration needed.
+`documentsMutable: true`, `canBeDeleted: true`, `documentsKeepHistory: false`
+— sent messages can be edited or deleted, a deliberate chat-app-style UX
+feature (Signal/WhatsApp/Slack-style message editing), not an oversight. See
+"Editing and deleting messages" below for how this is reconciled with
+`Payment`-kind messages documenting a real value transfer. `refId` is the
+**one** plaintext field beyond the platform-mandatory `$ownerId`/`$createdAt`
+— it's a shared secret established via the anchor's decrypted payload, so
+indexing it in the clear is safe: an outside observer can enumerate documents
+matching a given `refId`, but cannot derive or guess that value without
+already being one of the two parties. This is what makes the channel
+extensible to any future message type without protocol changes — new message
+kinds are just new variants inside `msgData`, no contract migration needed.
 
 ```json
 {
   "encryptedMessage": {
     "type": "object",
-    "documentsMutable": false,
+    "documentsKeepHistory": false,
+    "documentsMutable": true,
+    "canBeDeleted": true,
     "properties": {
       "refId": {
         "type": "array",
@@ -305,6 +311,37 @@ mirroring `contactAnchor`'s own `byOwner` recovery index. Neither index
 carries a client-facing sort guarantee beyond what's declared — a "list my
 anchors/messages" recovery UI is expected to be small enough to sort
 client-side rather than needing the index itself to carry the ordering.
+
+### Editing and deleting messages
+
+`documentsMutable`/`canBeDeleted` default to `true` on Dash Platform when a
+document type doesn't override them (confirmed against
+`DEFAULT_CONTRACT_DOCUMENT_MUTABILITY`/`DEFAULT_CONTRACT_DOCUMENTS_CAN_BE_DELETED`
+in the pinned SDK rev) — so `encryptedMessage` documents were always
+deletable by their owner even under the v1 schema above, which only
+overrode `documentsMutable` to `false`. Both flags are now set explicitly
+here for clarity, and `documentsMutable` is flipped to match the platform
+default rather than override it: a sender can edit or delete a message they
+sent (Platform's document-ownership model means only they ever could,
+regardless of this flag — no third party, including the recipient, can
+mutate or delete someone else's message).
+
+This creates a real tension with `Payment`-kind messages, which document a
+value transfer that already happened on-chain (see "Payment semantics"
+below): if the message is editable, a sender could later change what it
+claims about that payment — amount, note, even `kind` — with no
+`documentsKeepHistory` to show what it originally said. The resolution isn't
+to prevent edits (there's no schema mechanism to make mutability conditional
+on the *decrypted* `kind`, since Platform only sees the document type, not
+its ciphertext contents) but to make them **detectable**: `$createdAt` and
+`$updatedAt` are both required fields on every `encryptedMessage`, so a
+recipient can always tell a message was edited after the fact by comparing
+the two, even without knowing what changed. The real, authoritative record
+of *how much value moved* is always the on-chain shielded transfer itself,
+never the message — the message is supplementary. Milestone E's UI should
+surface an "edited" indicator whenever `$updatedAt != $createdAt`, and
+should gracefully handle a `reply_to_document_id` that no longer resolves
+(the referenced message was deleted) rather than treating it as an error.
 
 To preserve the "anonymity of usecases" goal, `messageType` (payment / memo /
 payment-request / purchase-order / receipt / general-message) is deliberately
@@ -384,6 +421,12 @@ structurally identical regardless of purpose.
 6. **`shieldedAddress` deletability**: `canBeDeleted: true` — full opt-out is
    possible, not just leaving the address stale. `contactAnchor` stays
    `canBeDeleted: false` — it's meant to be a permanent recovery record.
+7. **`encryptedMessage` mutability**: `documentsMutable: true`,
+   `canBeDeleted: true` (matching Platform's own defaults, now made
+   explicit) — sent messages can be edited/deleted as a deliberate UX
+   feature. Reconciled with `Payment`-kind messages documenting a real value
+   transfer by making edits *detectable* (`$createdAt` vs `$updatedAt`)
+   rather than preventing them — see "Editing and deleting messages" above.
 
 ## Payment semantics (resolved)
 
