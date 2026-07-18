@@ -80,6 +80,13 @@ impl AppContext {
                         );
                         failures.push(e);
                     }
+                    if let Err(e) = backend.orchardpay_clear_owner_overlays(&owner) {
+                        tracing::warn!(
+                            owner = %owner,
+                            "OrchardPay per-owner overlay clear failed: {e:?}"
+                        );
+                        failures.push(e);
+                    }
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
                     // are plaintext-recoverable, so a full wipe must remove them as well.

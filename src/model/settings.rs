@@ -75,6 +75,11 @@ pub enum RootScreenType {
     /// owner/voting/payout key management. Distinct variant so its nav gating,
     /// selection, and persistence stay independent of the everyday-user tabs.
     RootScreenMasternodes,
+    /// OrchardPay's own consolidated private-contacts section (Milestone D):
+    /// contacts list + DPNS-based contact search. Distinct from the legacy
+    /// `RootScreenDashPay*`/`RootScreenDashpay` entries above — see
+    /// `docs/orchardpay/PROTOCOL_DESIGN.md` and `docs/ORCHARDPAY_MIGRATION.md`.
+    RootScreenOrchardPay,
 }
 
 impl RootScreenType {
@@ -110,6 +115,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsAddressBalanceScreen => 26,
             RootScreenType::RootScreenIdentityHub => 27,
             RootScreenType::RootScreenMasternodes => 28,
+            RootScreenType::RootScreenOrchardPay => 29,
         }
     }
 
@@ -145,6 +151,7 @@ impl RootScreenType {
             26 => Some(RootScreenType::RootScreenToolsAddressBalanceScreen),
             27 => Some(RootScreenType::RootScreenIdentityHub),
             28 => Some(RootScreenType::RootScreenMasternodes),
+            29 => Some(RootScreenType::RootScreenOrchardPay),
             _ => None,
         }
     }

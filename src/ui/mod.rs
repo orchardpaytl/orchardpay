@@ -27,6 +27,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::orchardpay::orchardpay_screen::{OrchardPayScreen, OrchardPaySubscreen};
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBasicInfo, IdentityTokenInfo};
@@ -129,6 +130,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenDashpay => ScreenType::Dashpay,
             RootScreenType::RootScreenIdentityHub => ScreenType::IdentityHub,
             RootScreenType::RootScreenMasternodes => ScreenType::Masternodes,
+            RootScreenType::RootScreenOrchardPay => ScreenType::OrchardPay,
         }
     }
 }
@@ -177,6 +179,8 @@ pub enum ScreenType {
     IdentityHub,
     /// Masternodes section (Expert-Mode gated).
     Masternodes,
+    /// OrchardPay's own consolidated private-contacts section (Milestone D).
+    OrchardPay,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -480,6 +484,11 @@ impl ScreenType {
                 CreateAssetLockScreen::new(wallet.clone(), app_context),
             ),
 
+            ScreenType::OrchardPay => Screen::OrchardPayScreen(OrchardPayScreen::new(
+                app_context,
+                OrchardPaySubscreen::Contacts,
+            )),
+
             // DashPay Screens
             ScreenType::DashPayContacts => {
                 Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Contacts))
@@ -546,6 +555,7 @@ pub enum Screen {
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     ShieldedAddressSetupScreen(ShieldedAddressSetupScreen),
+    OrchardPayScreen(OrchardPayScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -720,6 +730,7 @@ impl Screen {
             GroupActionsScreen,
             TopUpIdentityScreen,
             ShieldedAddressSetupScreen,
+            OrchardPayScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -896,6 +907,7 @@ impl Screen {
             Screen::ShieldedAddressSetupScreen(screen) => {
                 ScreenType::ShieldedAddressSetup(screen.identity.clone())
             }
+            Screen::OrchardPayScreen(_) => ScreenType::OrchardPay,
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
@@ -1047,6 +1059,7 @@ macro_rules! delegate_to_screen {
             Screen::WithdrawalScreen($screen) => $call,
             Screen::TopUpIdentityScreen($screen) => $call,
             Screen::ShieldedAddressSetupScreen($screen) => $call,
+            Screen::OrchardPayScreen($screen) => $call,
             Screen::TransferScreen($screen) => $call,
             Screen::AddKeyScreen($screen) => $call,
             Screen::TransitionVisualizerScreen($screen) => $call,

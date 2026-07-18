@@ -1960,6 +1960,27 @@ impl App for AppState {
                                 DashPayTask::DetectIncomingContactPayments { outputs },
                             )));
                         }
+                        BackendTaskSuccessResult::OrchardPayShieldedSyncCompleted(seed_hashes) => {
+                            // A shielded sync pass completed for these wallets.
+                            // Run the DET-side duplicate incoming-memo scan
+                            // off the frame thread — see
+                            // docs/ai-design/2026-07-18-orchardpay-memo-detection/.
+                            // Skipped entirely when OrchardPay isn't
+                            // configured for the active network.
+                            if active_context.orchardpay_contract_id().is_some() {
+                                let identities = active_context
+                                    .load_local_user_identities()
+                                    .unwrap_or_default();
+                                for seed_hash in seed_hashes {
+                                    self.handle_backend_task(BackendTask::OrchardPayTask(Box::new(
+                                        crate::backend_task::orchardpay::OrchardPayTask::ScanForIncomingAnchors {
+                                            qualified_identities: identities.clone(),
+                                            seed_hash,
+                                        },
+                                    )));
+                                }
+                            }
+                        }
                         BackendTaskSuccessResult::PlatformReadyDiscoverIdentities => {
                             // Platform is reachable: run the automatic all-wallets
                             // identity discovery sweep. The latch inside makes it a

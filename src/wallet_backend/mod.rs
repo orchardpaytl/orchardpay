@@ -46,6 +46,7 @@ pub(crate) mod kv_test_support;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
+mod orchardpay;
 mod payments;
 pub(crate) mod poison;
 pub mod secret_access;

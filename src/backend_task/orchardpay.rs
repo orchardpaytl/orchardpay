@@ -3,8 +3,12 @@
 //! `docs/ORCHARDPAY_MIGRATION.md` for how it relates to (and eventually
 //! replaces) the legacy DashPay contact-request model.
 
+pub mod contact_anchor;
+pub mod contact_search;
+pub mod encryption;
 pub mod errors;
 pub mod keys;
+pub mod memo_scan;
 pub mod shielded_address;
 
 use crate::backend_task::BackendTaskSuccessResult;
@@ -25,6 +29,33 @@ pub enum OrchardPayTask {
         identity_key: IdentityPublicKey,
         seed_hash: WalletSeedHash,
     },
+    /// Start a new contact relationship: publish my own `contactAnchor` and
+    /// signal the counterparty via a memo-tagged shielded transfer. See
+    /// `contact_anchor::initiate_contact`.
+    InitiateContact {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+    },
+    /// Complete a relationship already recorded as `PendingInboundUnaccepted`.
+    /// See `contact_anchor::accept_contact`.
+    AcceptContact {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+    },
+    /// Run one pass of the DET-side duplicate incoming-memo scan for
+    /// `seed_hash`'s wallet, trying every detected anchor signal against
+    /// every identity in `qualified_identities`. See `memo_scan` and
+    /// `docs/ai-design/2026-07-18-orchardpay-memo-detection/`.
+    ScanForIncomingAnchors {
+        qualified_identities: Vec<QualifiedIdentity>,
+        seed_hash: WalletSeedHash,
+    },
+    /// DPNS-prefix search for contactable identities. See `contact_search`.
+    SearchContacts { search_query: String },
 }
 
 impl AppContext {
@@ -47,6 +78,48 @@ impl AppContext {
                     seed_hash,
                 )
                 .await
+            }
+            OrchardPayTask::InitiateContact {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                seed_hash,
+            } => {
+                contact_anchor::initiate_contact(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::AcceptContact {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                seed_hash,
+            } => {
+                contact_anchor::accept_contact(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::ScanForIncomingAnchors {
+                qualified_identities,
+                seed_hash,
+            } => {
+                memo_scan::scan_for_incoming_anchors(self, sdk, qualified_identities, seed_hash)
+                    .await
+            }
+            OrchardPayTask::SearchContacts { search_query } => {
+                contact_search::search_contacts(self, sdk, search_query).await
             }
         }
     }

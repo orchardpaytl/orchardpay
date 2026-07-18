@@ -1,10 +1,11 @@
 # OrchardPay Protocol Design
 
-Status: **schema finalized** (Milestone B, refined 2026-07-19 after direct
-design review). Identity-key wiring landed. Not yet done: the contract
-itself is not registered on any network yet (a one-time per-network
-operational step — see `docs/ORCHARDPAY_MIGRATION.md`), and no encryption
-module or contact-establishment flow is implemented (Milestones C-E). See
+Status: **schema finalized** (Milestone B). Identity-key wiring, shielded
+address publish/discover (Milestone C), and the full contact-establishment
+handshake plus DPNS search (Milestone D) have all landed and are registered
+on Testnet — see "Status of implementation" below for exact file pointers.
+Not yet done: messaging send/receive and payments-with-memos (Milestone E),
+recovery UI (Milestone F), Mainnet/Devnet contract registration. See
 `docs/ORCHARDPAY_MIGRATION.md` for how this relates to DashPay, and
 `docs/GLOSSARY.md` for the "Orchard" vs "OrchardPay" naming note.
 
@@ -200,6 +201,18 @@ design is symmetric and bidirectional — **each party publishes their own
    that makes this possible is safe because Platform's document-ownership
    model means only Alice's own keys can ever sign an update to her own
    anchor — no third party (including Bob) can tamper with it.
+
+**Memo delivery caveat (see `docs/ai-design/2026-07-18-orchardpay-memo-detection/`
+for the full writeup):** step 2 above ("Bob detects the transaction") assumes
+incoming shielded-transfer memo bytes are observable by application code.
+They aren't, by default — the wallet's own sync coordinator trial-decrypts
+incoming notes with a compact decryption path that structurally cannot
+recover the memo. Milestone D works around this with a DET-side duplicate
+scan (OrchardPay re-derives the wallet's incoming viewing key and calls the
+SDK's memo-preserving decryption primitive itself, redundantly re-scanning
+notes the coordinator has already scanned once). This is a deliberate,
+documented interim choice, not an oversight — see the linked doc for why, and
+for what it'd take to eliminate the duplicate work later.
 
 **Two distinct ECDH shared secrets, not one.** Alice's anchor is encrypted
 using the shared secret from her ENCRYPTION key + Bob's DECRYPTION key; Bob's
@@ -487,8 +500,23 @@ sending a payment.
   builder and the identity-creation UI). **Contract registered on Testnet**
   as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20) — see
   `docs/ORCHARDPAY_MIGRATION.md` for the per-network registration status.
+- **Done (Milestone C, 2026-07-18)**: `shieldedAddress` publish/lookup
+  (`src/backend_task/orchardpay/shielded_address.rs`), `ShieldedAddressSetupScreen`,
+  wired into the onboarding chain and a 4-step progress stepper.
+- **Done (Milestone D, 2026-07-18)**: AES-256-GCM encryption
+  (`src/backend_task/orchardpay/encryption.rs`), the bounds-verified
+  counterparty key lookup (`keys::fetch_bounds_verified_counterparty_key`),
+  the full two-anchor handshake (`contact_anchor.rs` — initiate, accept,
+  and the memo-triggered complete-outbound step), local contact state as a
+  k/v sidecar (`src/wallet_backend/orchardpay.rs`, not SQLite — see that
+  file's module doc for why), DPNS-based contact search
+  (`contact_search.rs`), and the DET-side duplicate incoming-memo scan with
+  automatic triggering off every shielded sync pass (`memo_scan.rs` +
+  `docs/ai-design/2026-07-18-orchardpay-memo-detection/`). UI:
+  `OrchardPayScreen` (Contacts/Search subscreens), reachable from the left
+  nav as "Private Contacts".
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
-  independent of Testnet's); no AES-256-GCM encryption module; no
-  contact-establishment flow (search, initiate, detect, accept, the two-anchor
-  handshake described above); no messaging send/receive; no local persistence
-  layer.
+  independent of Testnet's); messaging send/receive
+  (`encryptedMessage`/`MessageKind`, Milestone E); real payment-with-memo
+  transfers riding on messages; recovery UI for a reinstalled/new-device
+  user (Milestone F).

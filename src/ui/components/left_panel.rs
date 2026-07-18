@@ -27,9 +27,10 @@ use std::sync::Arc;
 /// ORCHARDPAY-TODO(dashpay-legacy): the hidden `Dashpay` entry above is
 /// superseded by OrchardPay's ZK-based contact model (see
 /// docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
-/// This is also the eventual insertion point for OrchardPay's own nav entry
-/// (`RootScreenType::RootScreenOrchardPay`, Milestone D of the OrchardPay
-/// plan) once contact establishment + messaging land.
+/// OrchardPay's own nav entry (`RootScreenType::RootScreenOrchardPay`) is
+/// now wired below as "Private Contacts" (Milestone D). Legacy DashPay
+/// stays hidden but intact until OrchardPay reaches full parity (messaging,
+/// per `docs/ORCHARDPAY_MIGRATION.md`).
 fn nav_button_specs() -> &'static [(
     &'static str,
     RootScreenType,
@@ -41,6 +42,15 @@ fn nav_button_specs() -> &'static [(
             "Identities",
             RootScreenType::RootScreenIdentityHub,
             "identity.png",
+            None,
+        ),
+        // TODO: swap `dashpay.png` for a dedicated OrchardPay glyph once one
+        // is added to `icons/` — reused as a placeholder for now, the same
+        // way `voting.png` stands in for Masternodes below.
+        (
+            "Private Contacts",
+            RootScreenType::RootScreenOrchardPay,
+            "dashpay.png",
             None,
         ),
         // Masternodes sits directly below the identity cluster (locked decision

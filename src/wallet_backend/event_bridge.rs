@@ -161,6 +161,21 @@ impl EventBridge {
             .try_send(TaskResult::unattributed_success(result));
     }
 
+    /// Emit an `OrchardPayShieldedSyncCompleted` for every wallet whose
+    /// shielded sync pass just completed successfully, so the app can run
+    /// the DET-side duplicate incoming-memo scan (`docs/ai-design/
+    /// 2026-07-18-orchardpay-memo-detection/`) off the frame thread. A
+    /// no-op when no wallet synced successfully this pass.
+    fn emit_orchardpay_scan_trigger(&self, synced_seed_hashes: Vec<WalletSeedHash>) {
+        if synced_seed_hashes.is_empty() {
+            return;
+        }
+        let result = BackendTaskSuccessResult::OrchardPayShieldedSyncCompleted(synced_seed_hashes);
+        let _ = self
+            .task_result_sender
+            .try_send(TaskResult::unattributed_success(result));
+    }
+
     fn apply_status(&self, status: SpvStatus) {
         self.connection_status.set_spv_status(status);
         self.connection_status.refresh_state();
@@ -451,10 +466,12 @@ impl PlatformEventHandler for EventBridge {
         // The summary is keyed by upstream `WalletId`; map it to DET's
         // `WalletSeedHash` through the snapshot registry. Skipped/errored
         // wallets leave their prior balance untouched.
+        let mut synced_seed_hashes = Vec::new();
         if let Ok(mut balances) = self.shielded_balances.lock() {
             for (wallet_id, balance) in summary_ok_balances(summary) {
                 if let Some(seed_hash) = self.snapshots.seed_hash_for(&wallet_id) {
                     balances.insert(seed_hash, balance);
+                    synced_seed_hashes.push(seed_hash);
                 }
             }
         }
@@ -462,6 +479,7 @@ impl PlatformEventHandler for EventBridge {
         // rendering the "scanning / checking" indicators.
         self.connection_status.set_shielded_sync_progress(None);
         self.connection_status.set_shielded_tree_progress(None);
+        self.emit_orchardpay_scan_trigger(synced_seed_hashes);
         self.nudge_refresh();
     }
 }

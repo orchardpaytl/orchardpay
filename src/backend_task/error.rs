@@ -759,6 +759,18 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// An OrchardPay sidecar overlay entry (reference IDs, own anchor
+    /// document ID, pending-outbound marker) could not be read or written
+    /// in the per-network k/v store. The platform-side document succeeded —
+    /// only the local bookkeeping that tracks it failed.
+    #[error(
+        "Could not save your private contact update locally. The change reached the network — try refreshing in a moment, or try again if it stays out of sync."
+    )]
+    OrchardPaySidecarStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// An existing contact's encrypted details could not be read safely.
     #[error(
         "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."

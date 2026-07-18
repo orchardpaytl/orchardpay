@@ -500,6 +500,18 @@ pub enum BackendTaskSuccessResult {
     /// address map and records the ones that match a contact. Non-DashPay
     /// outputs are silently ignored, so this carries every received output.
     DashPayIncomingDetected(Vec<crate::model::dashpay::DetectedIncomingOutput>),
+    /// A shielded sync pass completed for these wallets (by seed hash). The
+    /// app dispatches `OrchardPayTask::ScanForIncomingAnchors` for each —
+    /// see `docs/ai-design/2026-07-18-orchardpay-memo-detection/` for why
+    /// this DET-side scan runs independently of the sync pass itself rather
+    /// than reading memos off it directly.
+    OrchardPayShieldedSyncCompleted(Vec<crate::model::wallet::WalletSeedHash>),
+    /// Result of `OrchardPayTask::SearchContacts` — DPNS search hits, each
+    /// annotated with whether the identity has published a `shieldedAddress`
+    /// (and so can actually be reached via OrchardPay).
+    OrchardPayContactSearchResults(
+        Vec<crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult>,
+    ),
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`
