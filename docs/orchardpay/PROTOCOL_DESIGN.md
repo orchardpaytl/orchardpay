@@ -234,10 +234,13 @@ pub struct ContactAnchorPayload {
     /// `shieldedAddress`. Since shielded transactions don't reveal
     /// sender/recipient on-chain, receiving on a per-contact address would
     /// let an incoming payment be attributed to a specific contact by which
-    /// address it landed on, independent of the memo. Needs the wallet's
-    /// Orchard implementation to support generating more than one receiving
-    /// address per spending key (e.g. diversified addresses) before this is
-    /// buildable — not confirmed yet.
+    /// address it landed on, independent of the memo. **Confirmed
+    /// buildable** (this was an open question, now resolved): the wallet's
+    /// `OrchardKeySet::address_at(index)` (`rs-platform-wallet/src/wallet/
+    /// shielded/keys.rs`) already derives a fresh diversified address at any
+    /// index off the same FVK — only index 0 is used anywhere in the app
+    /// today, but the underlying capability exists. See "Future: account
+    /// separation" below for a related idea to capture alongside this.
     pub dedicated_shielded_address: Option<Vec<u8>>,
     /// Optional: lets the very first message ride along with the contact
     /// request itself, instead of requiring a separate `encryptedMessage`
@@ -250,6 +253,42 @@ pub struct ContactAnchorPayload {
 contents as learned by this document's owner — i.e. the same shape,
 containing at minimum the counterparty's ReferenceID. `extra` is reserved for
 future use; no defined content yet.
+
+### Future: account separation (captured 2026-07-20, not implemented)
+
+Every Orchard key in this wallet derives from `m / 32' / coin_type' /
+account'` (ZIP-32), and today **every shielded operation across the whole
+app hardcodes `account = 0`** — confirmed at the actual call sites:
+`src/context/wallet_lifecycle/bootstrap.rs`'s `shielded_default_address(seed_hash,
+0)` (the address `shieldedAddress` documents currently publish) and
+`shielded_transfer(.., 0, ..)` (the only account the spend path can spend
+from). The code's own comment is explicit: *"the only account DET binds."*
+
+Idea to revisit once the dedicated per-contact shielded address feature
+above is actually being built: **move the `shieldedAddress` document's
+address off account 0 onto account 1**, reserving account 0 for
+onboarding/general wallet shielding and giving OrchardPay's own
+discoverable address (and, later, per-contact diversified addresses derived
+from it) a clean separation from a user's general shielded-balance activity.
+Rationale: account 0 is where a user's first shield/unshield/general
+shielded-send activity naturally happens during onboarding; keeping
+OrchardPay's contact-discovery address on a distinct account avoids mixing
+"this is how people reach me for OrchardPay" with "this is my general
+shielded spending," even though both ultimately derive from the same wallet
+seed and are only as private from each other as account-level separation
+provides (not a strong privacy boundary — Orchard's own shielding is what
+actually hides transaction contents, not which account issued them from the
+same seed).
+
+**Not free to build**: this isn't just changing a constant. The wallet's
+shielded coordinator currently only binds/syncs account 0 (per the "only
+account DET binds" comment) — using account 1 would need the coordinator to
+additionally bind and sync that second account, which is `platform-wallet`
+(upstream) territory, not just an OrchardPay-side change. Scope this as its
+own investigation when the dedicated-per-contact-address feature is
+actually being built, not assumed to be a small tweak. Milestone C proceeds
+on account 0 as-is for now — this is a deliberate deferral, not an
+oversight.
 
 ## 3. `encryptedMessage` — polymorphic payload, indistinguishable across use-cases
 
