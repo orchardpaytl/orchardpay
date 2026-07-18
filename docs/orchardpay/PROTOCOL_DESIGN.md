@@ -445,10 +445,11 @@ sending a payment.
   (`src/backend_task/orchardpay/keys.rs`), identity registration wired to
   request these keys automatically (`combined_default_key_specs` in
   `src/backend_task/identity/mod.rs`, used by both the canonical registration
-  builder and the identity-creation UI).
-- **Not yet done**: the contract is not registered on any network (a
-  one-time per-network operational step, tracked as a hard prerequisite in
-  `docs/ORCHARDPAY_MIGRATION.md`); no AES-256-GCM encryption module; no
+  builder and the identity-creation UI). **Contract registered on Testnet**
+  as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20) — see
+  `docs/ORCHARDPAY_MIGRATION.md` for the per-network registration status.
+- **Not yet done**: Mainnet/Devnet registration (each network needs its own,
+  independent of Testnet's); no AES-256-GCM encryption module; no
   contact-establishment flow (search, initiate, detect, accept, the two-anchor
   handshake described above); no messaging send/receive; no local persistence
   layer.

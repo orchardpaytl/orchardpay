@@ -8,16 +8,24 @@ OrchardPay's contract-bounded ENCRYPTION/DECRYPTION keys automatically — see
 `docs/orchardpay/PROTOCOL_DESIGN.md`. None of the parity checklist below is
 checked yet; that starts with shielded-address publishing (next up).
 
-**Operational prerequisite, not yet met on any network**: OrchardPay's
-contract is not an SDK-embedded system contract like DPNS/DashPay — it must
-be registered once per network (via the existing generic "Register Contract"
-screen) and the resulting contract ID recorded in that network's config
+**Operational prerequisite**: OrchardPay's contract is not an SDK-embedded
+system contract like DPNS/DashPay — it must be registered once per network
+(via the existing generic "Register Contract" screen) and the resulting
+contract ID recorded in that network's config
 (`NetworkConfig::orchardpay_contract_id` in `src/config.rs`). Until that
 happens on a given network, `AppContext::orchardpay_contract_id()` returns
 `None` there and identity registration silently falls back to DashPay's keys
 only (see `combined_default_key_specs` in `src/backend_task/identity/mod.rs`)
 — OrchardPay's contact/messaging features are simply unavailable on that
 network, not broken.
+
+**Testnet: done.** The canonical OrchardPay contract is registered on
+Testnet as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20),
+recorded as `TESTNET_orchardpay_contract_id` in `.env.example` and this
+machine's live `.env`. Mainnet and Devnet still need their own registration
+before OrchardPay works there — each network's canonical ID is separate,
+whoever registers first on a given network sets it for everyone building
+against that network.
 
 DashPay (`src/ui/dashpay/`, `src/backend_task/dashpay/`, `src/database/dashpay.rs`,
 `src/database/contacts.rs`) is **legacy** — superseded in intent by OrchardPay's
