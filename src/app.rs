@@ -1320,7 +1320,7 @@ impl AppState {
         })
         .chain({
             // Register OrchardPay's own consolidated private-contacts screen.
-            let orchardpay = OrchardPayScreen::new(&active_context, OrchardPaySubscreen::Contacts);
+            let orchardpay = OrchardPayScreen::new(&active_context, OrchardPaySubscreen::Profile);
             [(
                 RootScreenType::RootScreenOrchardPay,
                 Screen::OrchardPayScreen(orchardpay),

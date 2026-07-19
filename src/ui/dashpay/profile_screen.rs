@@ -76,6 +76,12 @@ pub struct ProfileScreen {
     show_success: bool,
     was_creating_new: bool, // Track if we were creating vs updating
     confirmation_dialog: Option<ConfirmationDialog>,
+    /// Heading shown above the profile form. Defaults to DashPay's own
+    /// wording; callers embedding this widget elsewhere (e.g. OrchardPay's
+    /// Profile tab, which reuses this screen unmodified) can override it via
+    /// [`Self::with_heading`] — the underlying profile document and
+    /// behavior are DashPay's either way, only the heading differs.
+    heading: String,
 }
 
 impl ProfileScreen {
@@ -109,6 +115,7 @@ impl ProfileScreen {
             show_success: false,
             was_creating_new: false,
             confirmation_dialog: None,
+            heading: "My DashPay Profile".to_string(),
         };
 
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
@@ -140,6 +147,13 @@ impl ProfileScreen {
         }
 
         new_self
+    }
+
+    /// Override the heading shown above the profile form. See the `heading`
+    /// field's doc comment.
+    pub fn with_heading(mut self, heading: impl Into<String>) -> Self {
+        self.heading = heading.into();
+        self
     }
 
     fn validate_profile(&mut self) {
@@ -360,7 +374,7 @@ impl ProfileScreen {
 
         // Header with identity selector on the right
         ui.horizontal(|ui| {
-            ui.heading("My DashPay Profile");
+            ui.heading(&self.heading);
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -1,16 +1,23 @@
 //! OrchardPay's consolidated private-contacts root screen (Milestone D):
-//! a contacts list plus DPNS-based contact search, mirroring the
-//! already-consolidated `DashPayScreen`/`DashPaySubscreen` pattern (one
-//! `RootScreenType` with an internal subscreen switch, not one root screen
-//! per feature).
+//! visually mirrors `DashPayScreen`/`DashPaySubscreen` — a left-hand
+//! subscreen nav with Profile / Contacts / Payments / Send Friend Request —
+//! but keeps a single screen instance with a local subscreen toggle rather
+//! than DashPay's one-`RootScreenType`-per-subscreen pattern (simpler, and
+//! OrchardPay has no need for deep-linkable subscreen URLs yet).
 //!
-//! Gated behind a readiness check: Contacts/Search are only shown once the
-//! active identity has a DPNS name and a published `shieldedAddress`
-//! document — otherwise the screen guides the user through whichever of
-//! those is missing, in order. OrchardPay-bound ENCRYPTION/DECRYPTION keys
-//! are generated automatically as part of publishing the shielded address
-//! (`backend_task::orchardpay::keys::ensure_own_orchardpay_keys`), not a
-//! separate step here — see that function's doc comment.
+//! The Profile tab reuses DashPay's own `ProfileScreen` widget unmodified —
+//! a profile (display name, avatar, bio) isn't protocol-specific, so there's
+//! no reason to duplicate it.
+//!
+//! Gated behind a readiness check: the whole screen (including the
+//! subscreen nav) is only shown once the active identity has a DPNS name
+//! and OrchardPay's contract is configured for this network — otherwise the
+//! screen guides the user through whichever is missing, in order. Within
+//! that, Contacts and Send Friend Request each additionally require a
+//! published `shieldedAddress` document (Profile and Payments don't).
+//! OrchardPay-bound ENCRYPTION/DECRYPTION keys are generated automatically
+//! as part of publishing that address
+//! (`backend_task::orchardpay::keys::ensure_own_orchardpay_keys`).
 
 use crate::app::AppAction;
 use crate::backend_task::orchardpay::OrchardPayTask;
@@ -23,10 +30,14 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::subscreen_chooser_panel::{
+    SubscreenNavItem, add_subscreen_chooser_panel,
+};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
@@ -41,16 +52,23 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrchardPaySubscreen {
+    Profile,
     Contacts,
-    Search,
+    Payments,
+    /// "Send Friend Request": DPNS search + initiate a new contact.
+    AddContact,
 }
 
+const TAB_PROFILE: &str = "orchardpay_tab_profile";
+const TAB_CONTACTS: &str = "orchardpay_tab_contacts";
+const TAB_PAYMENTS: &str = "orchardpay_tab_payments";
+const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
+
 /// What, if anything, stands between the active identity and being able to
-/// use OrchardPay's Contacts/Search screens. Checked in this order because
-/// each step depends on the previous one (a DPNS name check is meaningless
-/// with no identity; a shielded-address check is meaningless with no
-/// OrchardPay contract configured on this network).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// use OrchardPay at all. Checked in this order because each step depends
+/// on the previous one (a DPNS name check is meaningless with no identity;
+/// a contract check is meaningless with no identity to bind keys to).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalReadiness {
     NoIdentity,
     NoDpnsName,
@@ -66,6 +84,7 @@ pub struct OrchardPayScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
+    profile_screen: ProfileScreen,
     search_query: String,
     search_results: Vec<OrchardPayContactSearchResult>,
     searching: bool,
@@ -89,6 +108,8 @@ impl OrchardPayScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
+            profile_screen: ProfileScreen::new(app_context.clone())
+                .with_heading("My OrchardPay Profile (reuses DashPay)"),
             search_query: String::new(),
             search_results: Vec::new(),
             searching: false,
@@ -214,6 +235,11 @@ impl OrchardPayScreen {
 
     fn render_contacts(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+
+        if self.has_shielded_address != Some(true) {
+            return self.render_needs_shielded_address(ui);
+        }
+
         let dark_mode = ui.style().visuals.dark_mode;
 
         let Some(identity) = self.identity.clone() else {
@@ -236,8 +262,10 @@ impl OrchardPayScreen {
 
         if contacts.is_empty() {
             ui.label(
-                RichText::new("No private contacts yet. Use Search to find someone on OrchardPay.")
-                    .color(DashColors::text_secondary(dark_mode)),
+                RichText::new(
+                    "No private contacts yet. Use Send Friend Request to find someone on OrchardPay.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
             );
             return action;
         }
@@ -281,10 +309,26 @@ impl OrchardPayScreen {
         action
     }
 
-    fn render_search(&mut self, ui: &mut Ui) -> AppAction {
+    fn render_payments(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(
+                "Private payments are coming soon — sending a payment as part of an OrchardPay message isn't implemented yet.",
+            )
+            .color(DashColors::text_secondary(dark_mode)),
+        );
+    }
+
+    fn render_add_contact(&mut self, ui: &mut Ui) -> AppAction {
+        if self.has_shielded_address != Some(true) {
+            return self.render_needs_shielded_address(ui);
+        }
+
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
 
+        ui.heading("Send Friend Request");
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
             ui.text_edit_singleline(&mut self.search_query);
@@ -382,36 +426,107 @@ impl ScreenLike for OrchardPayScreen {
         // refresh is returning from having just published one.
         self.has_shielded_address = None;
         self.shielded_address_check_dispatched = false;
+        self.profile_screen.refresh();
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.searching = false;
+        }
+        if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
+            self.profile_screen.display_message(message, message_type);
         }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        match result {
+        match &result {
             BackendTaskSuccessResult::OrchardPayContactSearchResults(results) => {
-                self.search_results = results;
+                self.search_results = results.clone();
                 self.searching = false;
             }
             BackendTaskSuccessResult::OrchardPayOwnShieldedAddressStatus {
                 identity_id,
                 published,
             } => {
-                if self.identity.as_ref().map(|i| i.identity.id()) == Some(identity_id) {
-                    self.has_shielded_address = Some(published);
+                if self.identity.as_ref().map(|i| i.identity.id()) == Some(*identity_id) {
+                    self.has_shielded_address = Some(*published);
                 }
             }
             _ => {}
         }
+        if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
+            self.profile_screen.display_task_result(result);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let readiness = self.compute_local_readiness();
+
         let breadcrumbs = vec![("OrchardPay", AppAction::None)];
         let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+
+        if readiness == LocalReadiness::ContractConfigured {
+            // Kick off (once) the shielded-address check the Contacts/Send
+            // Friend Request tabs need — cheap and harmless to run even
+            // while viewing Profile/Payments.
+            if self.has_shielded_address.is_none()
+                && !self.shielded_address_check_dispatched
+                && let Some(identity) = &self.identity
+            {
+                self.shielded_address_check_dispatched = true;
+                action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+                    OrchardPayTask::CheckOwnShieldedAddress {
+                        identity_id: identity.identity.id(),
+                    },
+                )));
+            }
+
+            let items = vec![
+                SubscreenNavItem::new(
+                    "My Profile",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::Profile,
+                    AppAction::Custom(TAB_PROFILE.to_string()),
+                ),
+                SubscreenNavItem::new(
+                    "Contacts",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::Contacts,
+                    AppAction::Custom(TAB_CONTACTS.to_string()),
+                ),
+                SubscreenNavItem::new(
+                    "Payments",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::Payments,
+                    AppAction::Custom(TAB_PAYMENTS.to_string()),
+                ),
+                SubscreenNavItem::new(
+                    "Send Friend Request",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::AddContact,
+                    AppAction::Custom(TAB_ADD_CONTACT.to_string()),
+                ),
+            ];
+            let nav_action = add_subscreen_chooser_panel(
+                ui,
+                "orchardpay_subscreen_chooser",
+                false,
+                false,
+                items,
+            );
+            match nav_action {
+                AppAction::Custom(ref tag) if tag == TAB_PROFILE => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::Profile;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_CONTACTS => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::Contacts;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_PAYMENTS => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::Payments;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_ADD_CONTACT => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::AddContact;
+                }
+                other => action |= other,
+            }
+        }
 
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
@@ -437,7 +552,7 @@ impl ScreenLike for OrchardPayScreen {
                 }
             }
 
-            match self.compute_local_readiness() {
+            match readiness {
                 LocalReadiness::NoIdentity => {
                     inner_action |= self.render_needs_identity(ui);
                 }
@@ -447,52 +562,17 @@ impl ScreenLike for OrchardPayScreen {
                 LocalReadiness::ContractNotConfigured => {
                     self.render_contract_not_configured(ui);
                 }
-                LocalReadiness::ContractConfigured => match self.has_shielded_address {
-                    None => {
-                        if !self.shielded_address_check_dispatched
-                            && let Some(identity) = &self.identity
-                        {
-                            self.shielded_address_check_dispatched = true;
-                            inner_action |= AppAction::BackendTask(BackendTask::OrchardPayTask(
-                                Box::new(OrchardPayTask::CheckOwnShieldedAddress {
-                                    identity_id: identity.identity.id(),
-                                }),
-                            ));
+                LocalReadiness::ContractConfigured => {
+                    inner_action |= match self.orchardpay_subscreen {
+                        OrchardPaySubscreen::Profile => self.profile_screen.render(ui),
+                        OrchardPaySubscreen::Contacts => self.render_contacts(ui),
+                        OrchardPaySubscreen::Payments => {
+                            self.render_payments(ui);
+                            AppAction::None
                         }
-                        ui.label("Checking your OrchardPay setup…");
-                    }
-                    Some(false) => {
-                        inner_action |= self.render_needs_shielded_address(ui);
-                    }
-                    Some(true) => {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(
-                                    self.orchardpay_subscreen == OrchardPaySubscreen::Contacts,
-                                    "Contacts",
-                                )
-                                .clicked()
-                            {
-                                self.orchardpay_subscreen = OrchardPaySubscreen::Contacts;
-                            }
-                            if ui
-                                .selectable_label(
-                                    self.orchardpay_subscreen == OrchardPaySubscreen::Search,
-                                    "Search",
-                                )
-                                .clicked()
-                            {
-                                self.orchardpay_subscreen = OrchardPaySubscreen::Search;
-                            }
-                        });
-                        ui.add_space(10.0);
-
-                        inner_action |= match self.orchardpay_subscreen {
-                            OrchardPaySubscreen::Contacts => self.render_contacts(ui),
-                            OrchardPaySubscreen::Search => self.render_search(ui),
-                        };
-                    }
-                },
+                        OrchardPaySubscreen::AddContact => self.render_add_contact(ui),
+                    };
+                }
             }
 
             inner_action
