@@ -158,6 +158,10 @@ impl DashColors {
     pub const ICON_UNSELECTED_LIGHT: Color32 = Color32::from_rgb(160, 160, 160);
     /// Gray tint for unselected wallet panel icons
     pub const ICON_UNSELECTED: Color32 = Color32::from_rgb(169, 169, 169);
+    /// Forest green tint for the OrchardPay nav icon — a distinct brand
+    /// color, not part of the selected/unselected scheme other nav icons
+    /// use (selection there is shown via the badge background instead).
+    pub const ICON_ORCHARDPAY_GREEN: Color32 = Color32::from_rgb(34, 139, 34);
 
     // Entropy grid colors
     /// Off squares in entropy grid (dark mode)

@@ -17,20 +17,18 @@ use std::sync::Arc;
 /// filtered out at render time.
 ///
 /// The former standalone `Identities` ([`RootScreenType::RootScreenIdentities`])
-/// and `Dashpay` ([`RootScreenType::RootScreenDashPayProfile`]) entries are
-/// intentionally hidden from the nav; their screens, routes, and backend paths
-/// stay intact and remain reachable through other means (deep links, MCP tools,
-/// direct screen construction). The Identities hub
+/// entry is intentionally hidden from the nav; its screen, routes, and
+/// backend paths stay intact and remain reachable through other means (deep
+/// links, MCP tools, direct screen construction). The Identities hub
 /// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
 /// `Identities` entry.
 ///
-/// ORCHARDPAY-TODO(dashpay-legacy): the hidden `Dashpay` entry above is
-/// superseded by OrchardPay's ZK-based contact model (see
-/// docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
-/// OrchardPay's own nav entry (`RootScreenType::RootScreenOrchardPay`) is
-/// now wired below as "OrchardPay" (Milestone D). Legacy DashPay stays
-/// hidden but intact until OrchardPay reaches full parity (messaging, per
-/// `docs/ORCHARDPAY_MIGRATION.md`).
+/// ORCHARDPAY-TODO(dashpay-legacy): OrchardPay's ZK-based contact model
+/// (see docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md)
+/// is meant to supersede legacy DashPay once it reaches full parity
+/// (messaging). Until then, DashPay's own nav entry stays visible below
+/// alongside OrchardPay's — both are reachable side by side, not one hidden
+/// in favor of the other.
 fn nav_button_specs() -> &'static [(
     &'static str,
     RootScreenType,
@@ -49,6 +47,12 @@ fn nav_button_specs() -> &'static [(
             RootScreenType::RootScreenOrchardPay,
             "orchardpay_tree.svg",
             None,
+        ),
+        (
+            "Dashpay",
+            RootScreenType::RootScreenDashPayProfile,
+            "dashpay.png",
+            Some(FeatureGate::DashPay),
         ),
         // Masternodes sits directly below the identity cluster (locked decision
         // #3), gated at the Power role — masternode operation is a Power User
@@ -202,7 +206,13 @@ pub fn add_left_panel(
                                                     _ => selected_screen == *screen_type,
                                                 };
 
-                                                let button_color = DashColors::icon_tint(is_selected, dark_mode);
+                                                let button_color = if *screen_type
+                                                    == RootScreenType::RootScreenOrchardPay
+                                                {
+                                                    DashColors::ICON_ORCHARDPAY_GREEN
+                                                } else {
+                                                    DashColors::icon_tint(is_selected, dark_mode)
+                                                };
 
                                                 if let Some(ref texture) = texture {
                                                     let button = egui::Button::image(
@@ -362,7 +372,7 @@ mod tests {
     /// The nav sidebar hides the legacy standalone `Identities` and `Dashpay`
     /// entries and surfaces the Identity Hub as the single `Identities` entry.
     #[test]
-    fn nav_hides_legacy_identities_and_dashpay_and_labels_hub_as_identities() {
+    fn nav_hides_legacy_identities_and_labels_hub_as_identities() {
         let specs = nav_button_specs();
 
         assert!(
@@ -372,10 +382,16 @@ mod tests {
             "the legacy standalone Identities entry must be hidden from the nav"
         );
         assert!(
-            !specs
+            specs
                 .iter()
                 .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenDashPayProfile),
-            "the Dashpay entry must be hidden from the nav"
+            "the Dashpay entry must be visible in the nav, alongside OrchardPay"
+        );
+        assert!(
+            specs
+                .iter()
+                .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenOrchardPay),
+            "the OrchardPay entry must be visible in the nav"
         );
 
         let hub = specs
