@@ -210,14 +210,13 @@ async fn step_add_key(
 
     let result = run_task_with_nonce_retry(
         &ctx.app_context,
-        BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
+        BackendTask::IdentityTask(IdentityTask::AddKeysToIdentity(
             si.qualified_identity.clone(),
-            new_qualified_key,
-            private_key_bytes,
+            vec![(new_qualified_key, private_key_bytes)],
         )),
     )
     .await
-    .expect("AddKeyToIdentity should succeed");
+    .expect("AddKeysToIdentity should succeed");
 
     match result {
         BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {

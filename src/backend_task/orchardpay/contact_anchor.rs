@@ -528,7 +528,10 @@ pub async fn handle_incoming_anchor_signal(
 /// has no `contract_bounds` parameter), this only ever returns a key
 /// actually scoped to this contract, so it can't accidentally return an
 /// unrelated ENCRYPTION/DECRYPTION key the identity happens to also hold.
-fn own_bounds_verified_key(
+///
+/// `pub(crate)` so `ui::orchardpay::orchardpay_screen` can reuse it for the
+/// "does this identity have OrchardPay-bound keys yet" readiness check.
+pub(crate) fn own_bounds_verified_key(
     identity: &QualifiedIdentity,
     orchardpay_contract_id: Identifier,
     purpose: Purpose,

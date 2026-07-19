@@ -25,6 +25,7 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
+use crate::ui::orchardpay::orchardpay_screen::{OrchardPayScreen, OrchardPaySubscreen};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
@@ -1315,6 +1316,14 @@ impl AppState {
             [(
                 RootScreenType::RootScreenIdentityHub,
                 Screen::IdentityHubScreen(hub),
+            )]
+        })
+        .chain({
+            // Register OrchardPay's own consolidated private-contacts screen.
+            let orchardpay = OrchardPayScreen::new(&active_context, OrchardPaySubscreen::Contacts);
+            [(
+                RootScreenType::RootScreenOrchardPay,
+                Screen::OrchardPayScreen(orchardpay),
             )]
         })
         .collect();

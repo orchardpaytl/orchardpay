@@ -45,6 +45,18 @@ pub async fn publish_own_shielded_address(
             .ok_or(OrchardPayError::ContractNotConfigured)?,
     );
 
+    // Publishing a shielded address is the one flow that gets an identity
+    // fully set up for OrchardPay: generate and broadcast its ENCRYPTION/
+    // DECRYPTION keys first if it doesn't have them yet (a no-op, no
+    // network call, if it already does). See `keys::ensure_own_orchardpay_keys`.
+    let qualified_identity = super::keys::ensure_own_orchardpay_keys(
+        app_context,
+        sdk,
+        qualified_identity,
+        orchardpay_contract.id(),
+    )
+    .await?;
+
     let backend = app_context.wallet_backend()?;
     let raw_address = backend
         .shielded_default_address(&seed_hash, 0)

@@ -56,6 +56,13 @@ pub enum OrchardPayTask {
     },
     /// DPNS-prefix search for contactable identities. See `contact_search`.
     SearchContacts { search_query: String },
+    /// Check whether `identity_id` has published a `shieldedAddress`
+    /// document — the OrchardPay screen's readiness gate uses this to
+    /// decide whether to show the "Publish a shielded address" prompt or
+    /// the normal Contacts/Search UI.
+    CheckOwnShieldedAddress {
+        identity_id: dash_sdk::platform::Identifier,
+    },
 }
 
 impl AppContext {
@@ -120,6 +127,17 @@ impl AppContext {
             }
             OrchardPayTask::SearchContacts { search_query } => {
                 contact_search::search_contacts(self, sdk, search_query).await
+            }
+            OrchardPayTask::CheckOwnShieldedAddress { identity_id } => {
+                let published = shielded_address::lookup_shielded_address(self, sdk, identity_id)
+                    .await?
+                    .is_some();
+                Ok(
+                    BackendTaskSuccessResult::OrchardPayOwnShieldedAddressStatus {
+                        identity_id,
+                        published,
+                    },
+                )
             }
         }
     }

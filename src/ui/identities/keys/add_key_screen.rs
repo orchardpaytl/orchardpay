@@ -261,10 +261,9 @@ impl AddKeyScreen {
                             in_wallet_at_derivation_path: None,
                         };
                         app_action = AppAction::BackendTask(BackendTask::IdentityTask(
-                            IdentityTask::AddKeyToIdentity(
+                            IdentityTask::AddKeysToIdentity(
                                 self.identity.clone(),
-                                new_qualified_key,
-                                private_key_bytes,
+                                vec![(new_qualified_key, private_key_bytes)],
                             ),
                         ));
                     } else {

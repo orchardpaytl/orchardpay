@@ -1,4 +1,3 @@
-use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
@@ -21,13 +20,23 @@ use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identity};
 
 impl AppContext {
-    pub(super) async fn add_key_to_identity(
+    /// Add one or more keys to `qualified_identity` in a single Identity
+    /// Update transition. `keys_to_add` must be non-empty. Returns the
+    /// updated identity (with the new keys attached and already persisted
+    /// locally) plus the fee paid — `pub(crate)` so
+    /// `backend_task::orchardpay::keys::ensure_own_orchardpay_keys` can call
+    /// it directly and keep working with the identity it returns, rather
+    /// than going through the `IdentityTask` enum indirection.
+    pub(crate) async fn add_keys_to_identity(
         &self,
         sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
-        mut public_key_to_add: QualifiedIdentityPublicKey,
-        private_key: [u8; 32],
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        mut keys_to_add: Vec<(QualifiedIdentityPublicKey, [u8; 32])>,
+    ) -> Result<(QualifiedIdentity, FeeResult), TaskError> {
+        if keys_to_add.is_empty() {
+            return Err(TaskError::IdentityKeyMissing);
+        }
+
         // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
         // for and VERIFY its object password up front; a headless host or a
@@ -54,24 +63,33 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
-        public_key_to_add
-            .identity_public_key
-            .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
-        qualified_identity.private_keys.insert_non_encrypted(
-            (
-                PrivateKeyOnMainIdentity,
-                public_key_to_add.identity_public_key.id(),
-            ),
-            (public_key_to_add.clone(), private_key),
-        );
+
+        // Assign each new key the next free ID in sequence (max_id + 1, +2, …)
+        // and stage it in `private_keys` before the broadcast, mirroring the
+        // single-key path exactly — just looped.
+        let mut next_key_id = qualified_identity.identity.get_public_key_max_id() + 1;
+        for (public_key_to_add, private_key) in &mut keys_to_add {
+            public_key_to_add.identity_public_key.set_id(next_key_id);
+            qualified_identity.private_keys.insert_non_encrypted(
+                (PrivateKeyOnMainIdentity, next_key_id),
+                (public_key_to_add.clone(), *private_key),
+            );
+            next_key_id += 1;
+        }
+
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_identity_update();
 
+        let public_keys_to_add: Vec<_> = keys_to_add
+            .iter()
+            .map(|(key, _)| key.identity_public_key.clone())
+            .collect();
+
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,
             &master_key_id,
-            vec![public_key_to_add.identity_public_key.clone()],
+            public_keys_to_add.clone(),
             vec![],
             new_identity_nonce,
             UserFeeIncrease::default(),
@@ -87,7 +105,7 @@ impl AppContext {
         let result = state_transition.broadcast_and_wait(sdk, None).await?;
 
         // Log and handle the proof result
-        tracing::info!("AddKeyToIdentity proof result: {}", result);
+        tracing::info!("AddKeysToIdentity proof result: {}", result);
 
         let new_balance = match result {
             StateTransitionProofResult::VerifiedPartialIdentity(identity) => {
@@ -100,13 +118,15 @@ impl AppContext {
             }
             other => {
                 tracing::warn!(
-                    "Unexpected proof result type for add key to identity: {}",
+                    "Unexpected proof result type for add keys to identity: {}",
                     other
                 );
-                // Still add the key we tried to add, since the broadcast succeeded
-                qualified_identity
-                    .identity
-                    .add_public_key(public_key_to_add.identity_public_key.clone());
+                // Still add the keys we tried to add, since the broadcast succeeded
+                for public_key in &public_keys_to_add {
+                    qualified_identity
+                        .identity
+                        .add_public_key(public_key.clone());
+                }
                 None
             }
         };
@@ -115,7 +135,7 @@ impl AppContext {
         let actual_fee = if let Some(balance_after) = new_balance {
             let fee = balance_before.saturating_sub(balance_after);
             tracing::info!(
-                "AddKeyToIdentity complete: estimated fee {} credits, actual fee {} credits",
+                "AddKeysToIdentity complete: estimated fee {} credits, actual fee {} credits",
                 estimated_fee,
                 fee
             );
@@ -138,7 +158,7 @@ impl AppContext {
 
         // A password-protected identity must never acquire a keyless
         // key. The object password was already verified up front (before the
-        // broadcast above), so here we just seal the newly-added key Tier-2
+        // broadcast above), so here we just seal each newly-added key Tier-2
         // under that SAME password and mark it `InVault` BEFORE saving, so the
         // at-rest encode writes no plaintext for it. The encode-path guard
         // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
@@ -146,43 +166,48 @@ impl AppContext {
         //
         // This seal is the one fallible disk write between the broadcast above
         // and the persist below, and on-chain + local cannot be made atomic. If
-        // it fails (I/O error, corrupt keystore), the key is already on-chain but
-        // not saved here: fail with the typed, actionable
-        // `IdentityKeyAddedButNotSaved` (the key is on the network; retry after
-        // freeing disk space) instead of a silent loss or a misleading storage
-        // error — and NEVER fall back to a keyless write (that would strip the
-        // protection this branch exists to preserve).
-        let new_key = (
-            PrivateKeyOnMainIdentity,
-            public_key_to_add.identity_public_key.id(),
-        );
+        // it fails (I/O error, corrupt keystore), the keys are already on-chain
+        // but not saved here: fail with the typed, actionable
+        // `IdentityKeyAddedButNotSaved` (the keys are on the network; retry
+        // after freeing disk space) instead of a silent loss or a misleading
+        // storage error — and NEVER fall back to a keyless write (that would
+        // strip the protection this branch exists to preserve). A failure
+        // partway through leaves any already-sealed keys in this loop sealed
+        // (they succeeded) and surfaces the first failure for the rest.
         if let Some(password) = verified_password {
-            self.wallet_backend()?
-                .secret_access()
-                .seal_new_identity_key_with_password(
-                    qualified_identity.identity.id().to_buffer(),
-                    &new_key.0,
-                    new_key.1,
-                    &private_key,
-                    &password,
-                )
-                .map_err(key_added_but_not_saved)?;
-            // O-1: `mark_in_vault` reports whether the key was present to flip.
-            // In this single-threaded flow the key we just inserted is always
-            // present, so a `false` is an unexpected invariant break — warn.
-            // Persistence stays safe regardless: the at-rest encode guard fails
-            // closed on any unmarked resident plaintext key of a protected
-            // identity, so no keyless key can ever be written.
-            if !qualified_identity.private_keys.mark_in_vault(&new_key) {
-                tracing::warn!(
-                    target = "backend_task::identity",
-                    "Sealed identity key was unexpectedly absent when marking it in-vault",
+            let secret_access = self.wallet_backend()?.secret_access();
+            for (public_key_to_add, private_key) in &keys_to_add {
+                let new_key = (
+                    PrivateKeyOnMainIdentity,
+                    public_key_to_add.identity_public_key.id(),
                 );
+                secret_access
+                    .seal_new_identity_key_with_password(
+                        qualified_identity.identity.id().to_buffer(),
+                        &new_key.0,
+                        new_key.1,
+                        private_key,
+                        &password,
+                    )
+                    .map_err(key_added_but_not_saved)?;
+                // O-1: `mark_in_vault` reports whether the key was present to flip.
+                // In this single-threaded flow the key we just inserted is
+                // always present, so a `false` is an unexpected invariant
+                // break — warn. Persistence stays safe regardless: the
+                // at-rest encode guard fails closed on any unmarked resident
+                // plaintext key of a protected identity, so no keyless key
+                // can ever be written.
+                if !qualified_identity.private_keys.mark_in_vault(&new_key) {
+                    tracing::warn!(
+                        target = "backend_task::identity",
+                        "Sealed identity key was unexpectedly absent when marking it in-vault",
+                    );
+                }
             }
         }
 
         self.update_local_qualified_identity(&qualified_identity)?;
-        Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
+        Ok((qualified_identity, fee_result))
     }
 }
 

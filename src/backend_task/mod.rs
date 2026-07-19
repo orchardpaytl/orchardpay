@@ -512,6 +512,12 @@ pub enum BackendTaskSuccessResult {
     OrchardPayContactSearchResults(
         Vec<crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult>,
     ),
+    /// Result of `OrchardPayTask::CheckOwnShieldedAddress` — whether
+    /// `identity_id` has a published `shieldedAddress` document.
+    OrchardPayOwnShieldedAddressStatus {
+        identity_id: dash_sdk::platform::Identifier,
+        published: bool,
+    },
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`

@@ -470,7 +470,15 @@ pub enum IdentityTask {
         /// Wallet seed hash for signing
         wallet_seed_hash: WalletSeedHash,
     },
-    AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    /// Add one or more keys to an identity in a single Identity Update
+    /// transition. Always non-empty in practice — the single call site
+    /// (`AddKeyScreen`) submits one key, and OrchardPay's "publish a
+    /// shielded address" flow submits its ENCRYPTION + DECRYPTION pair
+    /// together (see `backend_task::orchardpay::shielded_address`).
+    AddKeysToIdentity(
+        QualifiedIdentity,
+        Vec<(QualifiedIdentityPublicKey, [u8; 32])>,
+    ),
     /// Opt-in: seal every keyless (Tier-1) vault-stored key of this
     /// identity under ONE per-identity object `password` (Tier-2), and store
     /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
@@ -567,28 +575,26 @@ pub fn default_identity_key_specs(
 }
 
 /// Returns the full set of default key specifications a new identity should
-/// carry: DashPay's ([`default_identity_key_specs`]) plus OrchardPay's
-/// ([`crate::backend_task::orchardpay::keys::default_orchardpay_key_specs`]),
-/// when OrchardPay's contract is configured for the active network. When it
-/// isn't (a fresh network where nobody has registered the contract yet),
-/// this degrades gracefully to DashPay's keys alone — a new identity simply
-/// gets OrchardPay's keys added later, whenever the contract becomes known.
+/// carry: currently just DashPay's ([`default_identity_key_specs`]).
+///
+/// OrchardPay's ENCRYPTION/DECRYPTION keys are deliberately **not** included
+/// here — unlike DashPay, OrchardPay adds its contract-bounded keys lazily,
+/// at the moment an identity actually publishes its `shieldedAddress`
+/// (`backend_task::orchardpay::shielded_address::publish_own_shielded_address`),
+/// not at identity-creation time. This keeps identity registration cheaper
+/// for identities that never use OrchardPay, and means "set up OrchardPay"
+/// is exactly one flow (publish a shielded address) regardless of whether
+/// the identity is brand new or years old — no separate "add these keys"
+/// step to forget. See `docs/orchardpay/PROTOCOL_DESIGN.md`.
 ///
 /// This is the actual entry point every identity-creation code path should
-/// call instead of [`default_identity_key_specs`] directly, so DashPay's and
-/// OrchardPay's keys never drift out of sync across call sites.
+/// call instead of [`default_identity_key_specs`] directly, so future
+/// additions to the default key set (if any) don't drift out of sync across
+/// call sites.
 pub fn combined_default_key_specs(
     app_context: &AppContext,
 ) -> Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> {
-    let mut specs = default_identity_key_specs(app_context.dashpay_contract.id());
-    if let Some(orchardpay_contract_id) = app_context.orchardpay_contract_id() {
-        specs.extend(
-            crate::backend_task::orchardpay::keys::default_orchardpay_key_specs(
-                orchardpay_contract_id,
-            ),
-        );
-    }
-    specs
+    default_identity_key_specs(app_context.dashpay_contract.id())
 }
 
 /// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity from a
@@ -865,10 +871,10 @@ impl AppContext {
                     .withdraw_from_identity(qualified_identity, to_address, credits, id)
                     .await?)
             }
-            IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
-                self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
-                    .await
-            }
+            IdentityTask::AddKeysToIdentity(qualified_identity, keys_to_add) => self
+                .add_keys_to_identity(sdk, qualified_identity, keys_to_add)
+                .await
+                .map(|(_, fee_result)| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result)),
             IdentityTask::RegisterIdentity(registration_info) => {
                 Ok(self.register_identity(registration_info).await?)
             }

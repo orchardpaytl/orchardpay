@@ -68,4 +68,14 @@ pub enum OrchardPayError {
         #[source]
         source: Box<dash_sdk::Error>,
     },
+
+    /// Generating a fresh keypair for an OrchardPay-bound ENCRYPTION/
+    /// DECRYPTION key failed. Extremely unlikely in practice (secp256k1
+    /// key generation essentially never fails) — surfaced as a typed
+    /// variant rather than silently retried.
+    #[error("Could not prepare your private OrchardPay keys. Please try again.")]
+    KeyGenerationFailed {
+        #[source]
+        source: Box<dash_sdk::dpp::ProtocolError>,
+    },
 }

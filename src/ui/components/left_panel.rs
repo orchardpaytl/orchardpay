@@ -28,9 +28,9 @@ use std::sync::Arc;
 /// superseded by OrchardPay's ZK-based contact model (see
 /// docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md).
 /// OrchardPay's own nav entry (`RootScreenType::RootScreenOrchardPay`) is
-/// now wired below as "Private Contacts" (Milestone D). Legacy DashPay
-/// stays hidden but intact until OrchardPay reaches full parity (messaging,
-/// per `docs/ORCHARDPAY_MIGRATION.md`).
+/// now wired below as "OrchardPay" (Milestone D). Legacy DashPay stays
+/// hidden but intact until OrchardPay reaches full parity (messaging, per
+/// `docs/ORCHARDPAY_MIGRATION.md`).
 fn nav_button_specs() -> &'static [(
     &'static str,
     RootScreenType,
@@ -44,13 +44,10 @@ fn nav_button_specs() -> &'static [(
             "identity.png",
             None,
         ),
-        // TODO: swap `dashpay.png` for a dedicated OrchardPay glyph once one
-        // is added to `icons/` — reused as a placeholder for now, the same
-        // way `voting.png` stands in for Masternodes below.
         (
-            "Private Contacts",
+            "OrchardPay",
             RootScreenType::RootScreenOrchardPay,
-            "dashpay.png",
+            "orchardpay_tree.svg",
             None,
         ),
         // Masternodes sits directly below the identity cluster (locked decision
@@ -157,7 +154,12 @@ pub fn add_left_panel(
                                                 {
                                                     continue;
                                                 }
-                                                let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
+                                                let texture: Option<TextureHandle> =
+                                                    if icon_path.ends_with(".svg") {
+                                                        load_svg_icon(ctx, icon_path, 52, 52)
+                                                    } else {
+                                                        load_icon(ctx, icon_path)
+                                                    };
                                                 // Check if this button's category is selected
                                                 let is_selected = match *screen_type {
                                                     // DashPay: check if any DashPay subscreen is selected
