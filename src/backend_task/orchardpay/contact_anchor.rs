@@ -78,6 +78,18 @@ pub const MEMO_TAG_ANCHOR: [u8; 4] = *b"OPA1";
 /// error.
 const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 100_000_000;
 
+/// Platform-assigned `$createdAt` (ms since epoch) of the document a
+/// `DocumentTask::BroadcastDocument` just broadcast, if `result` is that
+/// variant. Used to snapshot "when I sent this request" into local contact
+/// state without a second network round-trip — the broadcast response
+/// already carries it.
+fn broadcast_document_created_at(result: &BackendTaskSuccessResult) -> Option<u64> {
+    match result {
+        BackendTaskSuccessResult::BroadcastedDocument(document) => document.created_at(),
+        _ => None,
+    }
+}
+
 /// Start a new contact relationship with `counterparty_identity_id`:
 /// publish my own `contactAnchor` (with `anchorData` already populated from
 /// what I know at this point — see [`AnchorDataRecord`]) and send a
@@ -109,8 +121,12 @@ pub async fn initiate_contact(
     {
         // Already initiated, already inbound-pending, or already established
         // — the caller should be looking at that existing state, not
-        // starting a new one.
-        return Err(OrchardPayError::AnchorNotFound.into());
+        // starting a new one. The UI's search screen already pre-checks
+        // this (see contact_search.rs's existing_relationship field), so
+        // reaching here means the check raced with stale search results —
+        // still worth a clear, distinct error rather than the misleading
+        // "not found".
+        return Err(OrchardPayError::RelationshipAlreadyExists.into());
     }
 
     let counterparty_shielded_address =
@@ -172,7 +188,7 @@ pub async fn initiate_contact(
         .await?;
     let anchor_record = AnchorDataRecord {
         counterparty_identity_id: counterparty_identity_id.to_buffer(),
-        counterparty_name_snapshot: Some(counterparty_name),
+        counterparty_name_snapshot: Some(counterparty_name.clone()),
         my_reference_id,
         their_reference_id: None,
         my_initial_message: None,
@@ -257,6 +273,8 @@ pub async fn initiate_contact(
         &OrchardPayContactState::PendingOutbound {
             my_reference_id,
             my_anchor_document_id: document_id.to_buffer(),
+            name: Some(counterparty_name),
+            created_at: broadcast_document_created_at(&result),
         },
     )?;
 
@@ -355,7 +373,7 @@ pub async fn accept_contact(
         .await?;
     let anchor_record = AnchorDataRecord {
         counterparty_identity_id: counterparty_identity_id.to_buffer(),
-        counterparty_name_snapshot: counterparty_name,
+        counterparty_name_snapshot: counterparty_name.clone(),
         my_reference_id,
         their_reference_id: Some(their_reference_id),
         my_initial_message: None,
@@ -443,6 +461,8 @@ pub async fn accept_contact(
             their_reference_id,
             counterparty_encryption_pubkey,
             counterparty_decryption_pubkey,
+            name: counterparty_name,
+            created_at: broadcast_document_created_at(&result),
         },
     )?;
 
@@ -521,13 +541,21 @@ pub async fn handle_incoming_anchor_signal(
     let backend = app_context.wallet_backend()?;
     match backend.orchardpay_get_contact_state(&owner_id, &sender_id)? {
         None => {
-            // Fresh inbound request.
+            // Fresh inbound request. Best-effort: a DPNS lookup failure
+            // shouldn't block recording the request, it just means the
+            // Contacts list won't show a name for it yet.
+            let sender_name = resolve_dpns_name_for_identity(app_context, sdk, sender_id)
+                .await
+                .ok()
+                .flatten();
             backend.orchardpay_set_contact_state(
                 &owner_id,
                 &sender_id,
                 &OrchardPayContactState::PendingInboundUnaccepted {
                     their_reference_id: their_payload.reference_id,
                     their_anchor_document_id: anchor_document_id.to_buffer(),
+                    name: sender_name,
+                    created_at: document.created_at(),
                 },
             )?;
             Ok(true)
@@ -535,6 +563,8 @@ pub async fn handle_incoming_anchor_signal(
         Some(OrchardPayContactState::PendingOutbound {
             my_reference_id,
             my_anchor_document_id,
+            name,
+            created_at,
         }) => {
             // This is the counterparty's return signal — complete my own
             // anchor's anchorData: decrypt the partial record I wrote at
@@ -625,6 +655,8 @@ pub async fn handle_incoming_anchor_signal(
                         .expect(
                             "set immediately above, or already present in the decrypted record",
                         ),
+                    name,
+                    created_at,
                 },
             )?;
             Ok(true)
@@ -951,6 +983,8 @@ pub async fn recover_own_anchors(
             continue;
         }
 
+        let name = anchor_record.counterparty_name_snapshot.clone();
+        let created_at = document.created_at();
         let state = match anchor_record.their_reference_id {
             Some(their_reference_id) => {
                 let counterparty_encryption_pubkey =
@@ -987,11 +1021,15 @@ pub async fn recover_own_anchors(
                     their_reference_id,
                     counterparty_encryption_pubkey,
                     counterparty_decryption_pubkey,
+                    name,
+                    created_at,
                 }
             }
             None => OrchardPayContactState::PendingOutbound {
                 my_reference_id: anchor_record.my_reference_id,
                 my_anchor_document_id: document.id().to_buffer(),
+                name,
+                created_at,
             },
         };
 

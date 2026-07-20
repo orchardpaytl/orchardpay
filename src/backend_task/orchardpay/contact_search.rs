@@ -11,6 +11,7 @@ use crate::backend_task::{
     BackendTaskSuccessResult, NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout,
 };
 use crate::context::AppContext;
+use crate::model::orchardpay::OrchardPayContactState;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
@@ -19,18 +20,23 @@ use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use std::sync::Arc;
 
 /// One DPNS search hit, annotated with whether the identity has published
-/// an OrchardPay `shieldedAddress` and so can actually be contacted.
+/// an OrchardPay `shieldedAddress` and so can actually be contacted, and
+/// with any existing local relationship state so the UI can show "already
+/// sent"/"already connected" instead of offering to send a duplicate
+/// request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OrchardPayContactSearchResult {
     pub identity_id: Identifier,
     pub username: String,
     pub contactable: bool,
+    pub existing_relationship: Option<OrchardPayContactState>,
 }
 
 pub async fn search_contacts(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     search_query: String,
+    owner_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let query_trimmed = search_query.trim();
     if query_trimmed.is_empty() {
@@ -89,15 +95,19 @@ pub async fn search_contacts(
         identity_usernames.push((identity_id, username));
     }
 
+    let backend = app_context.wallet_backend()?;
     let mut results = Vec::with_capacity(identity_usernames.len());
     for (identity_id, username) in identity_usernames {
         let contactable = lookup_shielded_address(app_context, sdk, identity_id)
             .await?
             .is_some();
+        let existing_relationship =
+            backend.orchardpay_get_contact_state(&owner_id, &identity_id)?;
         results.push(OrchardPayContactSearchResult {
             identity_id,
             username,
             contactable,
+            existing_relationship,
         });
     }
 

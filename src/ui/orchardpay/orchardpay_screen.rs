@@ -40,6 +40,7 @@ use crate::ui::components::top_panel::{
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::dashpay::format_relative_time;
 use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
@@ -314,8 +315,32 @@ impl OrchardPayScreen {
                 continue;
             };
 
+            let (name, created_at) = match &state {
+                OrchardPayContactState::PendingOutbound {
+                    name, created_at, ..
+                }
+                | OrchardPayContactState::PendingInboundUnaccepted {
+                    name, created_at, ..
+                }
+                | OrchardPayContactState::Established {
+                    name, created_at, ..
+                } => (name.clone(), *created_at),
+            };
+
             ui.group(|ui| {
-                ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace());
+                match &name {
+                    Some(name) => ui.label(RichText::new(name)),
+                    None => {
+                        ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace())
+                    }
+                };
+                if let Some(sent_text) = created_at.and_then(format_relative_time) {
+                    ui.label(
+                        RichText::new(format!("Sent {sent_text}"))
+                            .size(11.0)
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                }
                 match state {
                     OrchardPayContactState::PendingOutbound { .. } => {
                         ui.label(
@@ -462,11 +487,15 @@ impl OrchardPayScreen {
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
             ui.text_edit_singleline(&mut self.search_query);
-            if ui.button("Search").clicked() && !self.search_query.trim().is_empty() {
+            if ui.button("Search").clicked()
+                && !self.search_query.trim().is_empty()
+                && let Some(identity) = &self.identity
+            {
                 self.searching = true;
                 action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
                     OrchardPayTask::SearchContacts {
                         search_query: self.search_query.clone(),
+                        owner_identity_id: identity.identity.id(),
                     },
                 )));
             }
@@ -481,16 +510,39 @@ impl OrchardPayScreen {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(&result.username);
-                    if result.contactable {
-                        if ui.button("Add Contact").clicked() {
-                            action |=
-                                self.initiate_clicked(result.identity_id, result.username.clone());
+                    match &result.existing_relationship {
+                        Some(OrchardPayContactState::PendingOutbound { .. }) => {
+                            ui.label(
+                                RichText::new("Request already sent")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
                         }
-                    } else {
-                        ui.label(
-                            RichText::new("Hasn't set up OrchardPay yet")
+                        Some(OrchardPayContactState::PendingInboundUnaccepted { .. }) => {
+                            ui.label(
+                                RichText::new(
+                                    "Wants to connect with you — check Contacts to accept",
+                                )
                                 .color(DashColors::text_secondary(dark_mode)),
-                        );
+                            );
+                        }
+                        Some(OrchardPayContactState::Established { .. }) => {
+                            ui.label(
+                                RichText::new("Already connected")
+                                    .color(DashColors::success_color(dark_mode)),
+                            );
+                        }
+                        None if result.contactable => {
+                            if ui.button("Add Contact").clicked() {
+                                action |= self
+                                    .initiate_clicked(result.identity_id, result.username.clone());
+                            }
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("Hasn't set up OrchardPay yet")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
                     }
                 });
             });

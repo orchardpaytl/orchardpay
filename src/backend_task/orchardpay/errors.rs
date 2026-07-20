@@ -48,6 +48,15 @@ pub enum OrchardPayError {
     #[error("This private contact request could not be found. It may no longer be available.")]
     AnchorNotFound,
 
+    /// `initiate_contact` found local contact state already recorded for
+    /// this counterparty — a request was already sent, already received, or
+    /// the relationship is already established. Distinct from
+    /// [`Self::AnchorNotFound`], which means the opposite (nothing found).
+    #[error(
+        "You've already connected with this contact, or a request is already pending. Check your Contacts list."
+    )]
+    RelationshipAlreadyExists,
+
     /// The active identity has no ENCRYPTION or DECRYPTION key bound to
     /// OrchardPay's `contactAnchor` document type. Identities created before
     /// OrchardPay's contract was configured for this network won't have
