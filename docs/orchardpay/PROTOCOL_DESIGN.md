@@ -553,44 +553,115 @@ recipient can always tell a message was edited after the fact by comparing
 the two, even without knowing what changed. The real, authoritative record
 of *how much value moved* is always the on-chain shielded transfer itself,
 never the message — the message is supplementary. Milestone E's UI should
-surface an "edited" indicator whenever `$updatedAt != $createdAt`, and
-should gracefully handle a `reply_to_document_id` that no longer resolves
-(the referenced message was deleted) rather than treating it as an error.
+surface an "edited" indicator whenever `$updatedAt != $createdAt`. (Reply-
+threading via a `reply_to_document_id` field was considered for `Message`
+and deliberately deferred — see "Message content schema for the three
+in-scope kinds" below — so there's no reply-graph to handle yet.)
 
-To preserve the "anonymity of usecases" goal, `messageType` (payment / memo /
-payment-request / purchase-order / receipt / general-message) is deliberately
-**inside** the encrypted payload, not a plaintext top-level field — otherwise
+To preserve the "anonymity of usecases" goal, the message's kind is
+deliberately **inside** the encrypted payload (the `MessageContent` enum
+variant itself, see below), not a plaintext top-level field — otherwise
 usage-pattern statistics would leak even without identity linkage.
 `maxItems: 5120` is Dash Platform's real `max_field_value_size` system limit
-(confirmed against the pinned SDK rev's `SYSTEM_LIMITS_V2`). 5 KiB per message
-(before AES-GCM/AEAD overhead) is a real constraint on `PurchaseOrder`-style
-payloads with many line items; large payloads may need to split across
-multiple linked `encryptedMessage` documents (via `reply_to_document_id`) if
-this becomes a practical limitation — not addressed in this increment.
+(confirmed against the pinned SDK rev's `SYSTEM_LIMITS_V2`).
+
+Milestone E's first increment covers three of the eventual message kinds —
+`Message`, `Payment`, `PaymentRequest` — see "Message content schema for the
+three in-scope kinds" below for their exact fields and the payment-
+correlation design. `PurchaseOrder`/`Receipt` (and any richer split of
+`Message` into separate `Memo`/`GeneralMessage` kinds) remain future work:
+`MessageContent` is designed to grow new variants without a contract
+migration, so adding them later needs no schema change here, only new
+application code.
 
 ```rust
 pub struct EncryptedMessageDocument {
     pub reference_id: [u8; 32],
-    /// AES-256-GCM ciphertext of `EncryptedMessagePayload`.
+    /// AES-256-GCM ciphertext of `MessageContent`, encrypted under this
+    /// relationship's ECDH shared secret — the same scheme as `data`, never
+    /// the wallet-local `anchorData` key, since `msgData` must be readable
+    /// by both parties.
     pub msg_data: Vec<u8>,
 }
 
-pub enum MessageKind {
-    Payment,
-    Memo,
-    PaymentRequest,
-    PurchaseOrder,
-    Receipt,
-    GeneralMessage,
-}
+/// Decrypted contents. The variant itself is the type tag — no separate
+/// plaintext or in-payload `kind`/`type` field, so decoding is compiler-
+/// checked rather than string-matched. Bincode+serde, matching
+/// `ContactAnchorPayload`/`AnchorDataRecord`'s convention. New variants
+/// (`PurchaseOrder`, `Receipt`, etc.) can be added later without a contract
+/// migration — only this enum changes.
+pub enum MessageContent {
+    /// A plain text message. No reply-threading in this increment —
+    /// `reply_to_document_id` was considered and deliberately deferred; it
+    /// can be added as a new optional field later without breaking
+    /// existing messages.
+    Message { data: String },
 
-/// Decrypted contents — the actual polymorphic payload.
-pub struct EncryptedMessagePayload {
-    pub kind: MessageKind,
-    pub body: Vec<u8>, // kind-specific serialized fields
-    pub reply_to_document_id: Option<[u8; 32]>,
+    /// Documents a real value transfer that already happened — see
+    /// "Message content schema for the three in-scope kinds" below for the
+    /// on-chain memo correlation and the amount-trust model.
+    Payment {
+        /// Platform credits, as claimed by the sender. Never trusted as
+        /// the authoritative amount — see below.
+        amount: u64,
+        memo: Option<String>,
+    },
+
+    /// A standing request for payment. No transfer accompanies this by
+    /// itself; no expiration field — a request stays open until the
+    /// requester deletes it or it's answered. No `fulfills_request_id`-style
+    /// back-reference from `Payment` — that link is carried by the on-chain
+    /// memo instead, not a document field.
+    PaymentRequest { amount: u64, memo: Option<String> },
 }
 ```
+
+### Message content schema for the three in-scope kinds (decided 2026-07-19)
+
+Milestone E's first increment scopes down to `Message`, `Payment`, and
+`PaymentRequest` — `PurchaseOrder`/`Receipt` and a possible richer
+`Memo`/`GeneralMessage` split are deferred, not designed yet. Since Platform
+never sees `msgData`'s plaintext structure (it's opaque encrypted bytes to
+the contract and indexer), there's no schema-validation safety net here —
+unlike `contactAnchor`'s fields, which at least have Platform's byte-length
+constraints to lean on, this shape is enforced only by this app's own
+encode/decode code on both ends.
+
+**Correlating a real payment to its `encryptedMessage`.** A new memo tag,
+`MEMO_TAG_PAYMENT` (distinct from `contactAnchor`'s `MEMO_TAG_ANCHOR`),
+reuses the same on-chain-memo-correlation pattern the anchor handshake
+established: tag (4 bytes) + a DocumentID (32 bytes) = the transfer's full
+36-byte memo. Two distinct correlation targets, depending on context:
+
+- **Unprompted payment** (not answering a request): the sender broadcasts a
+  `Payment` document, then sends the real shielded transfer memo'd with
+  `MEMO_TAG_PAYMENT` + that `Payment` document's own DocumentID. The
+  recipient's memo scan fetches it by ID (never by query — the same privacy
+  property as `contactAnchor`) and decrypts it for the `amount`/`memo`.
+- **Payment answering a `PaymentRequest`**: no new `Payment` document is
+  created at all. The payer sends a bare shielded transfer memo'd with
+  `MEMO_TAG_PAYMENT` + the *original* `PaymentRequest`'s DocumentID. The
+  requester's memo scan recognizes the referenced ID as one of their own
+  outstanding `PaymentRequest` documents (`$ownerId` is their own identity,
+  so no ambiguity) and marks it fulfilled — no extra document broadcast, no
+  extra cost. If the payer wants to attach a note specific to this payment
+  (e.g. "sorry it's late!"), they may optionally also send a separate
+  `Message` document through the normal `refId`-polling discovery path —
+  entirely optional, not memo-correlated, and not required for the payment
+  to register as fulfilling the request.
+
+**Amount trust model.** A `Payment`/`PaymentRequest` document's `amount`
+field is only ever what the sender/requester *claims* — never proof of what
+actually moved. The recipient's own wallet independently observes the real
+transferred value via its own decrypted shielded note, which is always the
+authoritative source for the amount the UI displays. The document's `amount`
+is used only as a comparison: if it doesn't match the wallet's own note
+value (for an unprompted `Payment`) or the original request's `amount` (for
+a fulfillment), the UI flags the mismatch rather than silently trusting or
+silently ignoring it. A deliberate, accepted consequence: a partial payment
+against a request surfaces as a flagged mismatch, not a distinct "partially
+paid" state — no `fulfills_request_id`-style tracking was added to
+disambiguate that case for this increment.
 
 ## Dropped: `protocolVersion`
 
@@ -645,16 +716,27 @@ structurally identical regardless of purpose.
    feature. Reconciled with `Payment`-kind messages documenting a real value
    transfer by making edits *detectable* (`$createdAt` vs `$updatedAt`)
    rather than preventing them — see "Editing and deleting messages" above.
+8. **`encryptedMessage` content schema, first increment**: a single
+   `MessageContent` enum (bincode+serde, variant-as-tag) covering `Message`,
+   `Payment`, `PaymentRequest` — no `reply_to_document_id`, no
+   `fulfills_request_id`. Real payments correlate to their `encryptedMessage`
+   (or, when fulfilling a request, directly to the `PaymentRequest`, with no
+   `Payment` document created at all) via a new `MEMO_TAG_PAYMENT` on-chain
+   memo tag, mirroring `contactAnchor`'s `MEMO_TAG_ANCHOR`. `amount` fields
+   are never trusted as authoritative — the UI always sources the displayed
+   amount from the recipient's own decrypted note and flags mismatches. See
+   "Message content schema for the three in-scope kinds" above.
 
 ## Payment semantics (resolved)
 
-Sending a `Payment`-kind `encryptedMessage` performs a **real** shielded
-value transfer, not just a message about a payment: it wraps an actual
-shielded transfer (memo-tagged to correlate it with the message thread) plus
-the `encryptedMessage` document carrying the amount/note. `Memo` /
-`GeneralMessage` / etc. kinds remain pure Platform documents with no value
-movement — sending "just a message" stays possible and cheap, distinct from
-sending a payment.
+Sending a `Payment` performs a **real** shielded value transfer, not just a
+message about a payment: either it wraps an actual shielded transfer
+(memo-tagged to correlate it with the `Payment` document carrying the
+amount/note), or, when answering a `PaymentRequest`, it's a bare transfer
+memo-tagged directly to that request — see "Message content schema for the
+three in-scope kinds" above for both paths. `Message`/`PaymentRequest` stay
+pure Platform documents with no value movement — sending "just a message" or
+"just a request" stays possible and cheap, distinct from sending a payment.
 
 ## Status of implementation (Milestone tracker — see the OrchardPay plan)
 
@@ -681,17 +763,24 @@ sending a payment.
   `docs/ai-design/2026-07-18-orchardpay-memo-detection/`). UI:
   `OrchardPayScreen` (Contacts/Search subscreens), reachable from the left
   nav as "Private Contacts".
-- **Decided, not yet implemented (2026-07-19)**: the `anchorData`
-  redesign — wallet-local HD key (`m/420'/5'/1'`), the
-  `AnchorDataRecord` content model, and public-key caching for both ECDH
-  directions. See "`anchorData`: a wallet-local recovery record" above for
-  the full design. Should land before Milestone E, since messaging's poll
-  path is the main beneficiary of the cached public keys. No migration
-  needed — no `contactAnchor` documents exist on any network yet.
+- **Done (2026-07-19)**: the `anchorData` redesign — wallet-local HD key
+  (`m/420'/5'/1'`), the `AnchorDataRecord` content model, and public-key
+  caching for both ECDH directions, wired through `initiate_contact`/
+  `accept_contact`/`handle_incoming_anchor_signal`
+  (`src/backend_task/orchardpay/contact_anchor.rs`). See "`anchorData`: a
+  wallet-local recovery record" above for the full design.
+- **Decided, not yet implemented (2026-07-19)**: `encryptedMessage`'s
+  content schema for the first three in-scope kinds —
+  `Message`/`Payment`/`PaymentRequest` as a single `MessageContent` enum,
+  the `MEMO_TAG_PAYMENT` on-chain correlation convention (including the
+  no-extra-document request-fulfillment path), and the amount-trust/
+  mismatch-flagging model. See "Message content schema for the three
+  in-scope kinds" above. `PurchaseOrder`/`Receipt` and reply-threading
+  remain future work, not yet designed.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
-  independent of Testnet's); messaging send/receive
-  (`encryptedMessage`/`MessageKind`, Milestone E); real payment-with-memo
-  transfers riding on messages; recovery UI for a reinstalled/new-device
-  user (Milestone F); HD-deriving the ENCRYPTION/DECRYPTION identity keys
-  themselves (the companion fix for the other half of the relaunch-from-
-  new-wallet recovery gap — not yet decided).
+  independent of Testnet's); messaging send/receive itself (Milestone E,
+  schema decided above but not implemented); recovery UI for a
+  reinstalled/new-device user (Milestone F); HD-deriving the
+  ENCRYPTION/DECRYPTION identity keys themselves (the companion fix for the
+  other half of the relaunch-from-new-wallet recovery gap — not yet
+  decided).
