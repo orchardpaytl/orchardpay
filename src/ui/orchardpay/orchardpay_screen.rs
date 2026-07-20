@@ -24,6 +24,7 @@ use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -33,7 +34,9 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
 };
-use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
+use crate::ui::components::top_panel::{
+    add_top_panel_with_global_nav_and_label, subdued_everyday_spec,
+};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -186,6 +189,22 @@ impl OrchardPayScreen {
         }
 
         LocalReadiness::ContractConfigured
+    }
+
+    /// "Shielded balance: X DASH", rendered on the far right of the shared top
+    /// panel so a user composing a Payment can see what they have to work
+    /// with without leaving OrchardPay. Reads
+    /// `AppContext::shielded_balance_credits` — an in-memory snapshot kept
+    /// current by the shielded sync event bridge, no network call or task
+    /// dispatch needed. `None` if no wallet is selected yet.
+    fn shielded_balance_label(&self) -> Option<String> {
+        let wallet = self.selected_wallet.as_ref()?;
+        let seed_hash = wallet.read().ok()?.seed_hash();
+        let balance = self.app_context.shielded_balance_credits(&seed_hash);
+        Some(format!(
+            "Shielded balance: {}",
+            format_credits_as_dash(balance)
+        ))
     }
 
     fn render_needs_identity(&self, ui: &mut Ui) -> AppAction {
@@ -596,11 +615,12 @@ impl ScreenLike for OrchardPayScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let readiness = self.compute_local_readiness();
 
-        let mut action = add_top_panel_with_global_nav(
+        let mut action = add_top_panel_with_global_nav_and_label(
             ui,
             &self.app_context,
             subdued_everyday_spec("OrchardPay", RootScreenType::RootScreenOrchardPay),
             vec![],
+            self.shielded_balance_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
 

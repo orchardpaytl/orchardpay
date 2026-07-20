@@ -142,6 +142,7 @@ fn render_top_island(
     app_context: &Arc<AppContext>,
     left: impl FnOnce(&mut Ui) -> AppAction,
     right_buttons: Vec<(&str, DesiredAppAction)>,
+    right_label: Option<String>,
 ) -> AppAction {
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
@@ -184,6 +185,19 @@ fn render_top_island(
                         columns[1].with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
+                                // Plain, non-interactive label (e.g. a balance
+                                // readout) anchored to the far right edge —
+                                // rendered first so it sits outermost in the
+                                // right-to-left layout, opposite the left
+                                // column's location/breadcrumb.
+                                if let Some(text) = right_label {
+                                    ui.label(
+                                        RichText::new(text)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.add_space(3.0);
+                                }
+
                                 // Separate contract and document-related actions
                                 let mut contract_actions = Vec::new();
                                 let mut doc_actions = Vec::new();
@@ -328,6 +342,28 @@ pub fn add_top_panel(
         app_context,
         |ui| add_location_view(ui, location, dark_mode),
         right_buttons,
+        None,
+    )
+}
+
+/// Like [`add_top_panel`], but also renders `right_label` as a plain,
+/// non-interactive readout anchored to the far right edge of the island —
+/// e.g. a balance summary. Used by screens that want that readout in the
+/// shared panel rather than as a separate row underneath it.
+pub fn add_top_panel_with_label(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    location: Vec<(&str, AppAction)>,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+    right_label: Option<String>,
+) -> AppAction {
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
+    render_top_island(
+        ui,
+        app_context,
+        |ui| add_location_view(ui, location, dark_mode),
+        right_buttons,
+        right_label,
     )
 }
 
@@ -340,7 +376,7 @@ pub fn add_top_panel_with_breadcrumb(
     breadcrumb: impl FnOnce(&mut Ui) -> AppAction,
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
-    render_top_island(ui, app_context, breadcrumb, right_buttons)
+    render_top_island(ui, app_context, breadcrumb, right_buttons, None)
 }
 
 /// Standard how-to-change tooltip for an unwired wallet pill (FR-GLOBAL-NAV-2
@@ -430,6 +466,34 @@ pub fn add_top_panel_with_global_nav(
             AppAction::None
         },
         right_buttons,
+        None,
+    );
+    action |= apply_global_nav_effect(app_context, effect);
+    action
+}
+
+/// Like [`add_top_panel_with_global_nav`], but also renders `right_label` as a
+/// plain, non-interactive readout anchored to the far right edge of the
+/// island — e.g. a balance summary — instead of a separate row underneath the
+/// panel.
+pub fn add_top_panel_with_global_nav_and_label(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+    right_label: Option<String>,
+) -> AppAction {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+        right_label,
     );
     action |= apply_global_nav_effect(app_context, effect);
     action
@@ -463,6 +527,7 @@ pub fn add_top_panel_with_global_nav_capturing(
             AppAction::None
         },
         right_buttons,
+        None,
     );
     action |= apply_global_nav_effect(app_context, effect.clone());
     (action, effect)

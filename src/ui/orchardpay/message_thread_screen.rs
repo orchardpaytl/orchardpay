@@ -10,11 +10,12 @@ use crate::backend_task::orchardpay::encryption::MessageContent;
 use crate::backend_task::orchardpay::messages::ThreadMessage;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::add_top_panel_with_label;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -109,6 +110,20 @@ impl MessageThreadScreen {
         self.selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok().map(|w| w.seed_hash()))
+    }
+
+    /// "Shielded balance: X DASH", rendered on the far right of the shared
+    /// top panel — the balance a `Payment`/`PaymentRequest` composed here
+    /// would draw from. Reads `AppContext::shielded_balance_credits`, an
+    /// in-memory snapshot the shielded sync event bridge keeps current — no
+    /// network call or task dispatch needed. `None` if no wallet is selected.
+    fn shielded_balance_label(&self) -> Option<String> {
+        let seed_hash = self.seed_hash()?;
+        let balance = self.app_context.shielded_balance_credits(&seed_hash);
+        Some(format!(
+            "Shielded balance: {}",
+            format_credits_as_dash(balance)
+        ))
     }
 
     fn dispatch_load(&mut self) -> AppAction {
@@ -371,7 +386,13 @@ impl ScreenLike for MessageThreadScreen {
             ),
             ("Conversation", AppAction::None),
         ];
-        let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
+        let mut action = add_top_panel_with_label(
+            ui,
+            &self.app_context,
+            breadcrumbs,
+            vec![],
+            self.shielded_balance_label(),
+        );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
 
         if !self.load_dispatched {
