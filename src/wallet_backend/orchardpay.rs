@@ -22,6 +22,7 @@ use dash_sdk::platform::shielded::{sync_shielded_notes_stream, try_decrypt_note_
 use futures::StreamExt;
 use platform_wallet::wallet::shielded::OrchardKeySet;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
@@ -29,6 +30,43 @@ use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
+
+/// Derive OrchardPay's single, wallet-wide `anchorData` encryption key at
+/// `m/420'/coin_type'/1'` — see `docs/orchardpay/PROTOCOL_DESIGN.md`'s
+/// "`anchorData`: a wallet-local recovery record" for the full design.
+/// One key for the whole wallet, shared across every identity it manages —
+/// not identity-scoped, not per-relationship, not ECDH. Pure and
+/// deterministic: the same seed always re-derives the identical key, which
+/// is exactly what makes `anchorData` recoverable independent of any
+/// on-chain identity key state.
+///
+/// `420'` is a deliberately claimed, currently-unregistered top-level BIP43
+/// purpose — every other feature in this wallet's tree instead nests under
+/// the existing DIP-9 `9'` umbrella (see `key-wallet/src/dip9.rs`). Chosen
+/// anyway as a forward-looking bet on a future DIP reservation; see the
+/// design doc for the accepted-risk reasoning.
+fn derive_anchor_data_key(
+    seed_bytes: &[u8; 64],
+    network: Network,
+) -> Result<Zeroizing<[u8; 32]>, TaskError> {
+    use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+    use std::str::FromStr;
+
+    let derive_err =
+        |e: dash_sdk::dpp::key_wallet::bip32::Error| TaskError::AnchorDataKeyDerivationFailed {
+            source: Box::new(e),
+        };
+
+    let master_xprv = ExtendedPrivKey::new_master(network, seed_bytes).map_err(derive_err)?;
+
+    let coin_type = crate::model::wallet::coin_type_for_network(network);
+    let path = DerivationPath::from_str(&format!("m/420'/{coin_type}'/1'")).map_err(derive_err)?;
+
+    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+    let derived = master_xprv.derive_priv(&secp, &path).map_err(derive_err)?;
+
+    Ok(Zeroizing::new(derived.private_key.secret_bytes()))
+}
 
 /// Value: bincode-encoded [`OrchardPayContactState`]. Scope:
 /// [`DetScope::Identity`] of the owner — per-relationship state is private
@@ -218,5 +256,59 @@ impl WalletBackend {
                 Ok((found, next_start_index))
             })
             .await
+    }
+
+    /// Resolve the wallet's seed through the secret chokepoint and derive
+    /// its fixed `anchorData` encryption key ([`derive_anchor_data_key`]).
+    /// Safe to call repeatedly — cheap, pure derivation with no persistent
+    /// state; the design doc's nonce-reuse analysis is what makes reusing
+    /// the result across many documents safe, not caching it here.
+    pub async fn orchardpay_anchor_data_key(
+        &self,
+        seed_hash: &WalletSeedHash,
+        network: Network,
+    ) -> Result<Zeroizing<[u8; 32]>, TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret(&scope, |plaintext| {
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                derive_anchor_data_key(seed, network)
+            })
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SEED: [u8; 64] = [0x42u8; 64];
+
+    #[test]
+    fn anchor_data_key_is_deterministic() {
+        let a = derive_anchor_data_key(&TEST_SEED, Network::Testnet).expect("derive");
+        let b = derive_anchor_data_key(&TEST_SEED, Network::Testnet).expect("derive");
+        assert_eq!(
+            *a, *b,
+            "same seed + network must re-derive the identical key"
+        );
+    }
+
+    #[test]
+    fn anchor_data_key_differs_across_networks() {
+        let testnet = derive_anchor_data_key(&TEST_SEED, Network::Testnet).expect("derive");
+        let mainnet = derive_anchor_data_key(&TEST_SEED, Network::Mainnet).expect("derive");
+        assert_ne!(
+            *testnet, *mainnet,
+            "mainnet/testnet coin type must produce different keys"
+        );
+    }
+
+    #[test]
+    fn anchor_data_key_differs_across_seeds() {
+        let a = derive_anchor_data_key(&TEST_SEED, Network::Testnet).expect("derive");
+        let b = derive_anchor_data_key(&[0x24u8; 64], Network::Testnet).expect("derive");
+        assert_ne!(*a, *b, "different seeds must produce different keys");
     }
 }

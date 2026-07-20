@@ -36,6 +36,10 @@ pub enum OrchardPayTask {
         qualified_identity: QualifiedIdentity,
         identity_key: IdentityPublicKey,
         counterparty_identity_id: dash_sdk::platform::Identifier,
+        /// The counterparty's DPNS name at the time of this request —
+        /// snapshotted into `anchorData` so it survives independently of a
+        /// later rename or lookup failure. See `contact_anchor::initiate_contact`.
+        counterparty_name: String,
         seed_hash: WalletSeedHash,
     },
     /// Complete a relationship already recorded as `PendingInboundUnaccepted`.
@@ -90,6 +94,7 @@ impl AppContext {
                 qualified_identity,
                 identity_key,
                 counterparty_identity_id,
+                counterparty_name,
                 seed_hash,
             } => {
                 contact_anchor::initiate_contact(
@@ -98,6 +103,7 @@ impl AppContext {
                     qualified_identity,
                     identity_key,
                     counterparty_identity_id,
+                    counterparty_name,
                     seed_hash,
                 )
                 .await

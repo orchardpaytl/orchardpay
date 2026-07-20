@@ -353,7 +353,8 @@ impl OrchardPayScreen {
                     ui.label(&result.username);
                     if result.contactable {
                         if ui.button("Add Contact").clicked() {
-                            action |= self.initiate_clicked(result.identity_id);
+                            action |=
+                                self.initiate_clicked(result.identity_id, result.username.clone());
                         }
                     } else {
                         ui.label(
@@ -391,7 +392,11 @@ impl OrchardPayScreen {
         )))
     }
 
-    fn initiate_clicked(&mut self, counterparty_identity_id: Identifier) -> AppAction {
+    fn initiate_clicked(
+        &mut self,
+        counterparty_identity_id: Identifier,
+        counterparty_name: String,
+    ) -> AppAction {
         let (Some(identity), Some(key), Some(wallet)) = (
             self.identity.clone(),
             self.selected_key.clone(),
@@ -408,6 +413,7 @@ impl OrchardPayScreen {
                 qualified_identity: identity,
                 identity_key: key,
                 counterparty_identity_id,
+                counterparty_name,
                 seed_hash,
             },
         )))

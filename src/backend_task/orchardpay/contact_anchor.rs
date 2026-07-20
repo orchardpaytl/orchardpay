@@ -16,16 +16,16 @@
 //!   own pending outbound request," depending on whether local state already
 //!   tracks this counterparty.
 //!
-//! Both `data` and `anchorData` on a given anchor document are encrypted
-//! under the *same* ECDH shared secret — the one derived from this
-//! document's owner's ENCRYPTION key and the counterparty's DECRYPTION key.
-//! There is no separate key derivation for `anchorData`: it is simply a
-//! second encrypted field on the same document, decryptable by the same two
-//! parties as `data`.
+//! `data` is encrypted under an ECDH shared secret (readable by both the
+//! owner and the counterparty), the same as before. `anchorData` is now
+//! encrypted under the wallet's fixed, HD-derived, self-only key instead —
+//! see `encryption`'s module doc and `docs/orchardpay/PROTOCOL_DESIGN.md`'s
+//! "`anchorData`: a wallet-local recovery record" for why the two fields
+//! deliberately use different key schemes.
 
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::orchardpay::encryption::ContactAnchorPayload;
+use crate::backend_task::orchardpay::encryption::{AnchorDataRecord, ContactAnchorPayload};
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::keys::{
     CONTACT_ANCHOR_DOCUMENT_TYPE, fetch_bounds_verified_counterparty_key,
@@ -77,7 +77,8 @@ pub const MEMO_TAG_ANCHOR: [u8; 4] = *b"OPA1";
 const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 1000;
 
 /// Start a new contact relationship with `counterparty_identity_id`:
-/// publish my own `contactAnchor` (with `anchorData` still empty) and send a
+/// publish my own `contactAnchor` (with `anchorData` already populated from
+/// what I know at this point — see [`AnchorDataRecord`]) and send a
 /// memo-tagged shielded transfer to their published `shieldedAddress`.
 pub async fn initiate_contact(
     app_context: &Arc<AppContext>,
@@ -85,6 +86,7 @@ pub async fn initiate_contact(
     qualified_identity: QualifiedIdentity,
     identity_key: IdentityPublicKey,
     counterparty_identity_id: Identifier,
+    counterparty_name: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
@@ -121,13 +123,30 @@ pub async fn initiate_contact(
     )
     .ok_or(OrchardPayError::OwnKeyMissing)?;
 
-    let shared_secret = compute_shared_secret(
+    // Fetch both of the counterparty's keys up front: DECRYPTION drives
+    // `data`'s ECDH secret right now, ENCRYPTION gets cached in `anchorData`
+    // for reading their future messages — no reason to make that a second
+    // network trip once messaging actually needs it.
+    let (counterparty_decryption_key, counterparty_decryption_pubkey) =
+        fetch_counterparty_key_bytes(
+            sdk,
+            orchardpay_contract.id(),
+            counterparty_identity_id,
+            Purpose::DECRYPTION,
+        )
+        .await?;
+    let (_, counterparty_encryption_pubkey) = fetch_counterparty_key_bytes(
         sdk,
         orchardpay_contract.id(),
+        counterparty_identity_id,
+        Purpose::ENCRYPTION,
+    )
+    .await?;
+
+    let shared_secret = compute_shared_secret_from_key(
         &qualified_identity,
         &my_encryption_key,
-        counterparty_identity_id,
-        Purpose::DECRYPTION,
+        &counterparty_decryption_key,
     )
     .await?;
 
@@ -142,6 +161,24 @@ pub async fn initiate_contact(
     };
     let data_bytes = my_payload
         .encrypt(&shared_secret)
+        .map_err(OrchardPayError::Crypto)?;
+
+    let anchor_data_key = backend
+        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+        .await?;
+    let anchor_record = AnchorDataRecord {
+        counterparty_identity_id: counterparty_identity_id.to_buffer(),
+        counterparty_name_snapshot: Some(counterparty_name),
+        my_reference_id,
+        their_reference_id: None,
+        my_initial_message: None,
+        my_core_payment_xpub: None,
+        my_dedicated_shielded_address: None,
+        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
+        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey),
+    };
+    let anchor_data_bytes = anchor_record
+        .encrypt(&anchor_data_key)
         .map_err(OrchardPayError::Crypto)?;
 
     let document_type = orchardpay_contract
@@ -159,7 +196,10 @@ pub async fn initiate_contact(
 
     let mut properties = BTreeMap::new();
     properties.insert(DATA_FIELD.to_string(), Value::Bytes(data_bytes));
-    properties.insert(ANCHOR_DATA_FIELD.to_string(), Value::Bytes(Vec::new()));
+    properties.insert(
+        ANCHOR_DATA_FIELD.to_string(),
+        Value::Bytes(anchor_data_bytes),
+    );
     properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
 
     let document = DppDocument::V0(DocumentV0 {
@@ -259,13 +299,26 @@ pub async fn accept_contact(
     )
     .ok_or(OrchardPayError::OwnKeyMissing)?;
 
-    let shared_secret = compute_shared_secret(
+    let (counterparty_decryption_key, counterparty_decryption_pubkey) =
+        fetch_counterparty_key_bytes(
+            sdk,
+            orchardpay_contract.id(),
+            counterparty_identity_id,
+            Purpose::DECRYPTION,
+        )
+        .await?;
+    let (_, counterparty_encryption_pubkey) = fetch_counterparty_key_bytes(
         sdk,
         orchardpay_contract.id(),
+        counterparty_identity_id,
+        Purpose::ENCRYPTION,
+    )
+    .await?;
+
+    let shared_secret = compute_shared_secret_from_key(
         &qualified_identity,
         &my_encryption_key,
-        counterparty_identity_id,
-        Purpose::DECRYPTION,
+        &counterparty_decryption_key,
     )
     .await?;
 
@@ -282,14 +335,31 @@ pub async fn accept_contact(
         .encrypt(&shared_secret)
         .map_err(OrchardPayError::Crypto)?;
 
-    let their_payload = ContactAnchorPayload {
-        reference_id: their_reference_id,
-        core_payment_xpub: None,
-        dedicated_shielded_address: None,
-        initial_message: None,
+    // Best-effort: a DPNS lookup failure shouldn't block accepting the
+    // contact, it just means the local recovery record won't carry a name
+    // snapshot yet.
+    let counterparty_name =
+        resolve_dpns_name_for_identity(app_context, sdk, counterparty_identity_id)
+            .await
+            .ok()
+            .flatten();
+
+    let anchor_data_key = backend
+        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+        .await?;
+    let anchor_record = AnchorDataRecord {
+        counterparty_identity_id: counterparty_identity_id.to_buffer(),
+        counterparty_name_snapshot: counterparty_name,
+        my_reference_id,
+        their_reference_id: Some(their_reference_id),
+        my_initial_message: None,
+        my_core_payment_xpub: None,
+        my_dedicated_shielded_address: None,
+        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
+        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey),
     };
-    let anchor_data_bytes = their_payload
-        .encrypt(&shared_secret)
+    let anchor_data_bytes = anchor_record
+        .encrypt(&anchor_data_key)
         .map_err(OrchardPayError::Crypto)?;
 
     let document_type = orchardpay_contract
@@ -385,6 +455,7 @@ pub async fn handle_incoming_anchor_signal(
     sdk: &Sdk,
     qualified_identity: &QualifiedIdentity,
     anchor_document_id: Identifier,
+    seed_hash: WalletSeedHash,
 ) -> Result<bool, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = app_context
@@ -416,13 +487,21 @@ pub async fn handle_incoming_anchor_signal(
     )
     .ok_or(OrchardPayError::OwnKeyMissing)?;
 
-    let shared_secret = compute_shared_secret(
+    // Fetch the sender's ENCRYPTION key: it drives the inbound `data`
+    // secret now, and its raw bytes get cached in `anchorData` for reading
+    // their future messages too.
+    let (sender_encryption_key, sender_encryption_pubkey) = fetch_counterparty_key_bytes(
         sdk,
         orchardpay_contract.id(),
-        qualified_identity,
-        &my_decryption_key,
         sender_id,
         Purpose::ENCRYPTION,
+    )
+    .await?;
+
+    let shared_secret = compute_shared_secret_from_key(
+        qualified_identity,
+        &my_decryption_key,
+        &sender_encryption_key,
     )
     .await?;
 
@@ -448,8 +527,8 @@ pub async fn handle_incoming_anchor_signal(
             my_anchor_document_id,
         }) => {
             // This is the counterparty's return signal — complete my own
-            // anchor by writing their ReferenceID into my anchorData, using
-            // the same shared secret I used to encrypt my own `data`.
+            // anchor's anchorData: decrypt the partial record I wrote at
+            // initiate time, fill in what I've just learned, re-encrypt.
             let my_anchor_document_identifier = Identifier::from(my_anchor_document_id);
             let mut my_document = fetch_anchor_document_by_id(
                 &orchardpay_contract,
@@ -459,23 +538,43 @@ pub async fn handle_incoming_anchor_signal(
             .await?
             .ok_or(OrchardPayError::AnchorNotFound)?;
 
-            let my_encryption_key = own_bounds_verified_key(
-                qualified_identity,
-                orchardpay_contract.id(),
-                Purpose::ENCRYPTION,
-            )
-            .ok_or(OrchardPayError::OwnKeyMissing)?;
-            let outbound_secret = compute_shared_secret(
-                sdk,
-                orchardpay_contract.id(),
-                qualified_identity,
-                &my_encryption_key,
-                sender_id,
-                Purpose::DECRYPTION,
-            )
-            .await?;
-            let anchor_data_bytes = their_payload
-                .encrypt(&outbound_secret)
+            let anchor_data_key = app_context
+                .wallet_backend()?
+                .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+                .await?;
+
+            let mut anchor_record = match my_document.properties().get(ANCHOR_DATA_FIELD) {
+                Some(Value::Bytes(bytes)) if !bytes.is_empty() => {
+                    AnchorDataRecord::decrypt(&anchor_data_key, bytes)
+                        .map_err(OrchardPayError::Crypto)?
+                }
+                _ => AnchorDataRecord {
+                    counterparty_identity_id: sender_id.to_buffer(),
+                    counterparty_name_snapshot: None,
+                    my_reference_id,
+                    their_reference_id: None,
+                    my_initial_message: None,
+                    my_core_payment_xpub: None,
+                    my_dedicated_shielded_address: None,
+                    counterparty_encryption_pubkey: None,
+                    counterparty_decryption_pubkey: None,
+                },
+            };
+            anchor_record.their_reference_id = Some(their_payload.reference_id);
+            anchor_record.counterparty_encryption_pubkey = Some(sender_encryption_pubkey);
+            if anchor_record.counterparty_decryption_pubkey.is_none() {
+                let (_, sender_decryption_pubkey) = fetch_counterparty_key_bytes(
+                    sdk,
+                    orchardpay_contract.id(),
+                    sender_id,
+                    Purpose::DECRYPTION,
+                )
+                .await?;
+                anchor_record.counterparty_decryption_pubkey = Some(sender_decryption_pubkey);
+            }
+
+            let anchor_data_bytes = anchor_record
+                .encrypt(&anchor_data_key)
                 .map_err(OrchardPayError::Crypto)?;
 
             my_document.set(ANCHOR_DATA_FIELD, Value::Bytes(anchor_data_bytes));
@@ -572,21 +671,38 @@ fn own_signing_key(identity: &QualifiedIdentity) -> Option<IdentityPublicKey> {
         .cloned()
 }
 
-/// Compute the ECDH shared secret for a message directed at
-/// `counterparty_id`, using my own `my_key`'s private bytes and
-/// `counterparty_id`'s bounds-verified key of `counterparty_key_purpose`.
+/// Fetch and bounds-verify `counterparty_id`'s key of `purpose`, returning
+/// both the `IdentityPublicKey` (for immediate ECDH use) and its raw public
+/// key bytes (for caching in an [`AnchorDataRecord`]) — one fetch serves
+/// both needs instead of making the caller choose.
+async fn fetch_counterparty_key_bytes(
+    sdk: &Sdk,
+    orchardpay_contract_id: Identifier,
+    counterparty_id: Identifier,
+    purpose: Purpose,
+) -> Result<(IdentityPublicKey, Vec<u8>), TaskError> {
+    let key = fetch_bounds_verified_counterparty_key(
+        sdk,
+        orchardpay_contract_id,
+        counterparty_id,
+        purpose,
+    )
+    .await?;
+    let bytes = key.data().as_slice().to_vec();
+    Ok((key, bytes))
+}
+
+/// Compute the ECDH shared secret from my own `my_key`'s resolved private
+/// bytes and an already-fetched `counterparty_key`.
 ///
 /// Symmetric by construction: encrypting *to* someone uses my ENCRYPTION key
 /// together with their DECRYPTION key; decrypting *from* someone uses my
 /// DECRYPTION key together with their ENCRYPTION key. ECDH's commutativity
 /// means both sides land on the same secret for a given direction.
-async fn compute_shared_secret(
-    sdk: &Sdk,
-    orchardpay_contract_id: Identifier,
+async fn compute_shared_secret_from_key(
     my_identity: &QualifiedIdentity,
     my_key: &IdentityPublicKey,
-    counterparty_id: Identifier,
-    counterparty_key_purpose: Purpose,
+    counterparty_key: &IdentityPublicKey,
 ) -> Result<Zeroizing<[u8; 32]>, TaskError> {
     let my_private_key = my_identity
         .resolve_private_key_bytes(PrivateKeyTarget::PrivateKeyOnMainIdentity, my_key.id())
@@ -594,19 +710,50 @@ async fn compute_shared_secret(
         .map(|(_, key)| key)
         .ok_or(OrchardPayError::OwnKeyMissing)?;
 
-    let counterparty_key = fetch_bounds_verified_counterparty_key(
-        sdk,
-        orchardpay_contract_id,
-        counterparty_id,
-        counterparty_key_purpose,
-    )
-    .await?;
-
     crate::backend_task::dashpay::encryption::generate_ecdh_shared_key(
         &my_private_key[..],
-        &counterparty_key,
+        counterparty_key,
     )
     .map_err(|detail| TaskError::EncryptionError { detail })
+}
+
+/// Best-effort reverse DPNS lookup for `identity_id`'s registered name, used
+/// only to populate `anchorData`'s display-friendly name snapshot. `Ok(None)`
+/// when no name is found — not an error, most identities may simply not
+/// have registered one.
+async fn resolve_dpns_name_for_identity(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity_id: Identifier,
+) -> Result<Option<String>, TaskError> {
+    let mut query =
+        DocumentQuery::new(app_context.dpns_contract.clone(), "domain").map_err(|e| {
+            OrchardPayError::QueryCreation {
+                query_target: "reverse DPNS name lookup",
+                source: Box::new(e),
+            }
+        })?;
+    query = query.with_where(WhereClause {
+        field: "records.identity".to_string(),
+        operator: WhereOperator::Equal,
+        value: Value::Identifier(identity_id.to_buffer()),
+    });
+    query.limit = 1;
+
+    let results = await_network_request_with_timeout(
+        NETWORK_REQUEST_TIMEOUT,
+        Document::fetch_many(sdk, query),
+        |source| TaskError::DocumentFetchTimeout { source },
+    )
+    .await?
+    .map_err(TaskError::from)?;
+
+    Ok(results.into_values().flatten().next().and_then(|doc| {
+        doc.properties()
+            .get("label")
+            .and_then(|v| v.as_text())
+            .map(|label| format!("{label}.dash"))
+    }))
 }
 
 /// Fetch a `contactAnchor` document directly by its DocumentID — never by

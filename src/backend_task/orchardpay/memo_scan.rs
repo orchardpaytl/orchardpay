@@ -39,8 +39,14 @@ pub async fn scan_for_incoming_anchors(
     let mut anything_changed = false;
     for anchor_document_id in found {
         for identity in &qualified_identities {
-            match handle_incoming_anchor_signal(app_context, sdk, identity, anchor_document_id)
-                .await
+            match handle_incoming_anchor_signal(
+                app_context,
+                sdk,
+                identity,
+                anchor_document_id,
+                seed_hash,
+            )
+            .await
             {
                 Ok(true) => anything_changed = true,
                 Ok(false) => {}

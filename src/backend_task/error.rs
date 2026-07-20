@@ -1567,6 +1567,16 @@ pub enum TaskError {
         source: Box<dash_sdk::dpp::key_wallet::bip32::Error>,
     },
 
+    /// Deriving OrchardPay's fixed wallet-local `anchorData` encryption key
+    /// (`m/420'/coin_type'/1'`) from the wallet's recovery phrase failed.
+    /// The seam already proved the seed is present, so this is a
+    /// derivation-math failure rather than a missing wallet.
+    #[error("Could not prepare your private OrchardPay contact records. Please try again.")]
+    AnchorDataKeyDerivationFailed {
+        #[source]
+        source: Box<dash_sdk::dpp::key_wallet::bip32::Error>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet persistence errors
     // ──────────────────────────────────────────────────────────────────────────

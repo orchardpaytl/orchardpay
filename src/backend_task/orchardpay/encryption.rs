@@ -1,11 +1,25 @@
 //! AES-256-GCM encryption for OrchardPay's `contactAnchor` payloads.
 //!
-//! Unlike DashPay's ECB/CBC helpers (`src/backend_task/dashpay/encryption.rs`),
-//! which key directly off an HD-derived key, this module is keyed by an
-//! ECDH-derived shared secret (still produced by DashPay's existing
-//! `generate_ecdh_shared_key` — reused as-is, not reimplemented). The
-//! shared secret itself *is* the AES-256 key; there is no password/Argon2
-//! step, since it's never entered by a user.
+//! Two different fields, two different key sources, because they have two
+//! different readers — see `docs/orchardpay/PROTOCOL_DESIGN.md`:
+//!
+//! - `data` is read by *two* parties (the owner and the counterparty), so
+//!   [`ContactAnchorPayload`] stays keyed by an ECDH-derived shared secret
+//!   (still produced by DashPay's existing `generate_ecdh_shared_key` in
+//!   `src/backend_task/dashpay/encryption.rs` — reused as-is, not
+//!   reimplemented). The shared secret itself *is* the AES-256 key; there
+//!   is no password/Argon2 step, since it's never entered by a user.
+//! - `anchorData` is read by exactly *one* party — the document's own
+//!   owner, writing notes to their future self — so [`AnchorDataRecord`]
+//!   uses a single fixed, wallet-local, HD-derived AES-256 key instead
+//!   (`WalletBackend::orchardpay_anchor_data_key`, `m/420'/coin_type'/1'`).
+//!   No ECDH, no network dependency, no exposure to the counterparty's key
+//!   lifecycle. See "`anchorData`: a wallet-local recovery record" in the
+//!   protocol doc for the full reasoning, including why reusing one key
+//!   across every anchor is safe under AES-256-GCM at this call volume.
+//!
+//! Both use the same `encrypt`/`decrypt` primitives below — only the key
+//! source differs.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -104,6 +118,66 @@ impl ContactAnchorPayload {
     }
 }
 
+/// Decrypted contents of a `contactAnchor`'s `anchorData` field — the
+/// owner's own durable, wallet-local recovery record for this relationship.
+/// See `docs/orchardpay/PROTOCOL_DESIGN.md`'s "`anchorData`: a wallet-local
+/// recovery record" for the full design. Encrypted under
+/// `WalletBackend::orchardpay_anchor_data_key`, never ECDH.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnchorDataRecord {
+    /// Safe to store here in the clear (once decrypted) — this whole field
+    /// is encrypted, so the top-level privacy constraint (no plaintext
+    /// counterparty field on the document) is untouched.
+    pub counterparty_identity_id: [u8; 32],
+    /// DPNS name snapshot at the time contact was established. Not
+    /// live-updated if the counterparty later renames — re-resolving on
+    /// every read would reintroduce the network dependency this scheme
+    /// exists to remove.
+    pub counterparty_name_snapshot: Option<String>,
+    /// Duplicated from this document's own `data` field, under a different
+    /// key — the point is that this survives independently of whether
+    /// `data` is still decryptable.
+    pub my_reference_id: [u8; 32],
+    /// `None` until the counterparty's return signal is decrypted.
+    pub their_reference_id: Option<[u8; 32]>,
+    /// Mirrors of `data`'s own optional fields — same rationale as
+    /// `my_reference_id`: everything given to this contact should survive
+    /// independently of the fragile ECDH path.
+    pub my_initial_message: Option<Vec<u8>>,
+    pub my_core_payment_xpub: Option<Vec<u8>>,
+    pub my_dedicated_shielded_address: Option<Vec<u8>>,
+    /// Cached ECDH *input* — the counterparty's ENCRYPTION public key
+    /// bytes, not a derived shared secret. Lets a later read recompute
+    /// `ECDH(my private key, this cached public key)` locally, with no
+    /// network fetch, while keeping the actual shared secret out of any
+    /// document. See the crypto module doc for why caching the public key
+    /// instead of the secret was the deliberate choice.
+    pub counterparty_encryption_pubkey: Option<Vec<u8>>,
+    /// Same idea, for the other ECDH direction (encrypting messages I send
+    /// them uses their DECRYPTION key).
+    pub counterparty_decryption_pubkey: Option<Vec<u8>>,
+}
+
+impl AnchorDataRecord {
+    /// Serialize with bincode (matching `src/wallet_backend/kv.rs`'s
+    /// convention), then AES-256-GCM encrypt under the wallet's fixed
+    /// `anchorData` key.
+    pub fn encrypt(&self, anchor_data_key: &[u8; 32]) -> Result<Vec<u8>, OrchardPayCryptoError> {
+        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
+            .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        encrypt(anchor_data_key, &plaintext)
+    }
+
+    /// Decrypt and deserialize a record produced by [`Self::encrypt`].
+    pub fn decrypt(anchor_data_key: &[u8; 32], data: &[u8]) -> Result<Self, OrchardPayCryptoError> {
+        let plaintext = decrypt(anchor_data_key, data)?;
+        let (record, _) =
+            bincode::serde::decode_from_slice(&plaintext, bincode::config::standard())
+                .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        Ok(record)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +216,47 @@ mod tests {
     #[test]
     fn decrypt_rejects_too_short_input() {
         let result = ContactAnchorPayload::decrypt(&[7u8; 32], &[0u8; 4]);
+        assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
+    }
+
+    #[test]
+    fn anchor_data_record_round_trips_through_encrypt_decrypt() {
+        let anchor_data_key = [9u8; 32];
+        let record = AnchorDataRecord {
+            counterparty_identity_id: [3u8; 32],
+            counterparty_name_snapshot: Some("bob.dash".to_string()),
+            my_reference_id: [1u8; 32],
+            their_reference_id: Some([2u8; 32]),
+            my_initial_message: Some(b"hi".to_vec()),
+            my_core_payment_xpub: Some(vec![4u8; 96]),
+            my_dedicated_shielded_address: None,
+            counterparty_encryption_pubkey: Some(vec![5u8; 33]),
+            counterparty_decryption_pubkey: Some(vec![6u8; 33]),
+        };
+
+        let encrypted = record.encrypt(&anchor_data_key).expect("encrypt succeeds");
+        let decrypted =
+            AnchorDataRecord::decrypt(&anchor_data_key, &encrypted).expect("decrypt succeeds");
+
+        assert_eq!(record, decrypted);
+    }
+
+    #[test]
+    fn anchor_data_record_decrypt_fails_under_wrong_key() {
+        let record = AnchorDataRecord {
+            counterparty_identity_id: [3u8; 32],
+            counterparty_name_snapshot: None,
+            my_reference_id: [1u8; 32],
+            their_reference_id: None,
+            my_initial_message: None,
+            my_core_payment_xpub: None,
+            my_dedicated_shielded_address: None,
+            counterparty_encryption_pubkey: None,
+            counterparty_decryption_pubkey: None,
+        };
+        let encrypted = record.encrypt(&[9u8; 32]).expect("encrypt succeeds");
+
+        let result = AnchorDataRecord::decrypt(&[10u8; 32], &encrypted);
         assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
     }
 }
