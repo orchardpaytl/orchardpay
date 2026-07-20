@@ -89,4 +89,15 @@ pub enum OrchardPayError {
         "You haven't connected with this contact yet. Send or accept a private contact request first."
     )]
     ContactNotEstablished,
+
+    /// A gap-limit scan of `identity_authentication_path` (see
+    /// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "HD-deriving the
+    /// ENCRYPTION/DECRYPTION identity keys") could not find a free
+    /// `key_index` for a new OrchardPay key, or could not find the
+    /// `key_index` matching an already-registered one. In practice this
+    /// means the identity has accumulated more purpose-bound keys than the
+    /// scan window covers — a shared, non-OrchardPay-specific limit, not a
+    /// problem with this identity's own OrchardPay setup.
+    #[error("Could not prepare your private OrchardPay keys. Please try again.")]
+    OwnKeyNotDerivable,
 }

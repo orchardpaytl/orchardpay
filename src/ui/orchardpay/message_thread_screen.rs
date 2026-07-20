@@ -143,6 +143,9 @@ impl MessageThreadScreen {
         let Some(identity_key) = self.selected_key.clone() else {
             return AppAction::None;
         };
+        let Some(seed_hash) = self.seed_hash() else {
+            return AppAction::None;
+        };
         let memo = if self.compose_memo.trim().is_empty() {
             None
         } else {
@@ -160,6 +163,7 @@ impl MessageThreadScreen {
                     identity_key,
                     counterparty_identity_id: self.counterparty_identity_id,
                     text,
+                    seed_hash,
                 }
             }
             ComposeKind::PaymentRequest => {
@@ -177,6 +181,7 @@ impl MessageThreadScreen {
                     counterparty_identity_id: self.counterparty_identity_id,
                     amount,
                     memo,
+                    seed_hash,
                 }
             }
             ComposeKind::Payment => {
@@ -186,9 +191,6 @@ impl MessageThreadScreen {
                         "Enter a whole number of credits to send.",
                         MessageType::Error,
                     );
-                    return AppAction::None;
-                };
-                let Some(seed_hash) = self.seed_hash() else {
                     return AppAction::None;
                 };
                 OrchardPayTask::SendPayment {

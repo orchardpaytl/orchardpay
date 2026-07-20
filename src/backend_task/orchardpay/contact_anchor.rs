@@ -144,9 +144,11 @@ pub async fn initiate_contact(
     .await?;
 
     let shared_secret = compute_shared_secret_from_key(
+        app_context,
         &qualified_identity,
         &my_encryption_key,
         &counterparty_decryption_key,
+        seed_hash,
     )
     .await?;
 
@@ -316,9 +318,11 @@ pub async fn accept_contact(
     .await?;
 
     let shared_secret = compute_shared_secret_from_key(
+        app_context,
         &qualified_identity,
         &my_encryption_key,
         &counterparty_decryption_key,
+        seed_hash,
     )
     .await?;
 
@@ -501,9 +505,11 @@ pub async fn handle_incoming_anchor_signal(
     .await?;
 
     let shared_secret = compute_shared_secret_from_key(
+        app_context,
         qualified_identity,
         &my_decryption_key,
         &sender_encryption_key,
+        seed_hash,
     )
     .await?;
 
@@ -717,16 +723,42 @@ async fn fetch_counterparty_key_bytes(
 /// cached counterparty pubkey bytes, with no network fetch needed per
 /// message. `counterparty_key.id()` is never read by this function, only
 /// `.key_type()`/`.data()` — the synthetic key's placeholder `id` is safe.
+///
+/// If `my_key`'s private bytes have no local vault record (a reinstalled
+/// wallet with only the recovery phrase — no local database left), this
+/// falls back to deriving it purely from `seed_hash`'s seed, matching by
+/// public key bytes. See `docs/orchardpay/PROTOCOL_DESIGN.md`'s
+/// "HD-deriving the ENCRYPTION/DECRYPTION identity keys" — this is what
+/// makes that recovery actually work, not just the key generation change.
 pub(crate) async fn compute_shared_secret_from_key(
+    app_context: &Arc<AppContext>,
     my_identity: &QualifiedIdentity,
     my_key: &IdentityPublicKey,
     counterparty_key: &IdentityPublicKey,
+    seed_hash: WalletSeedHash,
 ) -> Result<Zeroizing<[u8; 32]>, TaskError> {
-    let my_private_key = my_identity
+    let resolved = my_identity
         .resolve_private_key_bytes(PrivateKeyTarget::PrivateKeyOnMainIdentity, my_key.id())
         .await?
-        .map(|(_, key)| key)
-        .ok_or(OrchardPayError::OwnKeyMissing)?;
+        .map(|(_, key)| key);
+
+    let my_private_key = match resolved {
+        Some(key) => key,
+        None => {
+            let identity_index = my_identity
+                .wallet_index
+                .ok_or(OrchardPayError::OwnKeyMissing)?;
+            app_context
+                .wallet_backend()?
+                .orchardpay_find_identity_key_by_pubkey(
+                    &seed_hash,
+                    app_context.network,
+                    identity_index,
+                    my_key.data().as_slice(),
+                )
+                .await?
+        }
+    };
 
     crate::backend_task::dashpay::encryption::generate_ecdh_shared_key(
         &my_private_key[..],

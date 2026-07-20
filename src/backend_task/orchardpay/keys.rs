@@ -4,9 +4,11 @@ use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use bip39::rand::SeedableRng;
-use bip39::rand::rngs::StdRng;
+use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::WalletBackend;
 use dash_sdk::Sdk;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identities_contract_keys::IdentitiesContractKeys;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -125,14 +127,22 @@ pub async fn fetch_bounds_verified_counterparty_key(
 /// `backend_task::identity::combined_default_key_specs`'s doc comment).
 /// Instead, "publish a shielded address" is the single flow that gets an
 /// identity fully set up for OrchardPay, whether it's brand new or years
-/// old: no separate "add these keys first" step to forget. The generated
-/// keys are pure ECDH material — never shown to or chosen by the user, so
-/// there's nothing to back up beyond the identity itself.
+/// old: no separate "add these keys first" step to forget.
+///
+/// The generated keys are HD-derived from `seed_hash`'s wallet — see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "HD-deriving the
+/// ENCRYPTION/DECRYPTION identity keys" for why (recoverability from the
+/// seed alone) and how (reusing DIP-13's generic per-identity key slot,
+/// `identity_authentication_path`, exactly as DashPay's own ENCRYPTION/
+/// DECRYPTION keys already do — no new derivation scheme). Never shown to
+/// or chosen by the user, so there's nothing to back up beyond the
+/// recovery phrase itself.
 pub async fn ensure_own_orchardpay_keys(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     qualified_identity: QualifiedIdentity,
     orchardpay_contract_id: Identifier,
+    seed_hash: WalletSeedHash,
 ) -> Result<QualifiedIdentity, TaskError> {
     let has_encryption = own_bounds_verified_key(
         &qualified_identity,
@@ -151,28 +161,56 @@ pub async fn ensure_own_orchardpay_keys(
         return Ok(qualified_identity);
     }
 
+    let identity_index = qualified_identity
+        .wallet_index
+        .ok_or(OrchardPayError::OwnKeyNotDerivable)?;
+    let backend = app_context.wallet_backend()?;
+    let network = app_context.network;
+
     let bounds = ContractBounds::SingleContractDocumentType {
         id: orchardpay_contract_id,
         document_type_name: CONTACT_ANCHOR_DOCUMENT_TYPE.to_string(),
     };
 
-    let mut rng = StdRng::from_entropy();
+    // key_index must be unique across the WHOLE identity, not just
+    // OrchardPay's own keys — seed with every currently-registered key's
+    // bytes, then extend it as each new candidate is claimed below, so a
+    // second key generated in this same call never collides with the first.
+    let mut already_registered: Vec<Vec<u8>> = qualified_identity
+        .identity
+        .public_keys()
+        .values()
+        .map(|key| key.data().as_slice().to_vec())
+        .collect();
+
     let mut keys_to_add = Vec::new();
     if !has_encryption {
-        keys_to_add.push(generate_orchardpay_key(
-            &mut rng,
-            app_context,
-            Purpose::ENCRYPTION,
-            bounds.clone(),
-        )?);
+        keys_to_add.push(
+            generate_orchardpay_key(
+                &backend,
+                &seed_hash,
+                network,
+                identity_index,
+                &mut already_registered,
+                Purpose::ENCRYPTION,
+                bounds.clone(),
+            )
+            .await?,
+        );
     }
     if !has_decryption {
-        keys_to_add.push(generate_orchardpay_key(
-            &mut rng,
-            app_context,
-            Purpose::DECRYPTION,
-            bounds.clone(),
-        )?);
+        keys_to_add.push(
+            generate_orchardpay_key(
+                &backend,
+                &seed_hash,
+                network,
+                identity_index,
+                &mut already_registered,
+                Purpose::DECRYPTION,
+                bounds.clone(),
+            )
+            .await?,
+        );
     }
 
     let (updated_identity, _fee_result) = app_context
@@ -181,28 +219,36 @@ pub async fn ensure_own_orchardpay_keys(
     Ok(updated_identity)
 }
 
-/// Generate a fresh ECDSA_SECP256K1 keypair for `purpose`, bounded to
-/// OrchardPay's contract + `contactAnchor` document type. `id` is a
-/// placeholder — `AppContext::add_keys_to_identity` assigns the real,
-/// next-free key ID for every key it adds.
-fn generate_orchardpay_key(
-    rng: &mut StdRng,
-    app_context: &AppContext,
+/// Derive the next free identity-key slot for `purpose`, bounded to
+/// OrchardPay's contract + `contactAnchor` document type. `already_registered`
+/// is extended with the chosen candidate's public key bytes before
+/// returning, so a caller generating more than one key in the same call
+/// (ENCRYPTION then DECRYPTION) never picks the same slot twice.
+async fn generate_orchardpay_key(
+    backend: &WalletBackend,
+    seed_hash: &WalletSeedHash,
+    network: Network,
+    identity_index: u32,
+    already_registered: &mut Vec<Vec<u8>>,
     purpose: Purpose,
     bounds: ContractBounds,
 ) -> Result<(QualifiedIdentityPublicKey, [u8; 32]), TaskError> {
-    let (public_key_data, private_key_bytes) = KeyType::ECDSA_SECP256K1
-        .random_public_and_private_key_data(rng, app_context.platform_version())
-        .map_err(|e| OrchardPayError::KeyGenerationFailed {
-            source: Box::new(e),
-        })?;
+    let (_key_index, public_key_bytes, private_key_bytes) = backend
+        .orchardpay_next_free_identity_key_index(
+            seed_hash,
+            network,
+            identity_index,
+            already_registered,
+        )
+        .await?;
+    already_registered.push(public_key_bytes.to_vec());
 
     let identity_public_key = IdentityPublicKeyV0 {
         id: 0,
         key_type: KeyType::ECDSA_SECP256K1,
         purpose,
         security_level: SecurityLevel::MEDIUM,
-        data: public_key_data.into(),
+        data: public_key_bytes.to_vec().into(),
         read_only: false,
         disabled_at: None,
         contract_bounds: Some(bounds),
@@ -213,6 +259,6 @@ fn generate_orchardpay_key(
             identity_public_key: identity_public_key.into(),
             in_wallet_at_derivation_path: None,
         },
-        private_key_bytes,
+        *private_key_bytes,
     ))
 }

@@ -140,9 +140,11 @@ fn established_state(
 /// (tagged with my own `refId`): my ENCRYPTION key + their cached
 /// DECRYPTION pubkey.
 async fn outbound_shared_secret(
+    app_context: &Arc<AppContext>,
     qualified_identity: &QualifiedIdentity,
     orchardpay_contract_id: Identifier,
     counterparty_decryption_pubkey: &[u8],
+    seed_hash: WalletSeedHash,
 ) -> Result<zeroize::Zeroizing<[u8; 32]>, TaskError> {
     let my_encryption_key = own_bounds_verified_key(
         qualified_identity,
@@ -152,15 +154,24 @@ async fn outbound_shared_secret(
     .ok_or(OrchardPayError::OwnKeyMissing)?;
     let counterparty_key =
         synthetic_ecdh_public_key(counterparty_decryption_pubkey, Purpose::DECRYPTION);
-    compute_shared_secret_from_key(qualified_identity, &my_encryption_key, &counterparty_key).await
+    compute_shared_secret_from_key(
+        app_context,
+        qualified_identity,
+        &my_encryption_key,
+        &counterparty_key,
+        seed_hash,
+    )
+    .await
 }
 
 /// The ECDH secret for messages the counterparty *sent me* (tagged with
 /// their `refId`): my DECRYPTION key + their cached ENCRYPTION pubkey.
 async fn inbound_shared_secret(
+    app_context: &Arc<AppContext>,
     qualified_identity: &QualifiedIdentity,
     orchardpay_contract_id: Identifier,
     counterparty_encryption_pubkey: &[u8],
+    seed_hash: WalletSeedHash,
 ) -> Result<zeroize::Zeroizing<[u8; 32]>, TaskError> {
     let my_decryption_key = own_bounds_verified_key(
         qualified_identity,
@@ -170,7 +181,14 @@ async fn inbound_shared_secret(
     .ok_or(OrchardPayError::OwnKeyMissing)?;
     let counterparty_key =
         synthetic_ecdh_public_key(counterparty_encryption_pubkey, Purpose::ENCRYPTION);
-    compute_shared_secret_from_key(qualified_identity, &my_decryption_key, &counterparty_key).await
+    compute_shared_secret_from_key(
+        app_context,
+        qualified_identity,
+        &my_decryption_key,
+        &counterparty_key,
+        seed_hash,
+    )
+    .await
 }
 
 /// Broadcast `msg_data` as a new `encryptedMessage` document tagged
@@ -248,6 +266,7 @@ pub async fn send_message(
     identity_key: IdentityPublicKey,
     counterparty_identity_id: Identifier,
     text: String,
+    seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract: Arc<DataContract> = Arc::new(
@@ -262,8 +281,14 @@ pub async fn send_message(
         ..
     } = established_state(&backend, owner_id, counterparty_identity_id)?;
 
-    let shared_secret =
-        outbound_shared_secret(&qualified_identity, orchardpay_contract.id(), &dec_pk).await?;
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
     let msg_bytes = MessageContent::Message { data: text }
         .encrypt(&shared_secret)
         .map_err(OrchardPayError::Crypto)?;
@@ -284,6 +309,7 @@ pub async fn send_message(
 
 /// Send a `PaymentRequest` to an established contact. No transfer
 /// accompanies this — a pure document, like [`send_message`].
+#[allow(clippy::too_many_arguments)]
 pub async fn send_payment_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -292,6 +318,7 @@ pub async fn send_payment_request(
     counterparty_identity_id: Identifier,
     amount: u64,
     memo: Option<String>,
+    seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract: Arc<DataContract> = Arc::new(
@@ -306,8 +333,14 @@ pub async fn send_payment_request(
         ..
     } = established_state(&backend, owner_id, counterparty_identity_id)?;
 
-    let shared_secret =
-        outbound_shared_secret(&qualified_identity, orchardpay_contract.id(), &dec_pk).await?;
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
     let msg_bytes = MessageContent::PaymentRequest { amount, memo }
         .encrypt(&shared_secret)
         .map_err(OrchardPayError::Crypto)?;
@@ -365,9 +398,14 @@ pub async fn send_payment(
     let memo_target_document_id = match fulfilling_request_document_id {
         Some(request_document_id) => request_document_id,
         None => {
-            let shared_secret =
-                outbound_shared_secret(&qualified_identity, orchardpay_contract.id(), &dec_pk)
-                    .await?;
+            let shared_secret = outbound_shared_secret(
+                app_context,
+                &qualified_identity,
+                orchardpay_contract.id(),
+                &dec_pk,
+                seed_hash,
+            )
+            .await?;
             let msg_bytes = MessageContent::Payment {
                 amount,
                 memo: memo.clone(),
@@ -496,10 +534,22 @@ pub async fn load_thread(
         counterparty_decryption_pubkey: dec_pk,
     } = established_state(&backend, owner_id, counterparty_identity_id)?;
 
-    let outbound_secret =
-        outbound_shared_secret(qualified_identity, orchardpay_contract.id(), &dec_pk).await?;
-    let inbound_secret =
-        inbound_shared_secret(qualified_identity, orchardpay_contract.id(), &enc_pk).await?;
+    let outbound_secret = outbound_shared_secret(
+        app_context,
+        qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+    let inbound_secret = inbound_shared_secret(
+        app_context,
+        qualified_identity,
+        orchardpay_contract.id(),
+        &enc_pk,
+        seed_hash,
+    )
+    .await?;
 
     let mine = fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id).await?;
     let theirs = fetch_messages_by_ref_id(&orchardpay_contract, sdk, their_reference_id).await?;

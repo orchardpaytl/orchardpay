@@ -89,6 +89,54 @@ fn derive_anchor_data_key(
     Ok(Zeroizing::new(derived.private_key.secret_bytes()))
 }
 
+/// How many `key_index` candidates to try when finding a free slot or
+/// recovering an already-registered OrchardPay key purely from the seed.
+/// Matches `AUTH_KEY_LOOKUP_WINDOW` in
+/// `src/backend_task/identity/{load_identity_from_wallet,discover_identities}.rs`
+/// — the existing, proven gap-limit size for this same per-identity key
+/// slot mechanism, reused here rather than invented fresh. See
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "HD-deriving the
+/// ENCRYPTION/DECRYPTION identity keys".
+const ORCHARDPAY_KEY_INDEX_WINDOW: u32 = 12;
+
+/// Derive one `(identity_index, key_index)` candidate under DIP-13's generic
+/// per-identity key slot (`identity_authentication_path` — the
+/// "authentication" in the name is a holdover from its first use case, not a
+/// restriction; every one of DashPay's own identity keys, including its
+/// ENCRYPTION/DECRYPTION pair, already derives through this same path with
+/// only `key_index` varying — see the design doc section above). Returns
+/// the compressed public key bytes (Platform's own encoding for an
+/// ECDSA_SECP256K1 identity key) alongside the raw private key.
+fn derive_identity_key_candidate(
+    seed: &[u8],
+    network: Network,
+    identity_index: u32,
+    key_index: u32,
+) -> Result<([u8; 33], [u8; 32]), TaskError> {
+    use dash_sdk::dpp::dashcore::PublicKey as CorePublicKey;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+
+    let path = DerivationPath::identity_authentication_path(
+        network,
+        KeyDerivationType::ECDSA,
+        identity_index,
+        key_index,
+    );
+    let extended = path
+        .derive_priv_ecdsa_for_master_seed(seed, network)
+        .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+
+    let secp = Secp256k1::new();
+    let public_key = CorePublicKey::new(extended.private_key.public_key(&secp));
+    let public_key_bytes: [u8; 33] = public_key
+        .to_bytes()
+        .try_into()
+        .expect("compressed secp256k1 public key is always 33 bytes");
+
+    Ok((public_key_bytes, extended.private_key.secret_bytes()))
+}
+
 /// Value: bincode-encoded [`OrchardPayContactState`]. Scope:
 /// [`DetScope::Identity`] of the owner — per-relationship state is private
 /// to the acting identity and cascades on identity removal. Key shape:
@@ -363,6 +411,79 @@ impl WalletBackend {
             })
             .await
     }
+
+    /// Find the first `key_index` in `0..ORCHARDPAY_KEY_INDEX_WINDOW` whose
+    /// derived public key doesn't match any of `already_registered_keys` —
+    /// the "next free slot" for a newly generated OrchardPay identity key.
+    /// Computed from the identity's actual current on-chain key set rather
+    /// than a fixed reservation, so it's robust to other features claiming
+    /// slots in any order. Returns the free `key_index` plus that
+    /// candidate's derived public/private key bytes, so the caller doesn't
+    /// need a second derivation pass. See `docs/orchardpay/PROTOCOL_DESIGN.md`'s
+    /// "HD-deriving the ENCRYPTION/DECRYPTION identity keys".
+    pub async fn orchardpay_next_free_identity_key_index(
+        &self,
+        seed_hash: &WalletSeedHash,
+        network: Network,
+        identity_index: u32,
+        already_registered_keys: &[Vec<u8>],
+    ) -> Result<(u32, [u8; 33], Zeroizing<[u8; 32]>), TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret(&scope, |plaintext| {
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
+                    let (public_key_bytes, private_key_bytes) =
+                        derive_identity_key_candidate(seed, network, identity_index, key_index)?;
+                    let already_claimed = already_registered_keys
+                        .iter()
+                        .any(|registered| registered.as_slice() == public_key_bytes.as_slice());
+                    if !already_claimed {
+                        return Ok((
+                            key_index,
+                            public_key_bytes,
+                            Zeroizing::new(private_key_bytes),
+                        ));
+                    }
+                }
+                Err(TaskError::OrchardPay(OrchardPayError::OwnKeyNotDerivable))
+            })
+            .await
+    }
+
+    /// Recover the private key material for an already-registered OrchardPay
+    /// identity key, purely from the seed — no local vault record needed.
+    /// Scans the same window `orchardpay_next_free_identity_key_index` draws
+    /// from, matching by `target_public_key_data` (the registered key's own
+    /// bytes, from `own_bounds_verified_key`). This is what makes a
+    /// reinstalled wallet — recovery phrase only, no local data — able to
+    /// keep decrypting `data`/`msgData`, closing the gap `anchorData` alone
+    /// didn't. See `docs/orchardpay/PROTOCOL_DESIGN.md`'s "HD-deriving the
+    /// ENCRYPTION/DECRYPTION identity keys".
+    pub async fn orchardpay_find_identity_key_by_pubkey(
+        &self,
+        seed_hash: &WalletSeedHash,
+        network: Network,
+        identity_index: u32,
+        target_public_key_data: &[u8],
+    ) -> Result<Zeroizing<[u8; 32]>, TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret(&scope, |plaintext| {
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
+                    let (public_key_bytes, private_key_bytes) =
+                        derive_identity_key_candidate(seed, network, identity_index, key_index)?;
+                    if public_key_bytes.as_slice() == target_public_key_data {
+                        return Ok(Zeroizing::new(private_key_bytes));
+                    }
+                }
+                Err(TaskError::OrchardPay(OrchardPayError::OwnKeyNotDerivable))
+            })
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -396,5 +517,104 @@ mod tests {
         let a = derive_anchor_data_key(&TEST_SEED, Network::Testnet).expect("derive");
         let b = derive_anchor_data_key(&[0x24u8; 64], Network::Testnet).expect("derive");
         assert_ne!(*a, *b, "different seeds must produce different keys");
+    }
+
+    #[test]
+    fn identity_key_candidate_is_deterministic() {
+        let a = derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 4).expect("derive");
+        let b = derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 4).expect("derive");
+        assert_eq!(
+            a, b,
+            "same seed/network/identity_index/key_index must re-derive identically"
+        );
+    }
+
+    #[test]
+    fn identity_key_candidate_differs_across_key_index() {
+        let (pk_a, sk_a) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 4).expect("derive");
+        let (pk_b, sk_b) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 5).expect("derive");
+        assert_ne!(
+            pk_a, pk_b,
+            "different key_index must yield different public keys"
+        );
+        assert_ne!(
+            sk_a, sk_b,
+            "different key_index must yield different private keys"
+        );
+    }
+
+    #[test]
+    fn identity_key_candidate_differs_across_identity_index() {
+        let (pk_a, _) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 4).expect("derive");
+        let (pk_b, _) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 1, 4).expect("derive");
+        assert_ne!(
+            pk_a, pk_b,
+            "different identity_index must yield different public keys"
+        );
+    }
+
+    /// Exercises the same "scan and find" logic
+    /// `orchardpay_next_free_identity_key_index` runs inside its
+    /// `with_secret` closure, without needing the full secret-vault
+    /// machinery — proves the window scan correctly skips claimed slots.
+    #[test]
+    fn next_free_index_skips_already_registered_candidates() {
+        let (index_0_pubkey, _) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 0).expect("derive");
+        let (index_1_pubkey, _) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 1).expect("derive");
+        let already_registered = [index_0_pubkey.to_vec(), index_1_pubkey.to_vec()];
+
+        let mut found = None;
+        for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
+            let (public_key_bytes, _) =
+                derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, key_index)
+                    .expect("derive");
+            if !already_registered
+                .iter()
+                .any(|registered| registered.as_slice() == public_key_bytes.as_slice())
+            {
+                found = Some(key_index);
+                break;
+            }
+        }
+
+        assert_eq!(
+            found,
+            Some(2),
+            "first two slots claimed, so index 2 must be the next free one"
+        );
+    }
+
+    /// Same underlying scan, the other direction: recovering an
+    /// already-registered key's private material purely from the seed by
+    /// matching public key bytes — what
+    /// `orchardpay_find_identity_key_by_pubkey` does after a reinstall with
+    /// no local vault record.
+    #[test]
+    fn scan_recovers_private_key_matching_a_known_public_key() {
+        let (target_pubkey, target_privkey) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 5).expect("derive");
+
+        let mut recovered = None;
+        for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
+            let (public_key_bytes, private_key_bytes) =
+                derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, key_index)
+                    .expect("derive");
+            if public_key_bytes == target_pubkey {
+                recovered = Some(private_key_bytes);
+                break;
+            }
+        }
+
+        assert_eq!(
+            recovered,
+            Some(target_privkey),
+            "scanning the window must recover the exact private key for the target public key"
+        );
     }
 }

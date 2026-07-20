@@ -54,6 +54,7 @@ pub async fn publish_own_shielded_address(
         sdk,
         qualified_identity,
         orchardpay_contract.id(),
+        seed_hash,
     )
     .await?;
 

@@ -75,6 +75,7 @@ pub enum OrchardPayTask {
         identity_key: IdentityPublicKey,
         counterparty_identity_id: dash_sdk::platform::Identifier,
         text: String,
+        seed_hash: WalletSeedHash,
     },
     /// Send a `PaymentRequest` to an established contact — a pure document,
     /// no transfer. See `messages::send_payment_request`.
@@ -84,6 +85,7 @@ pub enum OrchardPayTask {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         amount: u64,
         memo: Option<String>,
+        seed_hash: WalletSeedHash,
     },
     /// Send a real payment — unprompted, or fulfilling an existing
     /// `fulfilling_request_document_id`. See `messages::send_payment` for
@@ -187,6 +189,7 @@ impl AppContext {
                 identity_key,
                 counterparty_identity_id,
                 text,
+                seed_hash,
             } => {
                 messages::send_message(
                     self,
@@ -195,6 +198,7 @@ impl AppContext {
                     identity_key,
                     counterparty_identity_id,
                     text,
+                    seed_hash,
                 )
                 .await
             }
@@ -204,6 +208,7 @@ impl AppContext {
                 counterparty_identity_id,
                 amount,
                 memo,
+                seed_hash,
             } => {
                 messages::send_payment_request(
                     self,
@@ -213,6 +218,7 @@ impl AppContext {
                     counterparty_identity_id,
                     amount,
                     memo,
+                    seed_hash,
                 )
                 .await
             }
