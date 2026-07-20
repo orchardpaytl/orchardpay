@@ -24,7 +24,12 @@ cp .env.example "$DATADIR/.env"
 # Confirm no conflicting instance is already using this display/data dir
 pgrep -af orchardpay
 
-DISPLAY=:99 ORCHARDPAY_DATA_DIR="$DATADIR" nohup /data/target/debug/orchardpay >/tmp/<scenario-slug>.log 2>&1 &
+TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | \
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+BIN="$TARGET_DIR/debug/orchardpay"
+test -x "$BIN"
+LOG="$DATADIR/<scenario-slug>.log"
+ORCHARDPAY_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
 
 ## Procedure
