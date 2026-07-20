@@ -377,10 +377,7 @@ impl OrchardPayScreen {
              connecting data: the only way to find one is to already know \
              its document ID, which is delivered \
              privately through a shielded on-chain transaction memo that only \
-             the intended recipient can decrypt. From the outside, an \
-             OrchardPay document looks identical to any other — there's \
-             nothing to distinguish a contact request from a message from a \
-             payment.",
+             the intended recipient can decrypt.",
         ));
         ui.add_space(10.0);
 

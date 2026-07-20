@@ -463,6 +463,8 @@ impl WalletBackend {
         identity_index: u32,
         already_registered_keys: &[Vec<u8>],
     ) -> Result<(u32, [u8; 33], Zeroizing<[u8; 32]>), TaskError> {
+        use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -471,9 +473,26 @@ impl WalletBackend {
                 for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
                     let (public_key_bytes, private_key_bytes) =
                         derive_identity_key_candidate(seed, network, identity_index, key_index)?;
-                    let already_claimed = already_registered_keys
-                        .iter()
-                        .any(|registered| registered.as_slice() == public_key_bytes.as_slice());
+                    // An identity's default keys (master/AUTHENTICATION/
+                    // TRANSFER) register as ECDSA_HASH160 — a 20-byte hash,
+                    // not the 33-byte compressed pubkey this scan derives.
+                    // Comparing only the raw pubkey bytes would silently
+                    // never match those slots, misreporting an already-used
+                    // index as free (and deriving OrchardPay's key at the
+                    // *same* index as e.g. the master key — a real key-reuse
+                    // bug, not just a wrong index). Check both encodings of
+                    // this candidate against every registered key's raw
+                    // data, mirroring the HASH160 comparison
+                    // `QualifiedIdentity::sign_via_hash160_path_scan` already
+                    // uses for the same underlying reason.
+                    let public_key_hash160 = ripemd160::Hash::hash(
+                        sha256::Hash::hash(&public_key_bytes).as_byte_array(),
+                    );
+                    let already_claimed = already_registered_keys.iter().any(|registered| {
+                        registered.as_slice() == public_key_bytes.as_slice()
+                            || registered.as_slice()
+                                == public_key_hash160.as_byte_array().as_slice()
+                    });
                     if !already_claimed {
                         return Ok((
                             key_index,
@@ -623,6 +642,55 @@ mod tests {
             found,
             Some(2),
             "first two slots claimed, so index 2 must be the next free one"
+        );
+    }
+
+    /// Regression test for the exact bug found in live testing: a fresh
+    /// identity's default keys at low indices (master, AUTHENTICATION,
+    /// TRANSFER) register as ECDSA_HASH160 — a 20-byte hash of the
+    /// compressed pubkey, not the 33-byte compressed pubkey itself. A scan
+    /// that only compares raw 33-byte candidates against `already_registered`
+    /// never matches those HASH160 entries, so it wrongly reports an
+    /// already-claimed index (e.g. 0, the master key's own slot) as free —
+    /// which would derive OrchardPay's ENCRYPTION key at the *same*
+    /// derivation index as the identity's master signing key. This proves
+    /// the HASH160-aware comparison (mirroring
+    /// `QualifiedIdentity::sign_via_hash160_path_scan`'s own hashing) closes
+    /// that gap.
+    #[test]
+    fn next_free_index_recognizes_hash160_registered_slots_as_claimed() {
+        use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+
+        let (index_0_pubkey, _) =
+            derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, 0).expect("derive");
+        let index_0_hash160 =
+            ripemd160::Hash::hash(sha256::Hash::hash(&index_0_pubkey).as_byte_array());
+
+        // Simulate a fresh identity: index 0 (master) registered as its
+        // HASH160 form only, exactly like `default_identity_key_specs`.
+        let already_registered = [index_0_hash160.as_byte_array().to_vec()];
+
+        let mut found = None;
+        for key_index in 0..ORCHARDPAY_KEY_INDEX_WINDOW {
+            let (public_key_bytes, _) =
+                derive_identity_key_candidate(&TEST_SEED, Network::Testnet, 0, key_index)
+                    .expect("derive");
+            let public_key_hash160 =
+                ripemd160::Hash::hash(sha256::Hash::hash(&public_key_bytes).as_byte_array());
+            let already_claimed = already_registered.iter().any(|registered| {
+                registered.as_slice() == public_key_bytes.as_slice()
+                    || registered.as_slice() == public_key_hash160.as_byte_array().as_slice()
+            });
+            if !already_claimed {
+                found = Some(key_index);
+                break;
+            }
+        }
+
+        assert_eq!(
+            found,
+            Some(1),
+            "index 0 is claimed (as a HASH160), so index 1 must be the next free one"
         );
     }
 
