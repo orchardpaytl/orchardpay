@@ -60,6 +60,9 @@ pub enum OrchardPaySubscreen {
     /// Static informational tab: what OrchardPay is, how it differs from
     /// DashPay, and links to the design articles it grew out of.
     About,
+    /// Static informational tab: the quantum-computing risk to shielded
+    /// addresses and what happens if it materializes.
+    QcWarning,
 }
 
 const TAB_PROFILE: &str = "orchardpay_tab_profile";
@@ -67,6 +70,7 @@ const TAB_CONTACTS: &str = "orchardpay_tab_contacts";
 const TAB_PAYMENTS: &str = "orchardpay_tab_payments";
 const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
 const TAB_ABOUT: &str = "orchardpay_tab_about";
+const TAB_QC_WARNING: &str = "orchardpay_tab_qc_warning";
 
 /// What, if anything, stands between the active identity and being able to
 /// use OrchardPay at all. Checked in this order because each step depends
@@ -389,6 +393,23 @@ impl OrchardPayScreen {
         );
     }
 
+    fn render_qc_warning(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        ui.heading(RichText::new("QC Warning").color(DashColors::warning_color(dark_mode)));
+        ui.add_space(6.0);
+        ui.label(
+            "QC, or Quantum Computing, is a threat to this application, as a \
+             quantum computer can break the encryption of shielded addresses.",
+        );
+        ui.add_space(10.0);
+        ui.label(
+            "If QC does become a reality, shielded addresses will need to be \
+             upgraded to new quantum-resistant addresses, and any funds on \
+             your public shielded address will need to be moved elsewhere.",
+        );
+    }
+
     fn render_add_contact(&mut self, ui: &mut Ui) -> AppAction {
         if self.has_shielded_address != Some(true) {
             return self.render_needs_shielded_address(ui);
@@ -584,6 +605,11 @@ impl ScreenLike for OrchardPayScreen {
                     self.orchardpay_subscreen == OrchardPaySubscreen::About,
                     AppAction::Custom(TAB_ABOUT.to_string()),
                 ),
+                SubscreenNavItem::new(
+                    "QC Warning",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::QcWarning,
+                    AppAction::Custom(TAB_QC_WARNING.to_string()),
+                ),
             ];
             let nav_action = add_subscreen_chooser_panel(
                 ui,
@@ -607,6 +633,9 @@ impl ScreenLike for OrchardPayScreen {
                 }
                 AppAction::Custom(ref tag) if tag == TAB_ABOUT => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::About;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_QC_WARNING => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::QcWarning;
                 }
                 other => action |= other,
             }
@@ -657,6 +686,10 @@ impl ScreenLike for OrchardPayScreen {
                         OrchardPaySubscreen::AddContact => self.render_add_contact(ui),
                         OrchardPaySubscreen::About => {
                             self.render_about(ui);
+                            AppAction::None
+                        }
+                        OrchardPaySubscreen::QcWarning => {
+                            self.render_qc_warning(ui);
                             AppAction::None
                         }
                     };
