@@ -57,12 +57,16 @@ pub enum OrchardPaySubscreen {
     Payments,
     /// "Send Friend Request": DPNS search + initiate a new contact.
     AddContact,
+    /// Static informational tab: what OrchardPay is, how it differs from
+    /// DashPay, and links to the design articles it grew out of.
+    About,
 }
 
 const TAB_PROFILE: &str = "orchardpay_tab_profile";
 const TAB_CONTACTS: &str = "orchardpay_tab_contacts";
 const TAB_PAYMENTS: &str = "orchardpay_tab_payments";
 const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
+const TAB_ABOUT: &str = "orchardpay_tab_about";
 
 /// What, if anything, stands between the active identity and being able to
 /// use OrchardPay at all. Checked in this order because each step depends
@@ -319,6 +323,72 @@ impl OrchardPayScreen {
         );
     }
 
+    fn render_about(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let secondary =
+            |text: &str| RichText::new(text).color(DashColors::text_secondary(dark_mode));
+
+        ui.heading("About OrchardPay");
+        ui.add_space(6.0);
+        ui.label(
+            "OrchardPay is a private contact and messaging protocol built on \
+             Dash Platform, combining zero-knowledge shielded transactions \
+             with Platform data contracts. It grew out of a two-part design \
+             series exploring how those two primitives could be combined — \
+             the links are below.",
+        );
+
+        ui.add_space(16.0);
+        ui.heading("How OrchardPay differs from DashPay");
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("No public social graph").strong());
+        ui.label(secondary(
+            "DashPay's contact-request documents are public and queryable — \
+             anyone can see who has requested contact with whom. OrchardPay's \
+             contactAnchor documents contain no public identifying or \
+             connecting data: the only way to find one is to already know \
+             its document ID, which is delivered \
+             privately through a shielded on-chain transaction memo that only \
+             the intended recipient can decrypt. From the outside, an \
+             OrchardPay document looks identical to any other — there's \
+             nothing to distinguish a contact request from a message from a \
+             payment.",
+        ));
+        ui.add_space(10.0);
+
+        ui.label(RichText::new("One channel, unlimited uses").strong());
+        ui.label(secondary(
+            "DashPay's contact-request documents exist to carry contact info \
+             only. OrchardPay's contactAnchor and encryptedMessage documents \
+             form a general private-communication channel — messages, \
+             payment requests, and other structured content all use the \
+             exact same encrypted shape, so Platform (and anyone else \
+             watching) can't tell them apart. New message types can be added \
+             later without changing the data contract.",
+        ));
+        ui.add_space(10.0);
+
+        ui.label(RichText::new("Payments carry real meaning").strong());
+        ui.label(secondary(
+            "Sending a payment through OrchardPay performs an actual \
+             shielded value transfer, correlated to its message through an \
+             on-chain memo — not just a record that a payment happened.",
+        ));
+
+        ui.add_space(16.0);
+        ui.heading("Further reading");
+        ui.add_space(6.0);
+        ui.hyperlink_to(
+            "Combining ZK and Data Contracts",
+            "https://pocandstablecostdiscoverer.substack.com/p/combining-zk-and-data-contracts",
+        );
+        ui.hyperlink_to(
+            "OrchardPay Part 2: Design Choices",
+            "https://pocandstablecostdiscoverer.substack.com/p/orchardpay-part-2-design-choices",
+        );
+    }
+
     fn render_add_contact(&mut self, ui: &mut Ui) -> AppAction {
         if self.has_shielded_address != Some(true) {
             return self.render_needs_shielded_address(ui);
@@ -509,6 +579,11 @@ impl ScreenLike for OrchardPayScreen {
                     self.orchardpay_subscreen == OrchardPaySubscreen::AddContact,
                     AppAction::Custom(TAB_ADD_CONTACT.to_string()),
                 ),
+                SubscreenNavItem::new(
+                    "About",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::About,
+                    AppAction::Custom(TAB_ABOUT.to_string()),
+                ),
             ];
             let nav_action = add_subscreen_chooser_panel(
                 ui,
@@ -529,6 +604,9 @@ impl ScreenLike for OrchardPayScreen {
                 }
                 AppAction::Custom(ref tag) if tag == TAB_ADD_CONTACT => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::AddContact;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_ABOUT => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::About;
                 }
                 other => action |= other,
             }
@@ -577,6 +655,10 @@ impl ScreenLike for OrchardPayScreen {
                             AppAction::None
                         }
                         OrchardPaySubscreen::AddContact => self.render_add_contact(ui),
+                        OrchardPaySubscreen::About => {
+                            self.render_about(ui);
+                            AppAction::None
+                        }
                     };
                 }
             }
