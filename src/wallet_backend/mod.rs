@@ -1320,6 +1320,24 @@ impl WalletBackend {
             first_error.get_or_insert(e);
         }
 
+        // OrchardPay's wallet-scoped sidecar entries (memo-scan resume
+        // cursor, verified-incoming-payment cache) are `DetScope::Wallet`,
+        // not `DetScope::Global` or `DetScope::Identity` — neither of those
+        // is swept anywhere else in this function, so without this call
+        // they'd survive as orphaned rows in `det-app.sqlite` after the
+        // wallet's own seed is gone. Not a secret-bearing-state gap (both
+        // are non-secret: a resume index, a public credits amount keyed by
+        // a public document ID) — the seed/session/wallet-meta deletes
+        // above already satisfy F60. This is storage hygiene.
+        if let Err(e) = self.orchardpay_clear_wallet_overlays(seed_hash) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to clear OrchardPay wallet-scoped overlays during wallet removal"
+            );
+            first_error.get_or_insert(e);
+        }
+
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
             self.inner.id_map.write()?.remove(seed_hash);

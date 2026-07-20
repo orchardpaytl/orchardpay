@@ -550,6 +550,16 @@ pub enum BackendTaskSuccessResult {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         amount: u64,
     },
+    /// Result of `OrchardPayTask::RecoverContacts` — a summary of one pass
+    /// rebuilding local contact state from every `contactAnchor` the
+    /// identity has published. See
+    /// `backend_task::orchardpay::contact_anchor::recover_own_anchors`.
+    OrchardPayContactsRecovered {
+        anchors_found: usize,
+        contacts_recovered: usize,
+        already_tracked: usize,
+        undecryptable: usize,
+    },
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`

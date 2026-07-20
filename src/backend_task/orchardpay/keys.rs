@@ -106,6 +106,22 @@ pub async fn fetch_bounds_verified_counterparty_key(
         .flatten()
         .ok_or(OrchardPayError::CounterpartyKeyMissing)?;
 
+    verify_contract_bounds(&key, orchardpay_contract_id)?;
+
+    Ok(key)
+}
+
+/// The actual hardening check `fetch_bounds_verified_counterparty_key`
+/// exists for: reject `key` unless its `contract_bounds()` is *exactly*
+/// `SingleContractDocumentType { id: orchardpay_contract_id,
+/// document_type_name: "contactAnchor" }` — not merely present, not bound
+/// to a different contract or document type, not `None`. Pulled out as its
+/// own function so this specific check has a direct unit test rather than
+/// only being exercised indirectly through a full network fetch.
+fn verify_contract_bounds(
+    key: &IdentityPublicKey,
+    orchardpay_contract_id: Identifier,
+) -> Result<(), OrchardPayError> {
     let expected_bounds = ContractBounds::SingleContractDocumentType {
         id: orchardpay_contract_id,
         document_type_name: CONTACT_ANCHOR_DOCUMENT_TYPE.to_string(),
@@ -113,8 +129,7 @@ pub async fn fetch_bounds_verified_counterparty_key(
     if key.contract_bounds() != Some(&expected_bounds) {
         return Err(OrchardPayError::CounterpartyKeyNotBound);
     }
-
-    Ok(key)
+    Ok(())
 }
 
 /// Ensure `qualified_identity` carries OrchardPay-bound ENCRYPTION and
@@ -261,4 +276,106 @@ async fn generate_orchardpay_key(
         },
         *private_key_bytes,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contract_id(byte: u8) -> Identifier {
+        Identifier::from([byte; 32])
+    }
+
+    fn key_with_bounds(contract_bounds: Option<ContractBounds>) -> IdentityPublicKey {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::ENCRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            contract_bounds,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: vec![0u8; 33].into(),
+            disabled_at: None,
+        })
+    }
+
+    /// The one case the whole hardening exists for: a key correctly bound
+    /// to OrchardPay's own contract + `contactAnchor` is accepted.
+    #[test]
+    fn accepts_a_key_bound_to_the_expected_contract_and_document_type() {
+        let expected_contract = contract_id(1);
+        let key = key_with_bounds(Some(ContractBounds::SingleContractDocumentType {
+            id: expected_contract,
+            document_type_name: CONTACT_ANCHOR_DOCUMENT_TYPE.to_string(),
+        }));
+
+        assert!(verify_contract_bounds(&key, expected_contract).is_ok());
+    }
+
+    /// A key with no `contract_bounds` at all — the unrestricted case an
+    /// identity's default keys would carry — must be rejected, not
+    /// silently trusted.
+    #[test]
+    fn rejects_a_key_with_no_contract_bounds() {
+        let key = key_with_bounds(None);
+
+        let result = verify_contract_bounds(&key, contract_id(1));
+        assert!(matches!(
+            result,
+            Err(OrchardPayError::CounterpartyKeyNotBound)
+        ));
+    }
+
+    /// A key bound to a *different* contract entirely must be rejected —
+    /// this is the case a confused-deputy or malicious identity could
+    /// present: a real contract-bounded key, just not bound to OrchardPay's.
+    #[test]
+    fn rejects_a_key_bound_to_a_different_contract() {
+        let key = key_with_bounds(Some(ContractBounds::SingleContractDocumentType {
+            id: contract_id(2),
+            document_type_name: CONTACT_ANCHOR_DOCUMENT_TYPE.to_string(),
+        }));
+
+        let result = verify_contract_bounds(&key, contract_id(1));
+        assert!(matches!(
+            result,
+            Err(OrchardPayError::CounterpartyKeyNotBound)
+        ));
+    }
+
+    /// A key bound to the right contract but the wrong document type must
+    /// also be rejected — being bound to *some* document type on
+    /// OrchardPay's contract is not the same as being bound specifically
+    /// to `contactAnchor`.
+    #[test]
+    fn rejects_a_key_bound_to_the_right_contract_but_wrong_document_type() {
+        let expected_contract = contract_id(1);
+        let key = key_with_bounds(Some(ContractBounds::SingleContractDocumentType {
+            id: expected_contract,
+            document_type_name: "someOtherDocumentType".to_string(),
+        }));
+
+        let result = verify_contract_bounds(&key, expected_contract);
+        assert!(matches!(
+            result,
+            Err(OrchardPayError::CounterpartyKeyNotBound)
+        ));
+    }
+
+    /// A key bound to the whole contract (`SingleContract`, no document-type
+    /// restriction) is a *weaker* bound than expected and must also be
+    /// rejected, not accepted as "close enough."
+    #[test]
+    fn rejects_a_key_bound_to_the_whole_contract_without_a_document_type() {
+        let expected_contract = contract_id(1);
+        let key = key_with_bounds(Some(ContractBounds::SingleContract {
+            id: expected_contract,
+        }));
+
+        let result = verify_contract_bounds(&key, expected_contract);
+        assert!(matches!(
+            result,
+            Err(OrchardPayError::CounterpartyKeyNotBound)
+        ));
+    }
 }

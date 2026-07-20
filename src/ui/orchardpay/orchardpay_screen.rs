@@ -268,6 +268,17 @@ impl OrchardPayScreen {
             .orchardpay_list_contacts(&owner_id)
             .unwrap_or_default();
 
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Missing a contact after reinstalling?")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            if ui.button("Recover from Network").clicked() {
+                action |= self.recover_contacts_clicked();
+            }
+        });
+        ui.add_space(8.0);
+
         if contacts.is_empty() {
             ui.label(
                 RichText::new(
@@ -471,6 +482,23 @@ impl OrchardPayScreen {
         }
 
         action
+    }
+
+    fn recover_contacts_clicked(&mut self) -> AppAction {
+        let (Some(identity), Some(wallet)) = (self.identity.clone(), self.selected_wallet.clone())
+        else {
+            return AppAction::None;
+        };
+        let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash()) else {
+            return AppAction::None;
+        };
+
+        AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+            OrchardPayTask::RecoverContacts {
+                qualified_identity: identity,
+                seed_hash,
+            },
+        )))
     }
 
     fn accept_clicked(&mut self, counterparty_identity_id: Identifier) -> AppAction {

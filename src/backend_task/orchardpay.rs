@@ -106,6 +106,14 @@ pub enum OrchardPayTask {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         seed_hash: WalletSeedHash,
     },
+    /// Rebuild local contact state from every `contactAnchor` this identity
+    /// has published — the "my published anchors" recovery path for a
+    /// reinstalled/new-device wallet. See
+    /// `contact_anchor::recover_own_anchors`.
+    RecoverContacts {
+        qualified_identity: QualifiedIdentity,
+        seed_hash: WalletSeedHash,
+    },
 }
 
 impl AppContext {
@@ -260,6 +268,20 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
                     counterparty_identity_id,
                     messages,
+                })
+            }
+            OrchardPayTask::RecoverContacts {
+                qualified_identity,
+                seed_hash,
+            } => {
+                let summary =
+                    contact_anchor::recover_own_anchors(self, sdk, &qualified_identity, seed_hash)
+                        .await?;
+                Ok(BackendTaskSuccessResult::OrchardPayContactsRecovered {
+                    anchors_found: summary.anchors_found,
+                    contacts_recovered: summary.contacts_recovered,
+                    already_tracked: summary.already_tracked,
+                    undecryptable: summary.undecryptable,
                 })
             }
         }

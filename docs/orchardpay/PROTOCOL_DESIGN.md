@@ -3,13 +3,13 @@
 Status: **schema finalized** (Milestone B). Identity-key wiring, shielded
 address publish/discover (Milestone C), the full contact-establishment
 handshake plus DPNS search (Milestone D), messaging send/receive
-(Milestone E: `Message`/`Payment`/`PaymentRequest`), and HD-deriving
-`data`'s ENCRYPTION/DECRYPTION identity keys have all landed and are
-registered on Testnet — see "Status of implementation" below for exact file
-pointers. Not yet done: recovery UI (Milestone F), Mainnet/Devnet contract
-registration. See `docs/ORCHARDPAY_MIGRATION.md` for how this relates to
-DashPay, and `docs/GLOSSARY.md` for the "Orchard" vs "OrchardPay" naming
-note.
+(Milestone E: `Message`/`Payment`/`PaymentRequest`), HD-deriving `data`'s
+ENCRYPTION/DECRYPTION identity keys, and persistence/recovery/hardening
+(Milestone F) have all landed and are registered on Testnet — see "Status
+of implementation" below for exact file pointers. Not yet done:
+Mainnet/Devnet contract registration. See `docs/ORCHARDPAY_MIGRATION.md`
+for how this relates to DashPay, and `docs/GLOSSARY.md` for the "Orchard"
+vs "OrchardPay" naming note.
 
 ## Goal
 
@@ -924,6 +924,30 @@ pure Platform documents with no value movement — sending "just a message" or
   identity fresh, so there was nothing already registered under the old
   random-key scheme to reconcile. See "HD-deriving the
   ENCRYPTION/DECRYPTION identity keys" above.
+- **Done (Milestone F, 2026-07-20)**: persistence, recovery, hardening.
+  - Fixed a real gap found while auditing the network-clear sweep: the
+    memo-scan cursor and verified-payment cache are `DetScope::Wallet`, and
+    — contrary to an existing but unverified comment — nothing about that
+    scope actually cascades on wallet removal (`det-app.sqlite` has no
+    foreign-key relationship to the upstream persistor's wallet table). New
+    `WalletBackend::orchardpay_clear_wallet_overlays`, called from
+    `forget_wallet_local_state`, sweeps both explicitly. Not a
+    secret-bearing-state gap (both values are non-secret), but real storage
+    hygiene that was silently missing.
+  - `verify_contract_bounds` extracted out of
+    `fetch_bounds_verified_counterparty_key` (`keys.rs`) as its own pure,
+    directly-unit-tested function — proves a mismatched contract, mismatched
+    document type, missing bounds, and a too-broad `SingleContract` bound
+    are all rejected, not just the happy path.
+  - `contact_anchor::recover_own_anchors`: the "my published anchors"
+    recovery path. Queries `contactAnchor`'s `byOwner` index for every
+    anchor the identity has published, decrypts each `anchorData` with the
+    wallet-local key, and writes local `OrchardPayContactState` for any
+    counterparty not already tracked (never overwrites existing local
+    state). Missing cached counterparty pubkeys are re-fetched rather than
+    left broken. UI: a "Recover from Network" button on the Contacts tab.
+    Closes most, not all, of the relaunch gap — a `PendingInboundUnaccepted`
+    request I never accepted has no anchor of mine to recover from, since
+    that state only ever lived locally.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
-  independent of Testnet's); recovery UI for a reinstalled/new-device user
-  (Milestone F).
+  independent of Testnet's).

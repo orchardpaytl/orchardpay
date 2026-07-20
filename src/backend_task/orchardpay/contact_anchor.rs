@@ -836,3 +836,166 @@ async fn fetch_anchor_document_by_id(
 
     Ok(results.into_values().flatten().next())
 }
+
+/// Fetch every `contactAnchor` document `owner_id` has ever published, via
+/// the contract's `byOwner` index (`$ownerId` only — no `$createdAt`
+/// component, so results are unordered; callers sort client-side if order
+/// matters). Used only by [`recover_own_anchors`] — every other read path
+/// in this module fetches by document ID, never by query, to preserve the
+/// "no plaintext link" privacy property for anchors *other than my own*.
+/// Querying my own anchors by owner leaks nothing new: `$ownerId` is
+/// already public on every document I publish.
+async fn fetch_own_anchors(
+    orchardpay_contract: &DataContract,
+    sdk: &Sdk,
+    owner_id: Identifier,
+) -> Result<Vec<Document>, TaskError> {
+    let mut query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
+        .map_err(|e| OrchardPayError::QueryCreation {
+        query_target: "own contactAnchor recovery fetch",
+        source: Box::new(e),
+    })?;
+    query = query.with_where(WhereClause {
+        field: "$ownerId".to_string(),
+        operator: WhereOperator::Equal,
+        value: Value::Identifier(owner_id.to_buffer()),
+    });
+
+    let results = await_network_request_with_timeout(
+        NETWORK_REQUEST_TIMEOUT,
+        Document::fetch_many(sdk, query),
+        |source| TaskError::DocumentFetchTimeout { source },
+    )
+    .await?
+    .map_err(TaskError::from)?;
+
+    Ok(results.into_values().flatten().collect())
+}
+
+/// Outcome of one [`recover_own_anchors`] pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnchorRecoverySummary {
+    pub anchors_found: usize,
+    pub contacts_recovered: usize,
+    pub already_tracked: usize,
+    pub undecryptable: usize,
+}
+
+/// Rebuild local contact state from every `contactAnchor` I've ever
+/// published — the "my published anchors" recovery path for a
+/// reinstalled/new-device wallet with only the recovery phrase. Queries by
+/// [`fetch_own_anchors`], decrypts each `anchorData` with the wallet-local
+/// key (recoverable from the seed alone — see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "`anchorData`: a wallet-local
+/// recovery record"), and writes local [`OrchardPayContactState`] for every
+/// counterparty not already tracked locally. Existing local state is never
+/// overwritten — recovery only fills gaps, it never clobbers.
+///
+/// If a decrypted record's cached counterparty pubkeys are missing (an
+/// older anchor, or a partial write) they're re-fetched fresh rather than
+/// leaving the recovered contact unable to message — recovery is already
+/// paying for several network round trips, one or two more is cheap
+/// insurance against a subtly broken recovered contact.
+///
+/// This closes most, not all, of the relaunch-from-new-wallet gap: it
+/// rebuilds every relationship *I* initiated or completed, since I always
+/// have my own anchor for those. A relationship where a counterparty sent
+/// me a request I never accepted has no anchor of mine to recover from —
+/// that `PendingInboundUnaccepted` state only ever lived locally. See
+/// `docs/ai-design/2026-07-19-orchardpay-query-workflow-reference/` for the
+/// full gap analysis.
+pub async fn recover_own_anchors(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: &QualifiedIdentity,
+    seed_hash: WalletSeedHash,
+) -> Result<AnchorRecoverySummary, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = app_context
+        .orchardpay_contract()
+        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let backend = app_context.wallet_backend()?;
+
+    let documents = fetch_own_anchors(&orchardpay_contract, sdk, owner_id).await?;
+    let anchor_data_key = backend
+        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+        .await?;
+
+    let mut summary = AnchorRecoverySummary {
+        anchors_found: documents.len(),
+        ..Default::default()
+    };
+
+    for document in documents {
+        let anchor_data_bytes = match document.properties().get(ANCHOR_DATA_FIELD) {
+            Some(Value::Bytes(bytes)) if !bytes.is_empty() => bytes,
+            _ => {
+                summary.undecryptable += 1;
+                continue;
+            }
+        };
+        let Ok(anchor_record) = AnchorDataRecord::decrypt(&anchor_data_key, anchor_data_bytes)
+        else {
+            summary.undecryptable += 1;
+            continue;
+        };
+
+        let counterparty_id = Identifier::from(anchor_record.counterparty_identity_id);
+        if backend
+            .orchardpay_get_contact_state(&owner_id, &counterparty_id)?
+            .is_some()
+        {
+            summary.already_tracked += 1;
+            continue;
+        }
+
+        let state = match anchor_record.their_reference_id {
+            Some(their_reference_id) => {
+                let counterparty_encryption_pubkey =
+                    match anchor_record.counterparty_encryption_pubkey {
+                        Some(bytes) => bytes,
+                        None => {
+                            fetch_counterparty_key_bytes(
+                                sdk,
+                                orchardpay_contract.id(),
+                                counterparty_id,
+                                Purpose::ENCRYPTION,
+                            )
+                            .await?
+                            .1
+                        }
+                    };
+                let counterparty_decryption_pubkey =
+                    match anchor_record.counterparty_decryption_pubkey {
+                        Some(bytes) => bytes,
+                        None => {
+                            fetch_counterparty_key_bytes(
+                                sdk,
+                                orchardpay_contract.id(),
+                                counterparty_id,
+                                Purpose::DECRYPTION,
+                            )
+                            .await?
+                            .1
+                        }
+                    };
+                OrchardPayContactState::Established {
+                    my_reference_id: anchor_record.my_reference_id,
+                    my_anchor_document_id: document.id().to_buffer(),
+                    their_reference_id,
+                    counterparty_encryption_pubkey,
+                    counterparty_decryption_pubkey,
+                }
+            }
+            None => OrchardPayContactState::PendingOutbound {
+                my_reference_id: anchor_record.my_reference_id,
+                my_anchor_document_id: document.id().to_buffer(),
+            },
+        };
+
+        backend.orchardpay_set_contact_state(&owner_id, &counterparty_id, &state)?;
+        summary.contacts_recovered += 1;
+    }
+
+    Ok(summary)
+}

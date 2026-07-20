@@ -2190,6 +2190,33 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_backend_task_result(&context, unboxed_message);
                         }
+                        BackendTaskSuccessResult::OrchardPayContactsRecovered {
+                            anchors_found,
+                            contacts_recovered,
+                            already_tracked,
+                            undecryptable,
+                        } => {
+                            let mut msg = if contacts_recovered == 0 {
+                                format!(
+                                    "Checked {anchors_found} published contact anchors — nothing new to recover ({already_tracked} already tracked)."
+                                )
+                            } else {
+                                format!(
+                                    "Recovered {contacts_recovered} contacts from {anchors_found} published contact anchors."
+                                )
+                            };
+                            let message_type = if undecryptable > 0 {
+                                msg.push_str(&format!(
+                                    " {undecryptable} could not be read and were skipped."
+                                ));
+                                MessageType::Warning
+                            } else {
+                                MessageType::Success
+                            };
+                            MessageBanner::set_global(ctx, &msg, message_type);
+                            self.visible_screen_mut()
+                                .display_backend_task_result(&context, unboxed_message);
+                        }
                         BackendTaskSuccessResult::IdentitiesLoaded { count } => {
                             let msg = if count == 1 {
                                 "Successfully loaded 1 identity from your wallet.".to_string()

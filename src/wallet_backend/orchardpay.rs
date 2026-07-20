@@ -296,9 +296,9 @@ impl WalletBackend {
     /// Drop every OrchardPay sidecar entry for `owner` — the per-counterparty
     /// contact-state records. Mirrors `dashpay_clear_owner_overlays` for the
     /// network-clear path. The memo-scan cursor and verified-payment cache
-    /// are wallet-scoped, not owner-scoped, so neither is covered here —
-    /// both are naturally reaped when the wallet itself is removed
-    /// ([`DetScope::Wallet`] cascades on wallet deletion).
+    /// are wallet-scoped, not owner-scoped, so neither is covered here — see
+    /// [`Self::orchardpay_clear_wallet_overlays`], called from wallet
+    /// removal instead of identity removal.
     pub fn orchardpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let scope = DetScope::Identity(&owner_buf);
@@ -308,6 +308,41 @@ impl WalletBackend {
             .list(scope, Some(KV_PREFIX_CONTACT))
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
         for key in contact_keys {
+            kv.delete(scope, &key)
+                .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+        }
+
+        Ok(())
+    }
+
+    /// Drop every OrchardPay wallet-scoped sidecar entry for `seed_hash` —
+    /// the memo-scan resume cursor and the verified-incoming-payment cache.
+    /// Called from `WalletBackend::forget_wallet_local_state`, not the
+    /// per-identity network-clear sweep above: both entries are
+    /// [`DetScope::Wallet`], and — contrary to an earlier, unverified
+    /// assumption in this module — nothing about that scope actually
+    /// cascades on wallet removal; `det-app.sqlite` (where this k/v store
+    /// lives) has no foreign-key relationship to the upstream persistor's
+    /// wallet table, so an explicit sweep is required or these rows orphan
+    /// permanently. Not a secret-bearing-state gap: both values are
+    /// non-secret (a resume index; a public credits amount keyed by a
+    /// public document ID) — the seed/session/wallet-meta deletes that
+    /// already run during wallet removal satisfy the actual "no secrets
+    /// survive" guarantee. This is storage hygiene, not hardening.
+    pub fn orchardpay_clear_wallet_overlays(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<(), TaskError> {
+        let scope = DetScope::Wallet(seed_hash);
+        let kv = self.kv();
+
+        kv.delete(scope, KV_PREFIX_MEMO_SCAN_CURSOR)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+
+        let verified_payment_keys = kv
+            .list(scope, Some(KV_PREFIX_VERIFIED_PAYMENT))
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+        for key in verified_payment_keys {
             kv.delete(scope, &key)
                 .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
         }
@@ -489,6 +524,7 @@ impl WalletBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet_backend::kv::DetKv;
 
     const TEST_SEED: [u8; 64] = [0x42u8; 64];
 
@@ -615,6 +651,113 @@ mod tests {
             recovered,
             Some(target_privkey),
             "scanning the window must recover the exact private key for the target public key"
+        );
+    }
+
+    fn empty_kv() -> DetKv {
+        use crate::wallet_backend::kv_test_support::InMemoryKv;
+
+        DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    /// Mirrors `orchardpay_clear_owner_overlays`'s sweep logic directly
+    /// against a `DetKv` test double — same style as
+    /// `wallet_backend::dashpay`'s own overlay-sweep test — proving the
+    /// per-owner `KV_PREFIX_CONTACT` sweep clears only that owner's entries.
+    #[test]
+    fn owner_overlays_sweep_clears_only_that_owners_contact_entries() {
+        let kv = empty_kv();
+        let owner_a = [0x11u8; 32];
+        let owner_b = [0x22u8; 32];
+
+        kv.put::<u32>(
+            DetScope::Identity(&owner_a),
+            &format!("{KV_PREFIX_CONTACT}counterparty1"),
+            &1,
+        )
+        .unwrap();
+        kv.put::<u32>(
+            DetScope::Identity(&owner_b),
+            &format!("{KV_PREFIX_CONTACT}counterparty2"),
+            &2,
+        )
+        .unwrap();
+
+        for key in kv
+            .list(DetScope::Identity(&owner_a), Some(KV_PREFIX_CONTACT))
+            .unwrap()
+        {
+            kv.delete(DetScope::Identity(&owner_a), &key).unwrap();
+        }
+
+        assert!(
+            kv.list(DetScope::Identity(&owner_a), Some(KV_PREFIX_CONTACT))
+                .unwrap()
+                .is_empty(),
+            "owner_a's contact overlays must be gone"
+        );
+        assert_eq!(
+            kv.list(DetScope::Identity(&owner_b), Some(KV_PREFIX_CONTACT))
+                .unwrap()
+                .len(),
+            1,
+            "owner_b's contact overlays must be untouched"
+        );
+    }
+
+    /// Mirrors `orchardpay_clear_wallet_overlays`'s sweep logic — proves the
+    /// memo-scan cursor (an exact key) and the verified-payment cache (a
+    /// true prefix, many entries) are both cleared for the target wallet,
+    /// and that an unrelated wallet's entries survive.
+    #[test]
+    fn wallet_overlays_sweep_clears_only_that_wallets_entries() {
+        let kv = empty_kv();
+        let wallet_a: WalletSeedHash = [0x33u8; 32];
+        let wallet_b: WalletSeedHash = [0x44u8; 32];
+
+        kv.put::<u64>(DetScope::Wallet(&wallet_a), KV_PREFIX_MEMO_SCAN_CURSOR, &42)
+            .unwrap();
+        kv.put::<u64>(
+            DetScope::Wallet(&wallet_a),
+            &format!("{KV_PREFIX_VERIFIED_PAYMENT}doc1"),
+            &1000,
+        )
+        .unwrap();
+        kv.put::<u64>(DetScope::Wallet(&wallet_b), KV_PREFIX_MEMO_SCAN_CURSOR, &7)
+            .unwrap();
+
+        kv.delete(DetScope::Wallet(&wallet_a), KV_PREFIX_MEMO_SCAN_CURSOR)
+            .unwrap();
+        for key in kv
+            .list(
+                DetScope::Wallet(&wallet_a),
+                Some(KV_PREFIX_VERIFIED_PAYMENT),
+            )
+            .unwrap()
+        {
+            kv.delete(DetScope::Wallet(&wallet_a), &key).unwrap();
+        }
+
+        assert_eq!(
+            kv.get::<u64>(DetScope::Wallet(&wallet_a), KV_PREFIX_MEMO_SCAN_CURSOR)
+                .unwrap(),
+            None,
+            "wallet_a's memo-scan cursor must be gone"
+        );
+        assert!(
+            kv.list(
+                DetScope::Wallet(&wallet_a),
+                Some(KV_PREFIX_VERIFIED_PAYMENT)
+            )
+            .unwrap()
+            .is_empty(),
+            "wallet_a's verified-payment cache must be gone"
+        );
+        assert_eq!(
+            kv.get::<u64>(DetScope::Wallet(&wallet_b), KV_PREFIX_MEMO_SCAN_CURSOR)
+                .unwrap(),
+            Some(7),
+            "wallet_b's memo-scan cursor must be untouched"
         );
     }
 }
