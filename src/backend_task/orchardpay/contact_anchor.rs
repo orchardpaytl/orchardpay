@@ -68,13 +68,15 @@ const EXTRA_FIELD: &str = "extra";
 /// signaling anchor's 32-byte DocumentID for a 36-byte memo total.
 pub const MEMO_TAG_ANCHOR: [u8; 4] = *b"OPA1";
 
-/// Minimal amount for the anchor-signaling shielded transfer — it exists
-/// purely to deliver a memo, not to move meaningful value. Chosen as a
-/// small, non-zero credit amount; no independent verification has been done
-/// of whether Platform enforces its own higher minimum. If it does, the
-/// underlying `shielded_transfer` call simply fails with its normal
-/// insufficient-amount error.
-const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 1000;
+/// Amount for the anchor-signaling shielded transfer. Its primary purpose is
+/// still to deliver a memo, not to move meaningful value, but it is set well
+/// above the network's dust floor (0.001 DASH) as a deliberate small barrier
+/// to spamming contact requests — sending one costs the sender something,
+/// however little. No independent verification has been done of whether
+/// Platform enforces its own higher minimum; if it does, the underlying
+/// `shielded_transfer` call simply fails with its normal insufficient-amount
+/// error.
+const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 100_000_000;
 
 /// Start a new contact relationship with `counterparty_identity_id`:
 /// publish my own `contactAnchor` (with `anchorData` already populated from
