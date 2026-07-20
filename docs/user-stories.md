@@ -12,6 +12,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Identity Operations (IDN)](#identity-operations-idn)
 - [DPNS (DPN)](#dpns-dpn)
 - [DashPay (DPY)](#dashpay-dpy)
+- [OrchardPay (ORP)](#orchardpay-orp)
 - [Identities Hub (IDH)](#identities-hub-idh)
 - [Token Operations (TOK)](#token-operations-tok)
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
@@ -840,6 +841,97 @@ As a user, I want to cancel a contact request I sent so that it stops sitting in
 - Cancelling re-checks the request against the network first: it must still exist, must have been sent by the acting identity, and must not have already been answered.
 - Cancelling publishes a hidden contact-info document and records the withdrawal locally, so the request leaves the sent list and stays gone across restarts.
 - A request the other person already accepted is reported as an established contact instead of being cancelled.
+
+---
+
+## OrchardPay (ORP)
+
+OrchardPay is the privacy-first successor to DashPay (see `docs/orchardpay/PROTOCOL_DESIGN.md`
+and `docs/ORCHARDPAY_MIGRATION.md`): no document ever exposes a plaintext link between two
+counterparties, contact establishment is a symmetric two-anchor ECDH handshake, and messages/
+payment requests/real payments all travel over that same private channel.
+
+### ORP-001: Publish a private shielded address [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to publish my identity's shielded address so that other OrchardPay users can find it and privately connect with me.
+
+- Reads the identity's derived Orchard receiving address and publishes it as a `shieldedAddress` document, keyed to my identity.
+- Republishing replaces the existing document rather than creating a duplicate.
+- Offered as part of onboarding, right after registering a DPNS name.
+
+### ORP-002: Search for OrchardPay-ready contacts [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to search for other identities by DPNS name and see whether they're set up for OrchardPay so that I know who I can privately connect with.
+
+- DPNS prefix search, same mechanism as DashPay's profile search.
+- Each result is checked for a published `shieldedAddress` to mark it contactable.
+
+### ORP-003: Establish a private contact connection [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to connect privately with another OrchardPay user so that we can message and pay each other without either of us publishing a discoverable link between our identities.
+
+- Initiating publishes my own encrypted anchor document and sends a memo-tagged shielded transfer signaling the request — no document field ever names the counterparty.
+- The recipient detects the incoming signal, decrypts the anchor, and can accept (publishing their own anchor + return signal) or leave it pending.
+- Once both anchors are published and cross-referenced, the connection is "Established" and messaging/payments unlock.
+
+### ORP-004: View my contacts and connection status [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to see my OrchardPay contacts and whether each connection is pending or established so that I know who I can message.
+
+- Lists contacts with state: waiting for a response, wants to connect with you, or connected.
+- Selecting an established contact opens the message thread.
+
+### ORP-005: Recover contacts after reinstalling [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to recover my OrchardPay contacts from the network after reinstalling or switching devices so that I don't lose my private connections just because local state was wiped.
+
+- "Recover from Network" fetches every anchor document I've ever published, decrypts each one with my wallet-derived recovery key, and re-derives local contact state for any that aren't already tracked.
+- Reports how many anchors were found, how many contacts were recovered, how many were already tracked, and how many couldn't be decrypted.
+
+### ORP-006: Send an encrypted message [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to send a private text message to an established contact so that we can communicate without the content or the fact of our connection being publicly visible.
+
+- Message content is encrypted with a per-relationship ECDH secret before publishing.
+- Delivered as a Platform document tagged with my side of the relationship's reference ID; the recipient queries by that ID to find it.
+
+### ORP-007: Request a payment [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to send a contact a request for a specific amount so that I can ask to be paid without also having to share my address out-of-band.
+
+- Specify an amount (whole credits) and an optional memo.
+- Delivered as an encrypted message the recipient can reply to directly with a payment.
+
+### ORP-008: Send a real payment to a contact [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to send an actual shielded payment to a contact — either unprompted or in reply to their request — so that value moves privately alongside our conversation.
+
+- Sending a `Payment` performs a real shielded transfer, memo-tagged to correlate it with its encrypted message record.
+- Replying to a `PaymentRequest` fulfills it with a real transfer rather than just a document.
+- The thread shows the amount the sender claims alongside the amount this wallet independently verified from the transfer itself, flagging any mismatch.
+
+### ORP-009: View OrchardPay profile [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to set a display name, bio, and avatar visible to my OrchardPay contacts so that they can identify me.
+
+- Reuses the existing DashPay profile editor (display name, bio, avatar) — profile identity info is shared across both features, only the contact/messaging model differs.
+
+### ORP-010: Edit or delete a sent message [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want to edit or delete a message I sent so that I can correct mistakes or remove something I didn't mean to send.
+
+- The `encryptedMessage` schema already supports mutation and deletion, and the thread view already renders an "(edited)" indicator when a message's update time differs from its creation time.
+- No compose-side edit or delete action exists yet in the UI — messages can only be sent, not modified afterward from this app.
 
 ---
 

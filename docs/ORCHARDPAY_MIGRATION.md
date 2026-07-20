@@ -1,12 +1,14 @@
 # DashPay → OrchardPay Migration
 
-## Status: in progress
+## Status: feature-complete on Testnet, pending real-world usage before removal
 
 Guided onboarding chain (wallet → identity → DPNS name) landed. OrchardPay's
 data contract schema is finalized and identity registration now requests
 OrchardPay's contract-bounded ENCRYPTION/DECRYPTION keys automatically — see
-`docs/orchardpay/PROTOCOL_DESIGN.md`. None of the parity checklist below is
-checked yet; that starts with shielded-address publishing (next up).
+`docs/orchardpay/PROTOCOL_DESIGN.md`. Every item in the parity checklist below
+is now implemented and registered on Testnet; DashPay is not yet removed
+because the removal criteria also require in-practice usage, not just
+schema/feature completeness (see "Removal criteria" below).
 
 **Operational prerequisite**: OrchardPay's contract is not an SDK-embedded
 system contract like DPNS/DashPay — it must be registered once per network
@@ -44,15 +46,22 @@ for full rationale.
 
 ## What needs feature parity before DashPay can be removed
 
-- [ ] Shielded-address publishing + discovery (replaces DashPay's public
-      contact-request documents)
-- [ ] Contact Anchor establishment + AES-256 decryption (replaces DashPay's
-      DIP-15 ECDH contact key exchange, `src/backend_task/dashpay/encryption.rs`)
-- [ ] Encrypted message/payment sending using `referenceId` (replaces
-      `src/backend_task/dashpay/payments.rs`, `incoming_payments.rs`)
-- [ ] Profile equivalent (DashPay's `profile.rs` / `ProfileSearchScreen`)
-- [ ] Contact list / recovery UI equivalent (`contacts.rs`, `contacts_list.rs`)
-- [ ] Local caching/persistence equivalent (`database/dashpay.rs`, `database/contacts.rs`)
+- [x] Shielded-address publishing + discovery (replaces DashPay's public
+      contact-request documents) — `src/backend_task/orchardpay/shielded_address.rs`,
+      `src/ui/orchardpay/shielded_address_screen.rs`
+- [x] Contact Anchor establishment + AES-256 decryption (replaces DashPay's
+      DIP-15 ECDH contact key exchange, `src/backend_task/dashpay/encryption.rs`) —
+      `src/backend_task/orchardpay/contact_anchor.rs`, `encryption.rs`
+- [x] Encrypted message/payment sending using `refId` (replaces
+      `src/backend_task/dashpay/payments.rs`, `incoming_payments.rs`) —
+      `src/backend_task/orchardpay/messages.rs`, `src/ui/orchardpay/message_thread_screen.rs`
+- [x] Profile equivalent (DashPay's `profile.rs` / `ProfileSearchScreen`) —
+      the "My Profile" subscreen in `src/ui/orchardpay/orchardpay_screen.rs`
+- [x] Contact list / recovery UI equivalent (`contacts.rs`, `contacts_list.rs`) —
+      the "Contacts" subscreen plus "Recover from Network" (`recover_own_anchors`)
+      in `src/ui/orchardpay/orchardpay_screen.rs`
+- [x] Local caching/persistence equivalent (`database/dashpay.rs`, `database/contacts.rs`) —
+      the k/v sidecar in `src/wallet_backend/orchardpay.rs`
 
 ## Marked locations
 
