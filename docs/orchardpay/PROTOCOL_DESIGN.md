@@ -191,16 +191,26 @@ design is symmetric and bidirectional — **each party publishes their own
    `shieldedAddress` with his anchor's DocumentID in the memo.
 4. Alice detects the return transaction, fetches Bob's anchor, decrypts it,
    learns Bob's ReferenceID — then **updates her own anchor** (this is what
-   `documentsMutable: true` is for) to write Bob's ReferenceID into her
-   `anchorData` field, completing her side.
+   `documentsMutable: true` is for) to write Bob's ReferenceID (plus the
+   rest of what she now knows about him) into her `anchorData` field,
+   completing her side.
 5. From this point on, **neither party ever needs the other's document
    again** — each party's own anchor, once complete, is a fully
-   self-sufficient personal record (their own ReferenceID in `data`, the
-   counterparty's in `anchorData`) usable for recovery via the `byOwner`
+   self-sufficient personal record usable for recovery via the `byOwner`
    index if they lose local state or move to a new wallet. The mutability
    that makes this possible is safe because Platform's document-ownership
    model means only Alice's own keys can ever sign an update to her own
    anchor — no third party (including Bob) can tamper with it.
+
+`anchorData` is not purely something written once, at step 4 — Alice already
+knows Bob's identity ID and DPNS name at step 1 (she looked him up to find
+his `shieldedAddress` before ever contacting him), so she writes a *partial*
+`anchorData` at creation time (counterparty identity + name, her own
+ReferenceID, `their_reference_id: None`) and only the `ReplaceDocument` at
+step 4 fills in the piece she was actually missing. Even a still-pending
+outbound request is locally recoverable, not just a completed relationship —
+see "`anchorData`: a wallet-local recovery record" below for the full
+content model and why it no longer shares `data`'s encryption scheme.
 
 **Memo delivery caveat (see `docs/ai-design/2026-07-18-orchardpay-memo-detection/`
 for the full writeup):** step 2 above ("Bob detects the transaction") assumes
@@ -262,10 +272,162 @@ pub struct ContactAnchorPayload {
 }
 ```
 
-`anchorData` (once written) decrypts to the counterparty's own `data`
-contents as learned by this document's owner — i.e. the same shape,
-containing at minimum the counterparty's ReferenceID. `extra` is reserved for
-future use; no defined content yet.
+`extra` is reserved for future use; no defined content yet. `anchorData` has
+its own, different content model and encryption scheme — see the next
+section; it no longer just mirrors the counterparty's `data`.
+
+### `anchorData`: a wallet-local recovery record (decided 2026-07-19, not yet implemented)
+
+`data` and `anchorData` look symmetric in the schema (both `byteArray`,
+both on the same document) but serve fundamentally different readers.
+`data` has to be decryptable by *two* parties — the owner and the
+counterparty — so it has to stay ECDH-based. `anchorData` is read by
+exactly one party, ever: the document's own owner. Encrypting a
+self-only field with two-party key agreement was a consistency shortcut
+in the original design, not a real requirement, and it inherited ECDH's
+real cost for no benefit: decrypting your own notes required a live
+`IdentitiesContractKeysQuery` for the counterparty's *current* key, and
+broke permanently if either side's key ever got disabled.
+
+**Key source: one fixed AES-256 key per wallet, HD-derived, not ECDH.**
+
+```
+m / 420' / 5' / 1'
+```
+
+- `420'` — a new, unclaimed top-level BIP43 `purpose'` value, claimed here
+  as a forward-looking bet on a future DIP reservation for this scheme (no
+  such DIP exists yet). This is a deliberate, accepted risk, not an
+  oversight: top-level `purpose'` numbers are a namespace shared across
+  wallets, and every other feature in this wallet's tree instead lives as a
+  sub-branch under the existing DIP-9 `9'` umbrella (DashPay `9'/coin'/15'`,
+  CoinJoin `9'/coin'/4'`, masternode keys `9'/coin'/3'`, etc. — see
+  `key-wallet/src/dip9.rs`). If a real, conflicting DIP-420 is ever
+  standardized, this derivation would need to migrate. Chosen anyway,
+  eyes open.
+- `5'` — Dash's coin type (mainnet; `1'` on testnet, matching every other
+  path in this wallet).
+- `1'` — fixed leaf; there is exactly one key for this feature. No
+  `account'` or `identity_index'` component: **one key for the whole
+  wallet**, shared across every identity that wallet manages, not one key
+  per identity. Sharing the key across identities under one wallet is
+  harmless (they already trace to the same seed/owner) and keeps recovery
+  down to a single re-derivation regardless of how many identities the
+  wallet holds.
+
+Derived once via the existing secret chokepoint
+(`SecretAccess::with_secret_session` / `SecretScope::HdSeed`, the same
+pattern `derive_contact_info_encryption_keys` in
+`src/wallet_backend/dashpay.rs` already uses for a DIP-15 sub-branch),
+using the wallet's generic `Wallet::derive_private_key(&self, path:
+&DerivationPath)` — no new secret-handling plumbing needed. This is the
+first purely local, non-identity, non-payment symmetric secret derived in
+this codebase; there was no existing precedent to follow, so this section
+*is* the precedent going forward. If a future feature wants its own local
+secret, it should get its own leaf under a documented path, not reuse this
+one — this key's scope is deliberately narrow (see the nonce-reuse note
+below).
+
+**AES-256-GCM under a reused key — checked, not assumed.** The rule that
+matters for GCM isn't "don't reuse the key" (reusing a key across many
+messages is GCM's normal, intended usage — it's how TLS 1.3 uses one
+session key across every record in a connection); it's "never repeat a
+(key, nonce) pair under that key." `src/backend_task/orchardpay/
+encryption.rs` already draws a fresh 96-bit nonce from `OsRng` (a real
+CSPRNG) per encryption — that doesn't change. NIST SP 800-38D gives an
+explicit ceiling for randomly-chosen 96-bit GCM nonces under one key:
+stay under 2³² invocations to keep collision probability below ~2⁻³².
+This key's realistic lifetime volume — one `anchorData` write per contact
+at creation plus occasional replaces — is nowhere close: even 10,000
+contacts each edited 10 times is 100,000 encryptions ever, ~43,000×
+below the NIST ceiling, with actual collision probability around 10⁻²⁰.
+No nonce-counter scheme needed at this scale; random nonces are the
+correct, simpler choice here.
+
+**Content model.** Decrypted, `anchorData` contains:
+
+```rust
+pub struct AnchorDataRecord {
+    /// The counterparty's identity — safe to store here because this whole
+    /// field is encrypted; nothing about the privacy constraint at the top
+    /// of this document changes.
+    pub counterparty_identity_id: [u8; 32],
+    /// DPNS name snapshot at the time contact was established. Not
+    /// live-updated if the counterparty later renames — re-resolving on
+    /// every read would reintroduce the network dependency this whole
+    /// redesign removes. A stale snapshot is an acceptable, deliberate
+    /// tradeoff for a record whose job is "who was this," not "who is
+    /// this right now."
+    pub counterparty_name_snapshot: Option<String>,
+    /// Duplicated from this document's own `data` field — the whole point
+    /// of this redesign is that `anchorData` survives independently of
+    /// whether `data` is still decryptable.
+    pub my_reference_id: [u8; 32],
+    /// `None` until the counterparty's return signal is decrypted; filled
+    /// in by the `ReplaceDocument` at step 4 of the handshake above.
+    pub their_reference_id: Option<[u8; 32]>,
+    /// Mirrors of `data`'s own optional fields — same rationale as
+    /// `my_reference_id`: everything given to this contact should survive
+    /// independently of the fragile ECDH path, not just the ReferenceID.
+    pub my_initial_message: Option<Vec<u8>>,
+    pub my_core_payment_xpub: Option<Vec<u8>>,
+    pub my_dedicated_shielded_address: Option<Vec<u8>>,
+    /// Cached ECDH inputs, not cached secrets — see below.
+    pub counterparty_encryption_pubkey: Option<Vec<u8>>,
+    pub counterparty_decryption_pubkey: Option<Vec<u8>>,
+}
+```
+
+**Caching the counterparty's public keys, not the derived secrets.** The
+motivating problem: reading a contact's messages (or their `data`) needs
+`ECDH(my private key, their current public key)`, and fetching "their
+current public key" is a live `IdentitiesContractKeysQuery` every time —
+paid once at anchor-establishment, then again on every message poll once
+Milestone E exists. The fix is to cache the counterparty's **public** key
+bytes in `anchorData` (fetched once, already paid for) rather than the
+**derived shared secret** itself. Decrypting later still computes
+`ECDH(my own private key [always local, free], their cached public key
+[from anchorData, free])` — identical elimination of the repeated network
+call, at the cost of one cheap scalar multiplication per decrypt instead
+of a direct lookup.
+
+This was a deliberate choice over caching the raw secret directly: if
+`anchorData`'s *decrypted* content were ever exposed by some means short of
+a full wallet-seed compromise (a bug that logs decrypted state, a
+memory-scraping attack against the running app — a meaningfully lower bar
+than "the seed leaked, everything is already lost"), a cached raw secret
+hands over live message-decryption capability for every contact
+immediately. A cached public key only hands over "who their key was" —
+still useless without separately obtaining the reader's own private key
+too. Same performance, smaller exposure for a cheaper class of compromise.
+
+Both directions get cached (`counterparty_encryption_pubkey` for reading
+what they send — the ENCRYPTION key they used, paired with my DECRYPTION
+key; `counterparty_decryption_pubkey` for encrypting what I send them),
+since Milestone E's messaging uses both repeatedly, not just the read
+direction. A cached key going stale (the counterparty rotated) just means
+decryption/encryption under it quietly fails — the caller should re-fetch
+and retry once, not treat a cache miss as permanent.
+
+**Recovery consequence.** This closes most, not all, of the relaunch gap
+recorded in `docs/ai-design/2026-07-19-orchardpay-query-workflow-reference/`:
+`byOwner` → fetch every anchor → decrypt every `anchorData` with one
+re-derived wallet-local key → full contact list, names, both ReferenceIDs,
+initial messages, and exchanged keys/addresses recovered, no network
+dependency beyond the initial fetch, even if the identity's ENCRYPTION/
+DECRYPTION keys are lost entirely. What's still lost in that scenario:
+`data` itself and anything actually encrypted under the old per-relationship
+ECDH secrets (old messages, the counterparty's own view of the anchor) —
+those still need the ENCRYPTION private key, which remains
+randomly-generated (`KeyType::random_public_and_private_key_data`), not
+seed-derived. Making those keys HD-derived too is the natural companion fix
+for the *other* half of that gap — a related but separate decision, not
+bundled into this one.
+
+**No migration needed.** No `contactAnchor` documents have been created on
+any network yet (Milestone D shipped the contract and the code path, but
+no real handshake has run), so this is a clean redesign, not a breaking
+change against live data.
 
 ### Future: account separation (captured 2026-07-20, not implemented)
 
@@ -453,11 +615,15 @@ structurally identical regardless of purpose.
 
 ## Resolved design decisions
 
-1. **AES-256 key-derivation source for the Contact Anchor**: identity-bound
-   `Purpose::ENCRYPTION`/`Purpose::DECRYPTION` keys, contract-bounded to this
-   contract's `contactAnchor` document type via `requiresIdentity*BoundedKey`,
-   via ECDH — not an HD-path index. Two distinct shared secrets per
-   relationship (one per anchor direction), not one.
+1. **AES-256 key-derivation source for the Contact Anchor**: `data` stays
+   identity-bound `Purpose::ENCRYPTION`/`Purpose::DECRYPTION` keys,
+   contract-bounded to this contract's `contactAnchor` document type via
+   `requiresIdentity*BoundedKey`, via ECDH — two distinct shared secrets per
+   relationship (one per anchor direction), not one. `anchorData` does
+   **not** — it's self-only (never read by the counterparty), so it uses a
+   single fixed HD-derived AES-256 key instead (`m/420'/5'/1'`, one per
+   wallet) — see "`anchorData`: a wallet-local recovery record" above for
+   the full reasoning.
 2. **One or two ReferenceIDs per relationship?** Two — but carried as two
    separate `contactAnchor` documents (one per party), not one document
    holding both from the start.
@@ -515,8 +681,17 @@ sending a payment.
   `docs/ai-design/2026-07-18-orchardpay-memo-detection/`). UI:
   `OrchardPayScreen` (Contacts/Search subscreens), reachable from the left
   nav as "Private Contacts".
+- **Decided, not yet implemented (2026-07-19)**: the `anchorData`
+  redesign — wallet-local HD key (`m/420'/5'/1'`), the
+  `AnchorDataRecord` content model, and public-key caching for both ECDH
+  directions. See "`anchorData`: a wallet-local recovery record" above for
+  the full design. Should land before Milestone E, since messaging's poll
+  path is the main beneficiary of the cached public keys. No migration
+  needed — no `contactAnchor` documents exist on any network yet.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's); messaging send/receive
   (`encryptedMessage`/`MessageKind`, Milestone E); real payment-with-memo
   transfers riding on messages; recovery UI for a reinstalled/new-device
-  user (Milestone F).
+  user (Milestone F); HD-deriving the ENCRYPTION/DECRYPTION identity keys
+  themselves (the companion fix for the other half of the relaunch-from-
+  new-wallet recovery gap — not yet decided).
