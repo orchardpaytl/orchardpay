@@ -9,6 +9,7 @@ pub mod encryption;
 pub mod errors;
 pub mod keys;
 pub mod memo_scan;
+pub mod messages;
 pub mod shielded_address;
 
 use crate::backend_task::BackendTaskSuccessResult;
@@ -66,6 +67,42 @@ pub enum OrchardPayTask {
     /// the normal Contacts/Search UI.
     CheckOwnShieldedAddress {
         identity_id: dash_sdk::platform::Identifier,
+    },
+    /// Send a plain-text `Message` to an established contact. See
+    /// `messages::send_message`.
+    SendMessage {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        text: String,
+    },
+    /// Send a `PaymentRequest` to an established contact — a pure document,
+    /// no transfer. See `messages::send_payment_request`.
+    SendPaymentRequest {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        amount: u64,
+        memo: Option<String>,
+    },
+    /// Send a real payment — unprompted, or fulfilling an existing
+    /// `fulfilling_request_document_id`. See `messages::send_payment` for
+    /// both paths.
+    SendPayment {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        memo: Option<String>,
+        fulfilling_request_document_id: Option<dash_sdk::platform::Identifier>,
+    },
+    /// Load the full two-way `encryptedMessage` thread with an established
+    /// contact. See `messages::load_thread`.
+    LoadThread {
+        qualified_identity: QualifiedIdentity,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
     },
 }
 
@@ -144,6 +181,80 @@ impl AppContext {
                         published,
                     },
                 )
+            }
+            OrchardPayTask::SendMessage {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                text,
+            } => {
+                messages::send_message(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    text,
+                )
+                .await
+            }
+            OrchardPayTask::SendPaymentRequest {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                amount,
+                memo,
+            } => {
+                messages::send_payment_request(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    amount,
+                    memo,
+                )
+                .await
+            }
+            OrchardPayTask::SendPayment {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                seed_hash,
+                amount,
+                memo,
+                fulfilling_request_document_id,
+            } => {
+                messages::send_payment(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    seed_hash,
+                    amount,
+                    memo,
+                    fulfilling_request_document_id,
+                )
+                .await
+            }
+            OrchardPayTask::LoadThread {
+                qualified_identity,
+                counterparty_identity_id,
+                seed_hash,
+            } => {
+                let messages = messages::load_thread(
+                    self,
+                    sdk,
+                    &qualified_identity,
+                    counterparty_identity_id,
+                    seed_hash,
+                )
+                .await?;
+                Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
+                    counterparty_identity_id,
+                    messages,
+                })
             }
         }
     }

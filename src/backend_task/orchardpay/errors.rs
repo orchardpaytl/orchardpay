@@ -78,4 +78,15 @@ pub enum OrchardPayError {
         #[source]
         source: Box<dash_sdk::dpp::ProtocolError>,
     },
+
+    /// Attempted to send or load a message for a counterparty with no
+    /// `Established` local contact state — either no relationship exists
+    /// yet, or the handshake with them hasn't completed. Messaging requires
+    /// both parties' ReferenceIDs and cached public keys, which only exist
+    /// once `docs/orchardpay/PROTOCOL_DESIGN.md`'s two-anchor handshake is
+    /// fully complete.
+    #[error(
+        "You haven't connected with this contact yet. Send or accept a private contact request first."
+    )]
+    ContactNotEstablished,
 }

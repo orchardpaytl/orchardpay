@@ -27,9 +27,30 @@ use zeroize::Zeroizing;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
+use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
 use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
+
+/// One recognized signal found by the incoming-memo scan — either half of
+/// the `contactAnchor` handshake, or a [`MEMO_TAG_PAYMENT`]-tagged real
+/// value transfer (an unprompted `Payment` document, or a bare fulfillment
+/// of a `PaymentRequest`). See `docs/orchardpay/PROTOCOL_DESIGN.md`'s
+/// "Message content schema for the three in-scope kinds" for the payment
+/// half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncomingMemoSignal {
+    Anchor(Identifier),
+    Payment {
+        /// The `Payment` or `PaymentRequest` document this transfer's memo
+        /// referenced.
+        referenced_document_id: Identifier,
+        /// The real value observed on this wallet's own decrypted note —
+        /// the authoritative amount, cached for `messages::load_thread` to
+        /// compare against whatever the document itself claims.
+        received_amount_credits: u64,
+    },
+}
 
 /// Derive OrchardPay's single, wallet-wide `anchorData` encryption key at
 /// `m/420'/coin_type'/1'` — see `docs/orchardpay/PROTOCOL_DESIGN.md`'s
@@ -83,10 +104,32 @@ const KV_PREFIX_CONTACT: &str = "det:orchardpay:contact:";
 /// though the anchors it finds get handed off to individual identities.
 const KV_PREFIX_MEMO_SCAN_CURSOR: &str = "det:orchardpay:memo_scan_cursor";
 
+/// Value: `u64`, the real credits value this wallet observed on a
+/// [`MEMO_TAG_PAYMENT`](crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT)-tagged
+/// incoming shielded note, keyed by the DocumentID the memo referenced
+/// (either a `Payment` document, or a `PaymentRequest` being fulfilled by a
+/// bare transfer). Written once by the incoming-memo scan, at the point
+/// where the real decrypted `Note` value is actually in hand — re-deriving
+/// it later would mean re-walking the note stream. Read by
+/// `messages::load_thread` to source the UI's authoritative displayed
+/// amount and flag a mismatch against the document's claimed `amount`. Only
+/// ever written for notes addressed *to* this wallet — a payment I sent
+/// needs no verification, since I chose the real amount myself. Scope:
+/// [`DetScope::Wallet`], matching [`KV_PREFIX_MEMO_SCAN_CURSOR`]'s own
+/// wallet-level (not identity-level) reasoning.
+const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
+
 fn contact_key(counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_CONTACT}{}",
         counterparty.to_string(Encoding::Base58)
+    )
+}
+
+fn verified_payment_key(document_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_VERIFIED_PAYMENT}{}",
+        document_id.to_string(Encoding::Base58)
     )
 }
 
@@ -171,12 +214,43 @@ impl WalletBackend {
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
+    /// Read the real credits value this wallet observed for a
+    /// `MEMO_TAG_PAYMENT`-tagged incoming note referencing `document_id`.
+    /// `Ok(None)` means either the scan hasn't reached it yet, or it was
+    /// never addressed to this wallet (e.g. a payment I sent myself, which
+    /// needs no verification).
+    pub fn orchardpay_get_verified_payment_amount(
+        &self,
+        seed_hash: &WalletSeedHash,
+        document_id: &Identifier,
+    ) -> Result<Option<u64>, TaskError> {
+        let key = verified_payment_key(document_id);
+        self.kv()
+            .get::<u64>(DetScope::Wallet(seed_hash), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Persist the real credits value observed for a `MEMO_TAG_PAYMENT`
+    /// signal referencing `document_id`. Called once by the incoming-memo
+    /// scan, at the point the decrypted `Note`'s real value is in hand.
+    pub fn orchardpay_set_verified_payment_amount(
+        &self,
+        seed_hash: &WalletSeedHash,
+        document_id: &Identifier,
+        amount: u64,
+    ) -> Result<(), TaskError> {
+        let key = verified_payment_key(document_id);
+        self.kv()
+            .put::<u64>(DetScope::Wallet(seed_hash), &key, &amount)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
     /// Drop every OrchardPay sidecar entry for `owner` — the per-counterparty
     /// contact-state records. Mirrors `dashpay_clear_owner_overlays` for the
-    /// network-clear path. The memo-scan cursor is wallet-scoped, not
-    /// owner-scoped, so it is not covered here — it is naturally reaped
-    /// when the wallet itself is removed ([`DetScope::Wallet`] cascades on
-    /// wallet deletion).
+    /// network-clear path. The memo-scan cursor and verified-payment cache
+    /// are wallet-scoped, not owner-scoped, so neither is covered here —
+    /// both are naturally reaped when the wallet itself is removed
+    /// ([`DetScope::Wallet`] cascades on wallet deletion).
     pub fn orchardpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let scope = DetScope::Identity(&owner_buf);
@@ -197,21 +271,24 @@ impl WalletBackend {
     /// `docs/ai-design/2026-07-18-orchardpay-memo-detection/`) for the
     /// wallet identified by `seed_hash`: re-derive its Orchard incoming
     /// viewing key through the secret chokepoint, walk the raw note stream
-    /// from `start_index`, and return every `contactAnchor` DocumentID
-    /// signaled by a [`MEMO_TAG_ANCHOR`]-tagged memo, plus the resume index
-    /// for the next pass.
+    /// from `start_index`, and return every recognized [`IncomingMemoSignal`]
+    /// — a `contactAnchor` handshake step ([`MEMO_TAG_ANCHOR`]) or a real
+    /// payment ([`MEMO_TAG_PAYMENT`]) — plus the resume index for the next
+    /// pass. Both tags are checked in the same pass over the same note
+    /// stream rather than two separate scans, since re-walking it twice
+    /// would double the redundant-scan cost this design already accepts.
     ///
     /// Intentionally re-derives the IVK and re-fetches notes independently
     /// of the wallet's own sync coordinator, which cannot recover memos —
     /// see the linked design doc for why this redundant work is the
     /// deliberate near-term tradeoff.
-    pub async fn orchardpay_scan_incoming_anchor_memos(
+    pub async fn orchardpay_scan_incoming_memos(
         &self,
         sdk: &Sdk,
         seed_hash: &WalletSeedHash,
         network: Network,
         start_index: u64,
-    ) -> Result<(Vec<Identifier>, u64), TaskError> {
+    ) -> Result<(Vec<IncomingMemoSignal>, u64), TaskError> {
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -237,12 +314,21 @@ impl WalletBackend {
                     })?;
 
                     for note in &batch.notes {
-                        if let Some((_, _, memo)) = try_decrypt_note_with_memo(&ivk, note)
-                            && memo[..4] == MEMO_TAG_ANCHOR
-                        {
-                            let doc_id_bytes: [u8; 32] =
-                                memo[4..].try_into().expect("memo is 36 bytes, tag is 4");
-                            found.push(Identifier::from(doc_id_bytes));
+                        let Some((decrypted_note, _, memo)) =
+                            try_decrypt_note_with_memo(&ivk, note)
+                        else {
+                            continue;
+                        };
+                        let tag: [u8; 4] = memo[..4].try_into().expect("memo is 36 bytes");
+                        let doc_id_bytes: [u8; 32] =
+                            memo[4..].try_into().expect("memo is 36 bytes, tag is 4");
+                        if tag == MEMO_TAG_ANCHOR {
+                            found.push(IncomingMemoSignal::Anchor(Identifier::from(doc_id_bytes)));
+                        } else if tag == MEMO_TAG_PAYMENT {
+                            found.push(IncomingMemoSignal::Payment {
+                                referenced_document_id: Identifier::from(doc_id_bytes),
+                                received_amount_credits: decrypted_note.value().inner(),
+                            });
                         }
                     }
 

@@ -27,6 +27,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::orchardpay::message_thread_screen::MessageThreadScreen;
 use crate::ui::orchardpay::orchardpay_screen::{OrchardPayScreen, OrchardPaySubscreen};
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
 use crate::ui::tokens::add_token_by_id_screen::AddTokenByIdScreen;
@@ -166,6 +167,7 @@ pub enum ScreenType {
     UpdateContract,
     TopUpIdentity(QualifiedIdentity),
     ShieldedAddressSetup(QualifiedIdentity),
+    MessageThread(QualifiedIdentity, Identifier),
     ScheduledVotes,
     AddContracts,
     ProofVisualizer,
@@ -244,6 +246,7 @@ impl PartialEq for ScreenType {
             (RegisterDpnsName(a), RegisterDpnsName(b)) => a == b,
             (TopUpIdentity(a), TopUpIdentity(b)) => a == b,
             (ShieldedAddressSetup(a), ShieldedAddressSetup(b)) => a == b,
+            (MessageThread(a1, a2), MessageThread(b1, b2)) => a1 == b1 && a2 == b2,
             (TransferTokensScreen(a), TransferTokensScreen(b)) => a == b,
             (MintTokensScreen(a), MintTokensScreen(b)) => a == b,
             (BurnTokensScreen(a), BurnTokensScreen(b)) => a == b,
@@ -297,6 +300,13 @@ impl ScreenType {
             ScreenType::ShieldedAddressSetup(identity) => Screen::ShieldedAddressSetupScreen(
                 ShieldedAddressSetupScreen::new(identity.clone(), app_context),
             ),
+            ScreenType::MessageThread(identity, counterparty_identity_id) => {
+                Screen::MessageThreadScreen(MessageThreadScreen::new(
+                    identity.clone(),
+                    *counterparty_identity_id,
+                    app_context,
+                ))
+            }
             ScreenType::AddExistingIdentity => {
                 Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(app_context))
             }
@@ -555,6 +565,7 @@ pub enum Screen {
     WithdrawalScreen(WithdrawalScreen),
     TopUpIdentityScreen(TopUpIdentityScreen),
     ShieldedAddressSetupScreen(ShieldedAddressSetupScreen),
+    MessageThreadScreen(MessageThreadScreen),
     OrchardPayScreen(OrchardPayScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
@@ -730,6 +741,7 @@ impl Screen {
             GroupActionsScreen,
             TopUpIdentityScreen,
             ShieldedAddressSetupScreen,
+            MessageThreadScreen,
             OrchardPayScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
@@ -907,6 +919,9 @@ impl Screen {
             Screen::ShieldedAddressSetupScreen(screen) => {
                 ScreenType::ShieldedAddressSetup(screen.identity.clone())
             }
+            Screen::MessageThreadScreen(screen) => {
+                ScreenType::MessageThread(screen.identity.clone(), screen.counterparty_identity_id)
+            }
             Screen::OrchardPayScreen(_) => ScreenType::OrchardPay,
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
@@ -1059,6 +1074,7 @@ macro_rules! delegate_to_screen {
             Screen::WithdrawalScreen($screen) => $call,
             Screen::TopUpIdentityScreen($screen) => $call,
             Screen::ShieldedAddressSetupScreen($screen) => $call,
+            Screen::MessageThreadScreen($screen) => $call,
             Screen::OrchardPayScreen($screen) => $call,
             Screen::TransferScreen($screen) => $call,
             Screen::AddKeyScreen($screen) => $call,

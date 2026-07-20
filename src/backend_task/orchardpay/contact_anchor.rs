@@ -355,8 +355,8 @@ pub async fn accept_contact(
         my_initial_message: None,
         my_core_payment_xpub: None,
         my_dedicated_shielded_address: None,
-        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
-        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey),
+        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey.clone()),
+        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey.clone()),
     };
     let anchor_data_bytes = anchor_record
         .encrypt(&anchor_data_key)
@@ -435,6 +435,8 @@ pub async fn accept_contact(
             my_reference_id,
             my_anchor_document_id: document_id.to_buffer(),
             their_reference_id,
+            counterparty_encryption_pubkey,
+            counterparty_decryption_pubkey,
         },
     )?;
 
@@ -605,6 +607,16 @@ pub async fn handle_incoming_anchor_signal(
                     my_reference_id,
                     my_anchor_document_id,
                     their_reference_id: their_payload.reference_id,
+                    counterparty_encryption_pubkey: anchor_record
+                        .counterparty_encryption_pubkey
+                        .clone()
+                        .expect("set immediately above"),
+                    counterparty_decryption_pubkey: anchor_record
+                        .counterparty_decryption_pubkey
+                        .clone()
+                        .expect(
+                            "set immediately above, or already present in the decrypted record",
+                        ),
                 },
             )?;
             Ok(true)
@@ -699,7 +711,13 @@ async fn fetch_counterparty_key_bytes(
 /// together with their DECRYPTION key; decrypting *from* someone uses my
 /// DECRYPTION key together with their ENCRYPTION key. ECDH's commutativity
 /// means both sides land on the same secret for a given direction.
-async fn compute_shared_secret_from_key(
+///
+/// `pub(crate)` so `orchardpay::messages` can reuse it against a synthetic
+/// `IdentityPublicKey` built from `OrchardPayContactState::Established`'s
+/// cached counterparty pubkey bytes, with no network fetch needed per
+/// message. `counterparty_key.id()` is never read by this function, only
+/// `.key_type()`/`.data()` — the synthetic key's placeholder `id` is safe.
+pub(crate) async fn compute_shared_secret_from_key(
     my_identity: &QualifiedIdentity,
     my_key: &IdentityPublicKey,
     counterparty_key: &IdentityPublicKey,

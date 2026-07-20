@@ -534,6 +534,22 @@ pub enum BackendTaskSuccessResult {
         identity_id: dash_sdk::platform::Identifier,
         published: bool,
     },
+    /// Result of `OrchardPayTask::LoadThread` — the reconstructed two-way
+    /// message history with `counterparty_identity_id`, sorted by
+    /// `$createdAt`. See `backend_task::orchardpay::messages::load_thread`.
+    OrchardPayThreadLoaded {
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        messages: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
+    },
+    /// Result of `OrchardPayTask::SendPayment` — a real shielded transfer to
+    /// `counterparty_identity_id` completed (either an unprompted `Payment`
+    /// document was also broadcast, or this fulfilled an existing
+    /// `PaymentRequest` with a bare memo'd transfer — see
+    /// `backend_task::orchardpay::messages::send_payment`).
+    OrchardPayPaymentSent {
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        amount: u64,
+    },
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`

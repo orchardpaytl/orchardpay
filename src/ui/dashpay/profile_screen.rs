@@ -198,9 +198,17 @@ impl ProfileScreen {
         // This prevents stuck loading states
         self.loading = false;
 
-        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
-        if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_user_identities()
+        // Reconcile to the app-scoped selected identity (W3 SYNC) on every
+        // refresh, not just when none is yet selected — otherwise, once
+        // this widget resolves an identity, it never notices the user
+        // later switching their active identity elsewhere in the app
+        // (e.g. via the Identity Hub) and keeps showing the old one's
+        // profile (or "no profile") forever. Two independent embedders of
+        // this widget (DashPayScreen, OrchardPayScreen) can each seed at a
+        // different moment, so without this they can drift to show
+        // different identities' profiles for what the user expects to be
+        // "my current profile" in both places.
+        if let Ok(identities) = self.app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -208,11 +216,24 @@ impl ProfileScreen {
             let preferred = selected_id
                 .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
                 .unwrap_or_else(|| identities[0].clone());
-            self.selected_identity = Some(preferred.clone());
-            self.selected_identity_string = preferred
-                .identity
-                .id()
-                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+            let changed = self
+                .selected_identity
+                .as_ref()
+                .is_none_or(|current| current.identity.id() != preferred.identity.id());
+            if changed {
+                self.selected_identity = Some(preferred.clone());
+                self.selected_identity_string = preferred
+                    .identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+                // The old identity's profile (or "no profile" result) no
+                // longer applies — force a fresh load for the new one, and
+                // drop any in-progress edit rather than risk saving it
+                // against the wrong identity.
+                self.profile = None;
+                self.profile_load_attempted = false;
+                self.editing = false;
+            }
         }
 
         // Load profile from database if we have an identity selected and no profile loaded

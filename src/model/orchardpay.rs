@@ -31,5 +31,14 @@ pub enum OrchardPayContactState {
         my_reference_id: [u8; 32],
         my_anchor_document_id: [u8; 32],
         their_reference_id: [u8; 32],
+        /// Counterparty's contract-bounded ENCRYPTION/DECRYPTION public key
+        /// bytes, cached at the same moment they were fetched for the
+        /// `contactAnchor` handshake's ECDH secrets (mirroring
+        /// `AnchorDataRecord`'s own copy of the same bytes). Reading these
+        /// from local state instead of re-fetching from Platform is what
+        /// makes sending/reading `encryptedMessage` documents a zero-network-call
+        /// operation — see `backend_task::orchardpay::messages`.
+        counterparty_encryption_pubkey: Vec<u8>,
+        counterparty_decryption_pubkey: Vec<u8>,
     },
 }

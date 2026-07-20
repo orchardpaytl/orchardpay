@@ -1,14 +1,20 @@
-//! AES-256-GCM encryption for OrchardPay's `contactAnchor` payloads.
+//! AES-256-GCM encryption for OrchardPay's `contactAnchor` and
+//! `encryptedMessage` payloads.
 //!
-//! Two different fields, two different key sources, because they have two
-//! different readers — see `docs/orchardpay/PROTOCOL_DESIGN.md`:
+//! Different fields, different key sources, because they have different
+//! readers — see `docs/orchardpay/PROTOCOL_DESIGN.md`:
 //!
-//! - `data` is read by *two* parties (the owner and the counterparty), so
-//!   [`ContactAnchorPayload`] stays keyed by an ECDH-derived shared secret
+//! - `data` and `encryptedMessage.msgData` ([`MessageContent`]) are read by
+//!   *two* parties (the owner and the counterparty), so [`ContactAnchorPayload`]
+//!   and [`MessageContent`] both stay keyed by an ECDH-derived shared secret
 //!   (still produced by DashPay's existing `generate_ecdh_shared_key` in
 //!   `src/backend_task/dashpay/encryption.rs` — reused as-is, not
 //!   reimplemented). The shared secret itself *is* the AES-256 key; there
-//!   is no password/Argon2 step, since it's never entered by a user.
+//!   is no password/Argon2 step, since it's never entered by a user. See
+//!   `backend_task::orchardpay::messages` for how a message's ECDH secret is
+//!   derived from the counterparty pubkeys cached on
+//!   `OrchardPayContactState::Established` — no network call needed per
+//!   message.
 //! - `anchorData` is read by exactly *one* party — the document's own
 //!   owner, writing notes to their future self — so [`AnchorDataRecord`]
 //!   uses a single fixed, wallet-local, HD-derived AES-256 key instead
@@ -18,8 +24,8 @@
 //!   protocol doc for the full reasoning, including why reusing one key
 //!   across every anchor is safe under AES-256-GCM at this call volume.
 //!
-//! Both use the same `encrypt`/`decrypt` primitives below — only the key
-//! source differs.
+//! All three types use the same `encrypt`/`decrypt` primitives below — only
+//! the key source differs.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -178,6 +184,55 @@ impl AnchorDataRecord {
     }
 }
 
+/// Decrypted contents of an `encryptedMessage`'s `msgData` field. The
+/// variant itself is the type tag — no separate plaintext or in-payload
+/// `kind`/`type` field, so decoding is compiler-checked rather than
+/// string-matched. See `docs/orchardpay/PROTOCOL_DESIGN.md`'s "Message
+/// content schema for the three in-scope kinds" for the full design,
+/// including why `Payment`/`PaymentRequest` carry an `amount` that is never
+/// trusted as authoritative on its own.
+///
+/// Encrypted under the relationship's ECDH shared secret — the same scheme
+/// as `contactAnchor`'s `data` field, never the wallet-local `anchorData`
+/// key, since a message must be readable by both parties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MessageContent {
+    /// A plain text message. No reply-threading in this increment.
+    Message { data: String },
+    /// Documents a real value transfer that already happened (or, when
+    /// answering a `PaymentRequest`, is implied by a bare memo-tagged
+    /// transfer with no `Payment` document at all — see the protocol doc).
+    /// `amount` is Platform credits, as claimed by the sender — the UI
+    /// always sources the displayed amount from the recipient's own
+    /// decrypted note and flags a mismatch against this field.
+    Payment { amount: u64, memo: Option<String> },
+    /// A standing request for payment. No transfer accompanies this by
+    /// itself; no expiration field, no back-reference from `Payment` — a
+    /// fulfilling transfer's on-chain memo references this document's own
+    /// ID directly.
+    PaymentRequest { amount: u64, memo: Option<String> },
+}
+
+impl MessageContent {
+    /// Serialize with bincode (matching `src/wallet_backend/kv.rs`'s
+    /// convention), then AES-256-GCM encrypt under this relationship's
+    /// ECDH shared secret.
+    pub fn encrypt(&self, shared_key: &[u8; 32]) -> Result<Vec<u8>, OrchardPayCryptoError> {
+        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
+            .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        encrypt(shared_key, &plaintext)
+    }
+
+    /// Decrypt and deserialize a payload produced by [`Self::encrypt`].
+    pub fn decrypt(shared_key: &[u8; 32], data: &[u8]) -> Result<Self, OrchardPayCryptoError> {
+        let plaintext = decrypt(shared_key, data)?;
+        let (content, _) =
+            bincode::serde::decode_from_slice(&plaintext, bincode::config::standard())
+                .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        Ok(content)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +312,58 @@ mod tests {
         let encrypted = record.encrypt(&[9u8; 32]).expect("encrypt succeeds");
 
         let result = AnchorDataRecord::decrypt(&[10u8; 32], &encrypted);
+        assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
+    }
+
+    #[test]
+    fn message_content_message_round_trips() {
+        let shared_key = [11u8; 32];
+        let content = MessageContent::Message {
+            data: "hi there".to_string(),
+        };
+
+        let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted = MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+
+        assert_eq!(content, decrypted);
+    }
+
+    #[test]
+    fn message_content_payment_round_trips() {
+        let shared_key = [12u8; 32];
+        let content = MessageContent::Payment {
+            amount: 100_000,
+            memo: Some("for dinner".to_string()),
+        };
+
+        let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted = MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+
+        assert_eq!(content, decrypted);
+    }
+
+    #[test]
+    fn message_content_payment_request_round_trips() {
+        let shared_key = [13u8; 32];
+        let content = MessageContent::PaymentRequest {
+            amount: 250_000,
+            memo: None,
+        };
+
+        let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted = MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+
+        assert_eq!(content, decrypted);
+    }
+
+    #[test]
+    fn message_content_decrypt_fails_under_wrong_key() {
+        let content = MessageContent::Message {
+            data: "secret".to_string(),
+        };
+        let encrypted = content.encrypt(&[14u8; 32]).expect("encrypt succeeds");
+
+        let result = MessageContent::decrypt(&[15u8; 32], &encrypted);
         assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
     }
 }

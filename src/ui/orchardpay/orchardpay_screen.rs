@@ -33,7 +33,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
 };
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -305,9 +305,21 @@ impl OrchardPayScreen {
                         });
                     }
                     OrchardPayContactState::Established { .. } => {
-                        ui.label(
-                            RichText::new("Connected").color(DashColors::success_color(dark_mode)),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Connected")
+                                    .color(DashColors::success_color(dark_mode)),
+                            );
+                            if ui.button("Open Conversation").clicked() {
+                                action |= AppAction::AddScreen(Screen::MessageThreadScreen(
+                                    crate::ui::orchardpay::message_thread_screen::MessageThreadScreen::new(
+                                        identity.clone(),
+                                        counterparty,
+                                        &self.app_context,
+                                    ),
+                                ));
+                            }
+                        });
                     }
                 }
             });
@@ -321,7 +333,7 @@ impl OrchardPayScreen {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(
-                "Private payments are coming soon — sending a payment as part of an OrchardPay message isn't implemented yet.",
+                "Payments are sent from a conversation with a contact — open a contact from the Contacts tab to send or request one.",
             )
             .color(DashColors::text_secondary(dark_mode)),
         );
@@ -559,8 +571,12 @@ impl ScreenLike for OrchardPayScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let readiness = self.compute_local_readiness();
 
-        let breadcrumbs = vec![("OrchardPay", AppAction::None)];
-        let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
+        let mut action = add_top_panel_with_global_nav(
+            ui,
+            &self.app_context,
+            subdued_everyday_spec("OrchardPay", RootScreenType::RootScreenOrchardPay),
+            vec![],
+        );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
 
         if readiness == LocalReadiness::ContractConfigured {
