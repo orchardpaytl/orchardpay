@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
+  installation now triggers a best-effort Mainnet or Testnet node refresh.
+  Failed attempts retry on later launches until fresh addresses are saved and
+  the app reconnects, so upgrading users do not need to find the manual action.
+
 - **Search tags in the "Send to" field**: type `type:core`, `type:platform`,
   `type:shielded`, or `wallet:<name>` to narrow the address suggestions
   instead of scrolling through everything; plain words still search like
@@ -197,6 +202,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Closing the app now finishes wallet activity and clears in-memory secrets**:
+  wallet cleanup still completes if you close the app again while it is already
+  closing or if a network change is still connecting.
+
 - **Token balance refresh status**: requesting a refresh while token balances
   are already updating now shows a brief informational note instead of a red
   error banner that must be dismissed.
@@ -353,3 +362,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currently knows about becomes briefly unreachable at once — a temporary,
   self-recovering condition. The app now recognizes it and says "All Dash network
   servers are temporarily unreachable. Please wait a minute and retry." instead.
+- The onboarding Welcome screen on first launch no longer shows a red
+  "Disconnected — check your internet connection" banner before you have done
+  anything. On a fresh start there is no wallet yet and no sync has been
+  attempted, so that message was misleading; it now stays hidden until you
+  finish onboarding, and real connection problems are still reported afterwards.

@@ -22,9 +22,11 @@ use orchardpay::app_dir::ensure_env_file;
 use orchardpay::backend_task::BackendTask;
 use orchardpay::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use orchardpay::backend_task::error::TaskError;
+use orchardpay::backend_task::platform_info::PlatformInfoTaskRequestType;
 use orchardpay::context::AppContext;
 use orchardpay::context::connection_status::ConnectionStatus;
 use orchardpay::database::test_helpers::create_database_at_path;
+use orchardpay::model::user_role::{UserRole, UserRoleCell};
 use orchardpay::model::wallet::WalletSeedHash;
 use orchardpay::utils::egui_mpsc::EguiMpscAsync;
 use orchardpay::utils::tasks::TaskManager;
@@ -261,7 +263,7 @@ impl BackendTestContext {
             egui_ctx,
             app_kv,
             secret_store,
-            orchardpay::model::user_role::UserRoleCell::default(),
+            UserRoleCell::new(UserRole::Power),
         )
         .expect("Failed to create AppContext for testnet");
 
@@ -450,6 +452,13 @@ impl BackendTestContext {
             .await
             .expect("SPV did not reach Running state within 600s");
         tracing::info!("SPV fully synced — mempool bloom filter active");
+
+        run_task(
+            &app_context,
+            BackendTask::PlatformInfo(PlatformInfoTaskRequestType::CurrentEpochInfo),
+        )
+        .await
+        .expect("Failed to fetch current epoch information");
 
         // Now check framework wallet balance — SPV has synced, so balances
         // should be available immediately (no need for a long timeout).

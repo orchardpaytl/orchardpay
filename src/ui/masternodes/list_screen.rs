@@ -20,6 +20,7 @@ use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
+use crate::model::wallet_association::WalletAssociation;
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -316,7 +317,7 @@ impl MasternodesScreen {
         }
     }
 
-    /// The page's global-nav spec: an interactive wallet pill plus a node pill
+    /// The page's global-nav spec: a read-only wallet indicator plus a node pill
     /// listing every loaded node and showing the one in view. Derived from the
     /// page's own state each frame, which is what keeps the pill and the card
     /// grid two-way bound (FR-GLOBAL-NAV-3).
@@ -333,7 +334,16 @@ impl MasternodesScreen {
                 )
             })
             .collect();
-        masternodes_page_nav_spec(items, self.selected_node_id())
+        masternodes_page_nav_spec(items, self.selected_node_id(), self.wallet_association())
+    }
+
+    /// The wallet association shown for the node in view. Masternodes and
+    /// evonodes are loaded from raw owner/voting/payout keys, never derived from
+    /// an HD wallet on this device, so none has an owning wallet hash. Resolved
+    /// through [`WalletAssociation::resolve`] so the indicator stays correct if a
+    /// wallet-derived node type is ever added.
+    fn wallet_association(&self) -> WalletAssociation {
+        WalletAssociation::resolve(None, &[])
     }
 
     /// Consume the global-nav effect this page is bound to: a node picked from
@@ -514,6 +524,12 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
+    }
+
+    fn reset_to_root_view(&mut self) {
+        if !matches!(self.view, MasternodesView::Load(_)) {
+            self.view = MasternodesView::List;
+        }
     }
 
     /// Drop every secret the open view holds — the load form's keys and
@@ -872,6 +888,12 @@ mod tests {
         assert!(
             screen.pending_load.is_none(),
             "submit must re-enable after a failed load"
+        );
+
+        screen.reset_to_root_view();
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "root navigation must preserve a failed load form for correction"
         );
 
         // Resubmit, then succeed: the form closes and drops back to the list.

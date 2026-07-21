@@ -374,7 +374,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - Select Core Wallet source and enter a shielded address as destination.
 - System creates an asset lock, waits for proof, and shields the credits.
 - Progress banner shows multi-step operation status.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -392,7 +392,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination.
 - System auto-selects the highest-balance Platform address.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -400,7 +400,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Pool as source and enter a Core address as destination.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -444,6 +444,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 - Select Shielded Pool as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-016: Send privately within the shielded pool [Implemented]
 **Persona:** Jordan
@@ -453,6 +454,7 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Select Shielded Pool as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ---
 
@@ -1353,6 +1355,9 @@ As a user, I want to fetch a fresh list of Platform (DAPI) node addresses from D
 - "Refresh DAPI endpoints" action available on Mainnet and Testnet.
 - Confirmation prompt before replacing an existing configured address set.
 - New addresses are persisted to config and the SDK reinitialized without an app restart.
+- A pre-1.0 migration triggers a silent, best-effort Mainnet or Testnet address
+  refresh; failures retry on later launches until addresses are saved, while
+  the manual action keeps its existing success message.
 
 ### NET-017: View live connection status (indicator and Platform endpoints) [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1475,6 +1480,7 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 - The third segment is page-scoped: the app-global User identity on everyday-user pages (Dashpay, Identities, Identity Hub), or the masternode/evonode in view on the Masternodes tab. Picking a masternode there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter).
 - On a page that does not yet consume a given pill, that pill renders dimmed with no caret; a hover tooltip explains how to change the selection elsewhere.
 - A page with no identity/object context (e.g. a Wallet page) shows only the wallet pill.
+- On the Masternodes tab the wallet segment is a read-only indicator, not an interactive pill: a masternode/evonode is loaded from raw keys and controlled by no wallet on this device, so it shows a muted "Not in a wallet" with an explanatory tooltip rather than naming an arbitrary loaded wallet.
 
 ### UX-004: One-time post-migration disclosure notice [Gap]
 **Persona:** Alex, Priya, Jordan

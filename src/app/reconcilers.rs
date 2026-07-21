@@ -226,12 +226,35 @@ impl SpvBlockReconciler {
     }
 }
 
+#[derive(Default)]
+struct TransientBanner(Option<BannerHandle>);
+
+impl TransientBanner {
+    fn track(&mut self, handle: BannerHandle) {
+        self.0 = Some(handle);
+    }
+
+    fn reset(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.clear();
+        }
+    }
+
+    fn clear_if(&mut self, condition: bool) {
+        if condition {
+            self.reset();
+        }
+    }
+}
+
 /// Reconciles the connection-status banner with the overall connection state.
 pub(super) struct ConnectionBanner {
     /// Previous state, to detect transitions. `None` forces re-evaluation.
     previous_state: Option<OverallConnectionState>,
     /// Handle to the current connection banner, if displayed.
     handle: Option<BannerHandle>,
+    /// Startup proof error cleared once quorum keys become available.
+    quorum_startup_error: TransientBanner,
 }
 
 impl ConnectionBanner {
@@ -239,7 +262,13 @@ impl ConnectionBanner {
         Self {
             previous_state: None,
             handle: None,
+            quorum_startup_error: TransientBanner::default(),
         }
+    }
+
+    /// Adopt a quorum-not-ready error banner from the generic task fallback.
+    pub(super) fn track_quorum_startup_error(&mut self, handle: BannerHandle) {
+        self.quorum_startup_error.track(handle);
     }
 
     /// Clear the banner and force re-evaluation next frame (network switch).
@@ -247,19 +276,25 @@ impl ConnectionBanner {
         if let Some(handle) = self.handle.take() {
             handle.clear();
         }
+        self.quorum_startup_error.reset();
         self.previous_state = None;
     }
 
     /// Update the banner for the current connection state. `spv_overlaying`
     /// suppresses the redundant Connecting/Syncing copy while the SPV block is
-    /// up. Returns a [`BackendTask`] to dispatch on the first `Synced`.
+    /// up; `onboarding_active` suppresses the initial `Disconnected` banner while
+    /// the Welcome screen is showing (pre-sync, not a real failure). Returns a
+    /// [`BackendTask`] to dispatch on the first `Synced`.
     pub(super) fn update(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         spv_overlaying: bool,
+        onboarding_active: bool,
     ) -> Option<BackendTask> {
         let connection_status = app_context.connection_status();
+        self.quorum_startup_error
+            .clear_if(connection_status.masternodes_ready());
         let current_state = connection_status.overall_state();
         let state_changed = self.previous_state != Some(current_state);
 
@@ -281,6 +316,17 @@ impl ConnectionBanner {
                 handle.clear();
             }
             self.previous_state = Some(current_state);
+            return None;
+        }
+
+        // The Welcome screen initially reads Disconnected before sync starts.
+        if onboarding_active && current_state == OverallConnectionState::Disconnected {
+            if let Some(handle) = self.handle.take() {
+                handle.clear();
+            }
+            // Invalidate rather than cache either state so suppression exit and
+            // recurring pre-suppression states both force reconciliation.
+            self.previous_state = None;
             return None;
         }
 
@@ -347,6 +393,8 @@ impl ConnectionBanner {
 pub(super) struct MigrationReconciler {
     /// Handle to the current migration banner, if displayed.
     banner_handle: Option<BannerHandle>,
+    /// Wallet-storage error cleared once migration is terminal and its run guard is free.
+    storage_startup_error: TransientBanner,
     /// Last-seen migration state so reconciliation fires only on change.
     last_state: Option<MigrationState>,
     /// Networks whose cold-start `FinishUnwire` has been dispatched this process.
@@ -365,6 +413,7 @@ impl MigrationReconciler {
     pub(super) fn new() -> Self {
         Self {
             banner_handle: None,
+            storage_startup_error: TransientBanner::default(),
             last_state: None,
             dispatched: BTreeSet::new(),
             backend_wait_since: BTreeMap::new(),
@@ -374,6 +423,11 @@ impl MigrationReconciler {
         }
     }
 
+    /// Adopt a storage-not-ready error banner from the generic task fallback.
+    pub(super) fn track_storage_startup_error(&mut self, handle: BannerHandle) {
+        self.storage_startup_error.track(handle);
+    }
+
     /// Clear the migration banner and force re-evaluation (network switch). The
     /// per-network dispatch guard is intentionally NOT reset — it is scoped per
     /// network so a return to a seen network never re-drains.
@@ -381,6 +435,7 @@ impl MigrationReconciler {
         if let Some(handle) = self.banner_handle.take() {
             handle.clear();
         }
+        self.storage_startup_error.reset();
         self.last_state = None;
         self.wallet_unlock_popup.close();
         self.prompt_wallet = None;
@@ -473,6 +528,13 @@ impl MigrationReconciler {
         frame_state: &MigrationState,
     ) {
         let state = frame_state.clone();
+        let storage_guard_resolved = !matches!(
+            &state,
+            MigrationState::Idle
+                | MigrationState::Running { .. }
+                | MigrationState::AwaitingWalletPasswords { .. }
+        ) && app_context.migration_run.try_lock().is_ok();
+        self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
@@ -877,6 +939,150 @@ mod tests {
             Some(BackendTask::MigrationTask(
                 MigrationTask::AcknowledgeUnreadableAppData
             )),
+        );
+    }
+
+    /// Disconnected stays hidden throughout onboarding and appears on the first
+    /// frame after onboarding ends, even when the connection state is unchanged.
+    #[test]
+    fn connection_banner_suppresses_disconnected_until_onboarding_ends() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        // ConnectionStatus defaults to Disconnected — no sync has been asked for.
+        assert_eq!(
+            app_context.connection_status().overall_state(),
+            OverallConnectionState::Disconnected
+        );
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        // Frame 1: onboarding active, Disconnected — suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "the Disconnected banner must stay hidden while onboarding is active"
+        );
+
+        // Frame 2: onboarding still active, state unchanged — still suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must stay hidden for every frame while onboarding is active"
+        );
+
+        // Frame 3: onboarding ends, connection is still Disconnected — the real
+        // banner must now appear even though `current_state` never changed.
+        assert!(banner.update(&ctx, &app_context, false, false).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a genuine Disconnected state must be reported once onboarding ends, \
+             even if the connection state itself never changed"
+        );
+    }
+
+    #[test]
+    fn connection_banner_clears_quorum_startup_error_when_masternodes_become_ready() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let message = "The network is still syncing. Please wait a moment and try again.";
+        let mut reconciler = ConnectionBanner::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 260.0))
+            .build_ui(MessageBanner::show_global);
+
+        let handle = MessageBanner::set_global(&harness.ctx, message, MessageType::Error);
+        handle.disable_auto_dismiss();
+        reconciler.track_quorum_startup_error(handle);
+        reconciler.update(&harness.ctx, &app_context, false, false);
+        harness.run();
+        assert!(harness.query_by_label(message).is_some());
+
+        app_context.connection_status().set_masternodes_ready(true);
+        reconciler.update(&harness.ctx, &app_context, false, false);
+        harness.run();
+        assert!(
+            harness.query_by_label(message).is_none(),
+            "the startup error must clear when quorum keys become available",
+        );
+    }
+
+    #[test]
+    fn migration_reconciler_waits_for_storage_guard_before_clearing_startup_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let message = TaskError::WalletStorageNotReady.to_string();
+        let mut reconciler = MigrationReconciler::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 260.0))
+            .build_ui(MessageBanner::show_global);
+
+        app_context
+            .migration_status()
+            .set_state(MigrationState::Running {
+                step: crate::context::migration_status::MigrationStep::Detecting,
+            });
+        let handle = MessageBanner::set_global(&harness.ctx, &message, MessageType::Error);
+        handle.disable_auto_dismiss();
+        reconciler.track_storage_startup_error(handle);
+        let state = app_context.migration_status().state();
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        harness.run();
+        assert!(harness.query_by_label(&message).is_some());
+
+        let migration_guard = app_context
+            .migration_run
+            .try_lock()
+            .expect("migration guard");
+        app_context
+            .migration_status()
+            .set_state(MigrationState::Ready);
+        let state = app_context.migration_status().state();
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        harness.run();
+        assert!(
+            harness.query_by_label(&message).is_some(),
+            "terminal state must not clear the startup error while storage remains locked",
+        );
+
+        drop(migration_guard);
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        harness.run();
+        assert!(
+            harness.query_by_label(&message).is_none(),
+            "the startup error must clear when the storage update is ready and unlocked",
+        );
+    }
+
+    #[test]
+    fn connection_banner_restores_recurring_error_after_onboarding_suppression() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let connection_status = app_context.connection_status();
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "the first SPV error must be reported"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Idle);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must be suppressed while onboarding is active"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a recurring SPV error must be restored after Disconnected suppression"
         );
     }
 }

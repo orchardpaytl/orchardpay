@@ -9,6 +9,7 @@ use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use orchardpay::app::AppAction;
+use orchardpay::model::wallet_association::WalletAssociation;
 use orchardpay::ui::RootScreenType;
 use orchardpay::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use orchardpay::ui::components::top_panel::apply_global_nav_effect;
@@ -16,6 +17,7 @@ use orchardpay::ui::state::global_nav::{
     IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
 };
 use orchardpay::ui::state::hub_selection::HubSelection;
+use orchardpay::ui::state::masternodes_view::masternodes_page_nav_spec;
 
 /// TC-NAV-01 foundation — segment-1 is page-driven: a spec labelled
 /// `Masternodes` renders that label, not the hub's literal `Identities`.
@@ -155,6 +157,43 @@ fn unwired_wallet_pill_renders_placeholder() {
         assert!(
             harness.query_by_label_contains("(no wallet yet)").is_some(),
             "the unwired wallet pill must still show its placeholder value"
+        );
+    });
+}
+
+/// A masternode is wallet-less: its breadcrumb wallet segment shows the
+/// read-only "Not in a wallet" indicator, never an interactive wallet pill or
+/// the app's active-wallet placeholder — so a node never appears to belong to an
+/// arbitrary loaded wallet.
+#[test]
+fn masternode_wallet_segment_shows_not_in_a_wallet_indicator() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 200.0))
+            .build_ui(move |ui| {
+                let mut selection = HubSelection::default();
+                let items = vec![PageObjectItem {
+                    id: Identifier::new([1; 32]),
+                    label: "mn-east-01".to_string(),
+                    icon: Some("🖥".to_string()),
+                }];
+                let spec = masternodes_page_nav_spec(
+                    items,
+                    Some(Identifier::new([1; 32])),
+                    WalletAssociation::NotInWallet,
+                );
+                global_nav_switcher::render(ui, &app_context, &spec, &mut selection);
+            });
+        harness.run();
+
+        assert!(
+            harness.query_by_label_contains("Not in a wallet").is_some(),
+            "the masternode wallet segment must show the read-only indicator"
+        );
+        assert!(
+            harness.query_by_label_contains("(no wallet yet)").is_none(),
+            "a wallet-less node must not show the app's active-wallet placeholder"
         );
     });
 }

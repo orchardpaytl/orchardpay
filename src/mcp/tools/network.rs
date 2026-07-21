@@ -1,6 +1,6 @@
 //! Network MCP tools.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::model::ToolAnnotations;
@@ -8,7 +8,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::mcp::dispatch::dispatch_task;
+use crate::mcp::dispatch::{dispatch_task, dispatch_task_with};
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::{DashMcpService, collect_available, network_display_name};
@@ -228,34 +228,96 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
             network: target,
             start_spv: true,
         };
-        let result = dispatch_task(&ctx, task)
-            .await
-            .map_err(McpToolError::TaskFailed)?;
-
-        match result {
-            BackendTaskSuccessResult::NetworkContextCreated {
-                context,
-                spv_started,
-                ..
-            } => {
-                // S5: drain the OUTGOING context's wallet backend before
-                // replacing it.  The old `ctx` (still in scope above) is the
-                // context that is being evicted; the new `context` is the one
-                // being installed.  Draining here — at the swap callsite —
-                // ensures every network switch leaves no orphaned WalletBackend,
-                // regardless of how many switches happen in a session.
-                if let Ok(backend) = ctx.wallet_backend() {
-                    backend.shutdown().await;
-                }
-                service.swap_context(context);
-                Ok(NetworkSwitchOutput {
-                    active: network_display_name(target).to_owned(),
+        let outgoing_context = Arc::clone(&ctx);
+        let switch_service = service.clone();
+        dispatch_task_with(&ctx, task, move |result| async move {
+            match result {
+                BackendTaskSuccessResult::NetworkContextCreated {
+                    context,
                     spv_started,
-                })
+                    ..
+                } => {
+                    if let Ok(backend) = outgoing_context.wallet_backend() {
+                        backend.shutdown().await;
+                    }
+                    switch_service.swap_context(context);
+                    Ok(NetworkSwitchOutput {
+                        active: network_display_name(target).to_owned(),
+                        spv_started,
+                    })
+                }
+                other => Err(McpToolError::Internal(format!(
+                    "Unexpected task result: {other:?}"
+                ))),
             }
-            other => Err(McpToolError::Internal(format!(
-                "Unexpected task result: {other:?}"
-            ))),
-        }
+        })
+        .await
+        .map_err(McpToolError::TaskFailed)?
+    }
+}
+
+#[cfg(all(test, feature = "mcp"))]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::wallet_backend::secret_prompt::SecretScope;
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+    use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
+    use platform_wallet_storage::secrets::SecretString;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn network_switch_tool_preserves_secret_prompt_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let identity_id = [0x92; 32];
+        let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        let key_id = 8;
+        let key = [0xb6; 32];
+        let password = "mcp-network-switch-password";
+        let secret_store = ctx.secret_store();
+        IdentityKeyView::new(&secret_store, identity_id)
+            .store_protected(&target, key_id, &key, &SecretString::new(password))
+            .expect("store protected identity key");
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(password)]));
+        ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn SecretPrompt>);
+        let shared = Arc::new(arc_swap::ArcSwap::from(ctx));
+        let service = DashMcpService::new_shared(shared);
+
+        NetworkSwitch::invoke(
+            &service,
+            NetworkSwitchParams {
+                network: "mainnet".to_owned(),
+            },
+        )
+        .await
+        .expect("switch network through MCP");
+
+        let switched = service.tool_ctx().await.expect("switched context");
+        let backend = switched.wallet_backend().expect("switched backend wired");
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target,
+            key_id,
+        };
+        let resolved = backend
+            .secret_access()
+            .with_secret(&scope, |plaintext| {
+                Ok(plaintext.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("resolve protected key through MCP-switched backend");
+        assert!(
+            resolved,
+            "the MCP-swapped backend must resolve through the source interactive prompt"
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "the MCP-switched backend must prompt once"
+        );
+        backend.shutdown().await;
     }
 }
