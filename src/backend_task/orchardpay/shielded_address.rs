@@ -39,11 +39,7 @@ pub async fn publish_own_shielded_address(
     identity_key: IdentityPublicKey,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
     // Publishing a shielded address is the one flow that gets an identity
     // fully set up for OrchardPay: generate and broadcast its ENCRYPTION/
@@ -150,9 +146,7 @@ pub async fn lookup_shielded_address(
     sdk: &Sdk,
     target_identity_id: Identifier,
 ) -> Result<Option<[u8; 43]>, TaskError> {
-    let orchardpay_contract = app_context
-        .orchardpay_contract()
-        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
     let document =
         fetch_shielded_address_document(&orchardpay_contract, sdk, target_identity_id).await?;

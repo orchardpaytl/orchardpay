@@ -124,7 +124,7 @@ fn token_err(source: KvAdapterError) -> TaskError {
 impl AppContext {
     /// Retrieves all user-registered contracts from the per-network k/v
     /// store, prepended with the system contracts (DPNS, token history,
-    /// withdrawals, keyword search, DashPay).
+    /// withdrawals, keyword search, DashPay, OrchardPay).
     pub fn get_contracts(&self) -> std::result::Result<Vec<QualifiedContract>, TaskError> {
         let mut contracts = self.load_user_contracts()?;
 
@@ -142,6 +142,25 @@ impl AppContext {
                 QualifiedContract {
                     contract: contract.as_ref().clone(),
                     alias: Some(alias.to_string()),
+                },
+            );
+        }
+
+        // OrchardPay isn't SDK-embedded like the contracts above — it's only
+        // present once `AppContext::orchardpay_contract` has resolved it
+        // (config ID + local cache both present). Pin it right after the
+        // other system contracts when available; omit it otherwise, matching
+        // this list's existing silent-omission convention.
+        if let Some(orchardpay_contract) = self.orchardpay_contract() {
+            // It lives in the same k/v store `load_user_contracts` just
+            // scanned, so drop any unpinned duplicate before re-inserting it
+            // pinned.
+            contracts.retain(|qc| qc.contract.id() != orchardpay_contract.id());
+            contracts.insert(
+                system_contracts.len(),
+                QualifiedContract {
+                    contract: orchardpay_contract,
+                    alias: Some("orchardpay".to_string()),
                 },
             );
         }

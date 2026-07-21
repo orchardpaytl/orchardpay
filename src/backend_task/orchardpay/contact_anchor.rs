@@ -108,11 +108,7 @@ pub async fn initiate_contact(
         return Err(OrchardPayError::CounterpartyKeyMissing.into());
     }
 
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
     let backend = app_context.wallet_backend()?;
     if backend
@@ -294,11 +290,7 @@ pub async fn accept_contact(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
     let backend = app_context.wallet_backend()?;
     let their_reference_id =
@@ -486,9 +478,7 @@ pub async fn handle_incoming_anchor_signal(
     seed_hash: WalletSeedHash,
 ) -> Result<bool, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract = app_context
-        .orchardpay_contract()
-        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
     let Some(document) =
         fetch_anchor_document_by_id(&orchardpay_contract, sdk, anchor_document_id).await?
@@ -631,7 +621,7 @@ pub async fn handle_incoming_anchor_signal(
             let task = DocumentTask::ReplaceDocument {
                 document: my_document,
                 document_type,
-                data_contract: Arc::new(orchardpay_contract),
+                data_contract: orchardpay_contract,
                 qualified_identity: qualified_identity.clone(),
                 identity_key,
                 token_payment_info: None,
@@ -945,9 +935,7 @@ pub async fn recover_own_anchors(
     seed_hash: WalletSeedHash,
 ) -> Result<AnchorRecoverySummary, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract = app_context
-        .orchardpay_contract()
-        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
 
     let documents = fetch_own_anchors(&orchardpay_contract, sdk, owner_id).await?;

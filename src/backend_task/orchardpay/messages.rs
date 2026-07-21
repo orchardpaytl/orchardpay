@@ -270,11 +270,7 @@ pub async fn send_message(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
     let EstablishedRelationship {
         my_reference_id,
@@ -322,11 +318,7 @@ pub async fn send_payment_request(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
     let EstablishedRelationship {
         my_reference_id,
@@ -379,11 +371,7 @@ pub async fn send_payment(
     fulfilling_request_document_id: Option<Identifier>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract: Arc<DataContract> = Arc::new(
-        app_context
-            .orchardpay_contract()
-            .ok_or(OrchardPayError::ContractNotConfigured)?,
-    );
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
     let EstablishedRelationship {
         my_reference_id,
@@ -568,9 +556,7 @@ pub async fn fetch_recent_activity(
     qualified_identity: &QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract = app_context
-        .orchardpay_contract()
-        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
 
     let contacts = backend.orchardpay_list_contacts(&owner_id)?;
@@ -678,9 +664,7 @@ pub async fn load_thread(
     seed_hash: WalletSeedHash,
 ) -> Result<Vec<ThreadMessage>, TaskError> {
     let owner_id = qualified_identity.identity.id();
-    let orchardpay_contract = app_context
-        .orchardpay_contract()
-        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
     let EstablishedRelationship {
         my_reference_id,

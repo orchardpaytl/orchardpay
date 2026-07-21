@@ -14,12 +14,42 @@ pub mod shielded_address;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::context::AppContext;
+use crate::model::qualified_contract::InsertTokensToo;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
 use std::sync::Arc;
+
+/// Resolves OrchardPay's contract, fetching it from the network and caching
+/// it locally the first time it's needed. `AppContext::orchardpay_contract`
+/// only reads the local cache — a fresh install ships a contract ID in
+/// `.env.example` but nothing ever fetches the contract itself, so every
+/// caller here funnels through this instead of calling
+/// `app_context.orchardpay_contract()` directly.
+async fn ensure_orchardpay_contract(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+) -> Result<Arc<DataContract>, TaskError> {
+    if let Some(contract) = app_context.orchardpay_contract() {
+        return Ok(Arc::new(contract));
+    }
+    let contract_id = app_context
+        .orchardpay_contract_id()
+        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let contract = DataContract::fetch(sdk, contract_id)
+        .await
+        .map_err(|e| OrchardPayError::ContractFetchFailed(Box::new(e)))?
+        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    app_context.insert_contract_if_not_exists(
+        &contract,
+        Some("orchardpay"),
+        InsertTokensToo::NoTokensShouldBeAdded,
+    )?;
+    Ok(Arc::new(contract))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrchardPayTask {

@@ -13,6 +13,15 @@ pub enum OrchardPayError {
     )]
     ContractNotConfigured,
 
+    /// OrchardPay's contract ID is configured, but fetching the contract
+    /// itself from the network (to cache it locally for the first time)
+    /// failed. Distinct from [`Self::ContractNotConfigured`], which means no
+    /// ID is available at all or the network genuinely has no such contract.
+    #[error(
+        "Could not load OrchardPay's setup information. Please check your connection and try again."
+    )]
+    ContractFetchFailed(#[source] Box<dash_sdk::Error>),
+
     /// Failed to build a document query (schema / configuration error).
     #[error("Could not prepare the data request. Please retry or update the application.")]
     QueryCreation {

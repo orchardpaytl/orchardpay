@@ -168,6 +168,7 @@ pub fn add_contract_chooser_panel(
                                     Some("token_history") => "Token History".to_string(),
                                     Some("withdrawals") => "Withdrawals".to_string(),
                                     Some("dashpay") => "DashPay".to_string(),
+                                    Some("orchardpay") => "OrchardPay".to_string(),
                                     Some(alias) => alias.to_string(),
                                     None => contract_id.clone(),
                                 };
@@ -495,6 +496,7 @@ pub fn add_contract_chooser_panel(
                                                 && contract.alias != Some("token_history".to_string())
                                                 && contract.alias != Some("withdrawals".to_string())
                                                 && contract.alias != Some("keyword_search".to_string())
+                                                && contract.alias != Some("orchardpay".to_string())
                                                 && ui.add(
                                                     egui::Button::new("Remove")
                                                         .min_size(egui::Vec2::new(60.0, 20.0))
