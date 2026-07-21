@@ -363,12 +363,30 @@ impl OrchardPayScreen {
             return action;
         }
 
-        for counterparty in contacts {
-            let Ok(Some(state)) = backend.orchardpay_get_contact_state(&owner_id, &counterparty)
-            else {
-                continue;
+        // Sort alphabetically by resolved name (case-insensitive), falling
+        // back to the base58 ID for contacts with no resolved name yet —
+        // the same fallback the row itself displays, so sort order and
+        // displayed label always agree.
+        let mut contacts: Vec<(Identifier, OrchardPayContactState)> = contacts
+            .into_iter()
+            .filter_map(|counterparty| {
+                let state = backend
+                    .orchardpay_get_contact_state(&owner_id, &counterparty)
+                    .ok()??;
+                Some((counterparty, state))
+            })
+            .collect();
+        contacts.sort_by_key(|(counterparty, state)| {
+            let name = match state {
+                OrchardPayContactState::PendingOutbound { name, .. }
+                | OrchardPayContactState::PendingInboundUnaccepted { name, .. }
+                | OrchardPayContactState::Established { name, .. } => name.clone(),
             };
+            name.unwrap_or_else(|| counterparty.to_string(Encoding::Base58))
+                .to_lowercase()
+        });
 
+        for (counterparty, state) in contacts {
             let (name, created_at) = match &state {
                 OrchardPayContactState::PendingOutbound {
                     name, created_at, ..
