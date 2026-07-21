@@ -1279,12 +1279,6 @@ impl AppState {
 
         let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
-        // Persisted setting; the effective `selected_main_screen` is computed
-        // after the screen map is built (below) so we can fall back to a
-        // known-registered screen if the persisted value is no longer
-        // registered.
-        let persisted_main_screen = settings.root_screen_type;
-
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) =
             tokiompsc::channel(256).with_egui_ctx(ctx.clone());
@@ -1479,12 +1473,15 @@ impl AppState {
         })
         .collect();
 
-        // Resolve the effective selected root screen. If the persisted value is
-        // no longer registered, fall back to `FALLBACK_ROOT_SCREEN` so
-        // `active_root_screen_mut()` does not panic on first frame.
+        // Always land on the Wallets tab at launch, regardless of whichever
+        // tab was last open (that's still tracked in `settings.root_screen_type`
+        // for the subscreen choosers' own memory — see `context/settings_db.rs`
+        // — just no longer read here). If Wallets somehow isn't registered,
+        // fall back to `FALLBACK_ROOT_SCREEN` so `active_root_screen_mut()`
+        // does not panic on first frame.
         let selected_main_screen = initial_root_screen(
-            persisted_main_screen,
-            main_screens.contains_key(&persisted_main_screen),
+            RootScreenType::RootScreenWalletsBalances,
+            main_screens.contains_key(&RootScreenType::RootScreenWalletsBalances),
             network_selection_required,
         );
 
