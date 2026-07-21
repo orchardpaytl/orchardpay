@@ -67,3 +67,34 @@ pub enum OrchardPayContactState {
         created_at: Option<u64>,
     },
 }
+
+/// One row in the OrchardPay Payments tab's shielded transaction history —
+/// a DET-native display projection of
+/// `platform_wallet::wallet::shielded::ShieldedActivityEntry` (mirrors
+/// `RecentContactActivity`'s "own type crossing the seam" pattern, keeping
+/// the upstream type out of `ui/`). Built by
+/// `backend_task::orchardpay::shielded_activity_row_from_entry`, which is
+/// where the raw memo bytes get matched against `MEMO_TAG_ANCHOR` /
+/// `MEMO_TAG_PAYMENT` — this struct only ever holds the already-decoded
+/// result, so it has no dependency on `backend_task`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShieldedActivityRow {
+    /// Human-readable kind + direction, e.g. "Sent", "Received", "Shield",
+    /// "Unshield", "Withdrawal", "Identity Create", "Internal Spend".
+    pub kind_label: &'static str,
+    /// Amount in credits (the operation principal, excluding change) —
+    /// format with `model::fee_estimation::format_credits_as_dash`.
+    pub amount_credits: u64,
+    /// Already-decoded memo: "Contact request signal", "OrchardPay
+    /// payment", a truncated hex fallback for an unrecognized non-empty
+    /// memo, or "No memo".
+    pub memo_label: String,
+    /// Block height the operation confirmed at; `None` while pending or
+    /// not yet backfilled.
+    pub block_height: Option<u64>,
+    /// Whether this row is still unconfirmed.
+    pub pending: bool,
+    /// `SystemTime` (ms since epoch) at record time — format with
+    /// `ui::dashpay::format_relative_time`.
+    pub created_at_ms: u64,
+}

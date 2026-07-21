@@ -211,6 +211,16 @@ pub enum TaskError {
         source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// Reading the local shielded-note/outgoing-note store failed while
+    /// deriving OrchardPay's shielded transaction history (the Payments
+    /// tab). Distinct from [`Self::WalletBackend`] because the underlying
+    /// error type is the shielded store's own, not `PlatformWalletError`.
+    #[error("Could not load your shielded transaction history. Please try again.")]
+    ShieldedActivityUnavailable {
+        #[source]
+        source: Box<platform_wallet::wallet::shielded::FileShieldedStoreError>,
+    },
+
     /// The wallet could not assemble and sign a payment transaction, for a
     /// reason other than insufficient balance or too many inputs (those get
     /// their own variants below — [`Self::InsufficientFunds`] and

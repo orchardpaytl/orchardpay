@@ -4,11 +4,17 @@
 //! DET (added in Phase A).  No DET-level opt-out exists, so these methods
 //! are unconditionally available.  The fund-moving ops and reads consumed by
 //! `run_shielded_task` / `ensure_shielded_bound` are wired (Phase D); the
-//! activity/notes list reads remain `#[allow(dead_code)]` until the Phase-F
-//! upstream-coordinator read path lands.
+//! activity-log read (`shielded_activity`) reuses `platform-wallet`'s own
+//! scan-derived classifier (`derive_activity_from_scan_data`) directly
+//! against the coordinator's already-synced local store — no new network
+//! calls, no new persisted state.
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use platform_wallet::wallet::shielded::{
+    ScanDeriveInput, ShieldedActivityEntry, ShieldedStore, SubwalletId,
+    derive_activity_from_scan_data, sort_activity_for_display,
+};
 use std::sync::Arc;
 
 use super::{
@@ -329,5 +335,64 @@ impl WalletBackend {
     /// was never configured (empty coordinator → empty pass).
     pub async fn sync_shielded_now(&self, force: bool) {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
+    }
+
+    /// Derive a read-only shielded transaction history (sent + received)
+    /// for `seed_hash`'s account-0 subwallet — the OrchardPay Payments
+    /// tab's diagnostic view. Pure derivation from data the wallet's own
+    /// background shielded sync has already persisted (own notes +
+    /// OVK-recovered outgoing notes); no network calls, no writes, safe to
+    /// call on every tab open/refresh.
+    ///
+    /// `account_index` is fixed at `0`: OrchardPay only ever binds and uses
+    /// account 0's default address (see `ensure_shielded_bound`,
+    /// `shielded_default_address`), so that one address is both the sole
+    /// entry in `own_addresses` and the subwallet this reads notes for.
+    ///
+    /// Returns an empty list rather than an error when the wallet isn't
+    /// bound/registered yet this session — matches this file's existing
+    /// "not bound" convention (e.g. [`Self::shielded_default_address`])
+    /// rather than surfacing a spurious error for a wallet that simply
+    /// hasn't finished startup.
+    pub async fn shielded_activity(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Vec<ShieldedActivityEntry>, TaskError> {
+        let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
+            return Ok(Vec::new());
+        };
+        let subwallet_id = SubwalletId::new(wallet_id, 0);
+
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let (notes, outgoing) = {
+            let store = coordinator.store().read().await;
+            let notes = store.get_all_notes(subwallet_id).map_err(|e| {
+                TaskError::ShieldedActivityUnavailable {
+                    source: Box::new(e),
+                }
+            })?;
+            let outgoing = store.get_outgoing_notes(subwallet_id).map_err(|e| {
+                TaskError::ShieldedActivityUnavailable {
+                    source: Box::new(e),
+                }
+            })?;
+            (notes, outgoing)
+        };
+
+        let own_addresses = self
+            .shielded_default_address(seed_hash, 0)
+            .await?
+            .map(|a| vec![a.to_vec()])
+            .unwrap_or_default();
+
+        let input = ScanDeriveInput {
+            notes,
+            outgoing,
+            own_addresses,
+        };
+        let derived = derive_activity_from_scan_data(&input, &std::collections::BTreeMap::new());
+        let mut entries = derived.new_entries;
+        sort_activity_for_display(&mut entries);
+        Ok(entries)
     }
 }

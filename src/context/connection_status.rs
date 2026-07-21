@@ -6,7 +6,7 @@ use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -88,6 +88,22 @@ pub struct ConnectionStatus {
     spv_no_peers_since: Mutex<Option<Instant>>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
+    /// When the most recent shielded sync pass finished (success or not —
+    /// this just tracks that a pass ran), pushed from the wallet-backend
+    /// `EventBridge` `on_shielded_sync_completed` callback. `None` before the
+    /// first pass completes this session. Diagnostic: lets the OrchardPay
+    /// Contacts tab show "last synced Xm ago" so a stalled contact-request
+    /// handshake can be told apart from a wallet that simply hasn't synced
+    /// recently.
+    last_shielded_sync_completed_at: Mutex<Option<Instant>>,
+    /// Running count of `contactAnchor`-tagged memo signals the incoming-memo
+    /// scan has found this session (raw detections at the shielded-note
+    /// decryption layer — see `memo_scan::scan_for_incoming_anchors` —
+    /// regardless of whether the higher-level contact-establishment handshake
+    /// went on to succeed for that signal). Diagnostic counter for the
+    /// OrchardPay Contacts tab, confirming memo detection itself is working
+    /// even when a contact never reaches "Connected".
+    orchardpay_anchor_memos_found: AtomicU64,
 }
 
 /// Downloaded-notes progress for an in-flight shielded sync pass (DET-shaped —
@@ -131,6 +147,8 @@ impl ConnectionStatus {
             spv_no_peers_since: Mutex::new(None),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
+            last_shielded_sync_completed_at: Mutex::new(None),
+            orchardpay_anchor_memos_found: AtomicU64::new(0),
         }
     }
 
@@ -177,6 +195,12 @@ impl ConnectionStatus {
         // Set last_update to epoch so the next trigger_refresh fires immediately
         *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
             Instant::now() - REFRESH_CONNECTED;
+        *self
+            .last_shielded_sync_completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.orchardpay_anchor_memos_found
+            .store(0, Ordering::Relaxed);
     }
 
     pub fn spv_status(&self) -> SpvStatus {
@@ -327,6 +351,37 @@ impl ConnectionStatus {
             .shielded_tree_progress
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = progress;
+    }
+
+    /// Record that a shielded sync pass just completed (push-based from the
+    /// `EventBridge` `on_shielded_sync_completed` callback). Called
+    /// unconditionally on every pass, regardless of per-wallet outcome.
+    pub fn note_shielded_sync_completed(&self) {
+        *self
+            .last_shielded_sync_completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// When the most recent shielded sync pass finished, if any this session.
+    pub fn last_shielded_sync_completed_at(&self) -> Option<Instant> {
+        *self
+            .last_shielded_sync_completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Add `count` to the running total of `contactAnchor` memo signals found
+    /// this session (push-based from `memo_scan::scan_for_incoming_anchors`).
+    pub fn add_orchardpay_anchor_memos_found(&self, count: u64) {
+        self.orchardpay_anchor_memos_found
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Total `contactAnchor` memo signals found this session, across every
+    /// wallet on the active network.
+    pub fn orchardpay_anchor_memos_found(&self) -> u64 {
+        self.orchardpay_anchor_memos_found.load(Ordering::Relaxed)
     }
 
     /// Latest shielded committed-to-tree progress, if a pass is in flight.

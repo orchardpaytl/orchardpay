@@ -498,12 +498,18 @@ pub async fn handle_incoming_anchor_signal(
         _ => return Ok(false),
     };
 
-    let my_decryption_key = own_bounds_verified_key(
+    // No OrchardPay DECRYPTION key at all means this identity hasn't set up
+    // OrchardPay yet — routine when trying a signal against every
+    // locally-known identity, not a processing failure. `Ok(false)` here
+    // (rather than propagating an error) keeps the memo scan's cursor from
+    // treating "not this identity" as something worth retrying forever.
+    let Some(my_decryption_key) = own_bounds_verified_key(
         qualified_identity,
         orchardpay_contract.id(),
         Purpose::DECRYPTION,
-    )
-    .ok_or(OrchardPayError::OwnKeyMissing)?;
+    ) else {
+        return Ok(false);
+    };
 
     // Fetch the sender's ENCRYPTION key: it drives the inbound `data`
     // secret now, and its raw bytes get cached in `anchorData` for reading
@@ -525,8 +531,14 @@ pub async fn handle_incoming_anchor_signal(
     )
     .await?;
 
-    let their_payload = ContactAnchorPayload::decrypt(&shared_secret, &data_bytes)
-        .map_err(OrchardPayError::Crypto)?;
+    // An AEAD tag mismatch means this signal's `data` field wasn't encrypted
+    // to this identity's key (wrong identity — expected on most trials);
+    // malformed plaintext means corrupted data. Neither is retryable
+    // (retrying re-decrypts the same bytes with the same key), so treat both
+    // as "not applicable" rather than a processing error.
+    let Ok(their_payload) = ContactAnchorPayload::decrypt(&shared_secret, &data_bytes) else {
+        return Ok(false);
+    };
 
     let backend = app_context.wallet_backend()?;
     match backend.orchardpay_get_contact_state(&owner_id, &sender_id)? {

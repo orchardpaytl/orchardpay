@@ -45,10 +45,26 @@ pub async fn scan_for_incoming_anchors(
         .orchardpay_scan_incoming_memos(sdk, &seed_hash, network, start_index)
         .await?;
 
+    // Notes whose signal didn't fully resolve this pass (a real processing
+    // error, not just "wrong identity" — see `handle_incoming_anchor_signal`'s
+    // `Ok(false)` cases) hold the persisted cursor back to their own
+    // position, so they get re-decrypted and retried on the next scan pass
+    // instead of being skipped forever. Tracks the earliest such position;
+    // everything before it is safe to consider permanently scanned.
+    let mut retry_from: Option<u64> = None;
     let mut anything_changed = false;
-    for signal in found {
+    // Raw detection count at the shielded-note decryption layer — incremented
+    // as soon as a `contactAnchor`-tagged memo is found, before any per-
+    // identity handshake processing. Diagnostic: proves memo detection
+    // itself is working even when a contact-establishment attempt never
+    // reaches "Connected". See `ConnectionStatus::orchardpay_anchor_memos_found`.
+    let mut anchor_memos_found_this_pass: u64 = 0;
+    for (note_index, signal) in found {
         match signal {
             IncomingMemoSignal::Anchor(anchor_document_id) => {
+                anchor_memos_found_this_pass += 1;
+                let mut applied = false;
+                let mut had_error = false;
                 for identity in &qualified_identities {
                     match handle_incoming_anchor_signal(
                         app_context,
@@ -59,21 +75,23 @@ pub async fn scan_for_incoming_anchors(
                     )
                     .await
                     {
-                        Ok(true) => anything_changed = true,
+                        Ok(true) => applied = true,
                         Ok(false) => {}
                         Err(e) => {
-                            // A wrong-identity decrypt attempt or a
-                            // transient network error on one signal
-                            // shouldn't abort the rest of the pass — log
-                            // and move on.
-                            tracing::debug!(
+                            had_error = true;
+                            tracing::warn!(
                                 identity = %identity.identity.id(),
                                 anchor = %anchor_document_id,
                                 error = ?e,
-                                "OrchardPay: incoming anchor signal not handled for this identity"
+                                "OrchardPay: incoming anchor signal not handled for this identity, will retry next scan pass"
                             );
                         }
                     }
+                }
+                if applied {
+                    anything_changed = true;
+                } else if had_error {
+                    retry_from = Some(retry_from.map_or(note_index, |r| r.min(note_index)));
                 }
             }
             IncomingMemoSignal::Payment {
@@ -86,11 +104,12 @@ pub async fn scan_for_incoming_anchors(
                     referenced_document_id,
                     received_amount_credits,
                 ) {
-                    tracing::debug!(
+                    tracing::warn!(
                         document = %referenced_document_id,
                         error = ?e,
-                        "OrchardPay: failed to cache a verified incoming payment amount"
+                        "OrchardPay: failed to cache a verified incoming payment amount, will retry next scan pass"
                     );
+                    retry_from = Some(retry_from.map_or(note_index, |r| r.min(note_index)));
                 } else {
                     anything_changed = true;
                 }
@@ -98,7 +117,13 @@ pub async fn scan_for_incoming_anchors(
         }
     }
 
-    backend.orchardpay_set_memo_scan_cursor(&seed_hash, next_start_index)?;
+    if anchor_memos_found_this_pass > 0 {
+        app_context
+            .connection_status()
+            .add_orchardpay_anchor_memos_found(anchor_memos_found_this_pass);
+    }
+
+    backend.orchardpay_set_memo_scan_cursor(&seed_hash, retry_from.unwrap_or(next_start_index))?;
 
     Ok(if anything_changed {
         BackendTaskSuccessResult::Refresh

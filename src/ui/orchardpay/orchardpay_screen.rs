@@ -26,7 +26,7 @@ use crate::backend_task::orchardpay::messages::RecentContactActivity;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::orchardpay::OrchardPayContactState;
+use crate::model::orchardpay::{OrchardPayContactState, ShieldedActivityRow};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -81,6 +81,23 @@ const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
 const TAB_ABOUT: &str = "orchardpay_tab_about";
 const TAB_QC_WARNING: &str = "orchardpay_tab_qc_warning";
 
+/// Render a `Duration` (typically `Instant::elapsed()`) as a short
+/// human-readable "X ago" string, matching `WalletsScreen`'s own
+/// `format_duration_ago` — not shared cross-module since it's a few lines
+/// and each caller's `Duration` comes from a different clock source.
+fn format_duration_ago(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 /// What, if anything, stands between the active identity and being able to
 /// use OrchardPay at all. Checked in this order because each step depends
 /// on the previous one (a DPNS name check is meaningless with no identity;
@@ -121,6 +138,12 @@ pub struct OrchardPayScreen {
     /// re-fetches rather than showing stale ordering.
     recent_activity: Option<Vec<RecentContactActivity>>,
     recent_activity_dispatched: bool,
+    /// `None` = not fetched yet this visit (renders "Loading…"). Reset on
+    /// `refresh()` and by the Payments tab's "Refresh" button. Diagnostic
+    /// view of the wallet's shielded transaction history — see
+    /// `wallet_backend::shielded::shielded_activity`.
+    shielded_activity: Option<Vec<ShieldedActivityRow>>,
+    shielded_activity_dispatched: bool,
 }
 
 impl OrchardPayScreen {
@@ -148,6 +171,8 @@ impl OrchardPayScreen {
             has_shielded_address,
             recent_activity: None,
             recent_activity_dispatched: false,
+            shielded_activity: None,
+            shielded_activity_dispatched: false,
         }
     }
 
@@ -351,6 +376,27 @@ impl OrchardPayScreen {
                 action |= self.recover_contacts_clicked();
             }
         });
+        ui.add_space(4.0);
+
+        // Diagnostics: helps tell "a contact request hasn't been processed
+        // yet" apart from "the shielded transfer/memo carrying it was never
+        // even detected". Last-sync tells you whether the background scan
+        // has run recently; the memo count tells you whether it's actually
+        // finding contactAnchor signals in your shielded transactions at
+        // all, independent of whether any handshake went on to succeed.
+        let connection_status = self.app_context.connection_status();
+        let last_sync_label = match connection_status.last_shielded_sync_completed_at() {
+            Some(at) => format_duration_ago(at.elapsed()),
+            None => "not yet this session".to_string(),
+        };
+        ui.label(
+            RichText::new(format!(
+                "Last shielded sync: {last_sync_label} · Contact memos found: {}",
+                connection_status.orchardpay_anchor_memos_found()
+            ))
+            .size(11.0)
+            .color(DashColors::text_secondary(dark_mode)),
+        );
         ui.add_space(8.0);
 
         if contacts.is_empty() {
@@ -561,7 +607,8 @@ impl OrchardPayScreen {
         action
     }
 
-    fn render_payments(&self, ui: &mut Ui) {
+    fn render_payments(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(
@@ -569,6 +616,89 @@ impl OrchardPayScreen {
             )
             .color(DashColors::text_secondary(dark_mode)),
         );
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        let Some(wallet) = self.selected_wallet.clone() else {
+            ui.label(
+                RichText::new("No wallet selected.").color(DashColors::text_secondary(dark_mode)),
+            );
+            return action;
+        };
+        let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash()) else {
+            return action;
+        };
+
+        ui.horizontal(|ui| {
+            ui.heading("Shielded Transaction History");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Refresh").clicked() {
+                    self.shielded_activity = None;
+                    self.shielded_activity_dispatched = false;
+                }
+            });
+        });
+        ui.label(
+            RichText::new(
+                "Every shielded send and receive on this wallet's Orchard address — useful for \
+                 confirming a transfer (like a 0.001 DASH contact-request signal) actually \
+                 reached the wallet.",
+            )
+            .size(11.0)
+            .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(8.0);
+
+        if !self.shielded_activity_dispatched && self.shielded_activity.is_none() {
+            self.shielded_activity_dispatched = true;
+            action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+                OrchardPayTask::LoadShieldedActivity { seed_hash },
+            )));
+        }
+
+        let Some(rows) = self.shielded_activity.clone() else {
+            ui.label(RichText::new("Loading…").color(DashColors::text_secondary(dark_mode)));
+            return action;
+        };
+
+        if rows.is_empty() {
+            ui.label(
+                RichText::new("No shielded transactions found for this wallet yet.")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            return action;
+        }
+
+        for row in &rows {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(row.kind_label).strong());
+                    ui.label(format_credits_as_dash(row.amount_credits));
+                });
+                ui.label(
+                    RichText::new(&row.memo_label)
+                        .size(11.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                let status_label = match (row.pending, row.block_height) {
+                    (true, _) => "Pending".to_string(),
+                    (false, Some(height)) => format!("Confirmed at block {height}"),
+                    (false, None) => "Confirmed".to_string(),
+                };
+                let when = format_relative_time(row.created_at_ms)
+                    .map(|s| format!(" · {s}"))
+                    .unwrap_or_default();
+                ui.label(
+                    RichText::new(format!("{status_label}{when}"))
+                        .size(11.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            });
+            ui.add_space(6.0);
+        }
+
+        action
     }
 
     fn render_about(&self, ui: &mut Ui) {
@@ -816,6 +946,8 @@ impl ScreenLike for OrchardPayScreen {
         self.shielded_address_check_dispatched = self.has_shielded_address == Some(true);
         self.recent_activity = None;
         self.recent_activity_dispatched = false;
+        self.shielded_activity = None;
+        self.shielded_activity_dispatched = false;
         self.profile_screen.refresh();
     }
 
@@ -850,6 +982,9 @@ impl ScreenLike for OrchardPayScreen {
             }
             BackendTaskSuccessResult::OrchardPayRecentActivity(entries) => {
                 self.recent_activity = Some(entries.clone());
+            }
+            BackendTaskSuccessResult::OrchardPayShieldedActivity(rows) => {
+                self.shielded_activity = Some(rows.clone());
             }
             _ => {}
         }
@@ -997,10 +1132,7 @@ impl ScreenLike for OrchardPayScreen {
                         OrchardPaySubscreen::Profile => self.profile_screen.render(ui),
                         OrchardPaySubscreen::Contacts => self.render_contacts(ui),
                         OrchardPaySubscreen::MostRecent => self.render_most_recent(ui),
-                        OrchardPaySubscreen::Payments => {
-                            self.render_payments(ui);
-                            AppAction::None
-                        }
+                        OrchardPaySubscreen::Payments => self.render_payments(ui),
                         OrchardPaySubscreen::AddContact => self.render_add_contact(ui),
                         OrchardPaySubscreen::About => {
                             self.render_about(ui);

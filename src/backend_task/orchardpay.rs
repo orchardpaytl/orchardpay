@@ -16,11 +16,15 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::context::AppContext;
+use crate::model::orchardpay::ShieldedActivityRow;
 use crate::model::qualified_contract::InsertTokensToo;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::platform::{DataContract, Fetch, IdentityPublicKey};
+use platform_wallet::wallet::shielded::{
+    ShieldedActivityEntry, ShieldedActivityKind, ShieldedActivityStatus, ShieldedDirection,
+};
 use std::sync::Arc;
 
 /// Resolves OrchardPay's contract, fetching it from the network and caching
@@ -49,6 +53,46 @@ async fn ensure_orchardpay_contract(
         InsertTokensToo::NoTokensShouldBeAdded,
     )?;
     Ok(Arc::new(contract))
+}
+
+/// Maps an upstream `ShieldedActivityEntry` to DET's own display type,
+/// decoding the raw 36-byte memo against OrchardPay's known tags. Lives here
+/// rather than in `model::orchardpay` so that module stays free of a
+/// `backend_task` dependency — see `ShieldedActivityRow`'s doc comment.
+fn shielded_activity_row_from_entry(entry: ShieldedActivityEntry) -> ShieldedActivityRow {
+    let kind_label = match (&entry.kind, entry.direction) {
+        (ShieldedActivityKind::Shield, _) => "Shield",
+        (ShieldedActivityKind::ShieldFromAssetLock, _) => "Shield (from Core)",
+        (ShieldedActivityKind::Received, _) => "Received",
+        (ShieldedActivityKind::Sent, _) => "Sent",
+        (ShieldedActivityKind::Unshield, _) => "Unshield",
+        (ShieldedActivityKind::Withdrawal, _) => "Withdrawal",
+        (ShieldedActivityKind::IdentityCreate { .. }, _) => "Identity Create",
+        (ShieldedActivityKind::ShieldedSpend, ShieldedDirection::SelfTransfer) => {
+            "Internal Transfer"
+        }
+        (ShieldedActivityKind::ShieldedSpend, _) => "Shielded Spend",
+    };
+
+    let memo_label = match entry.memo.as_deref() {
+        None => "No memo".to_string(),
+        Some(memo) if memo.starts_with(&contact_anchor::MEMO_TAG_ANCHOR) => {
+            "Contact request signal".to_string()
+        }
+        Some(memo) if memo.starts_with(&messages::MEMO_TAG_PAYMENT) => {
+            "OrchardPay payment".to_string()
+        }
+        Some(memo) => format!("Unrecognized memo: {}", hex::encode(memo)),
+    };
+
+    ShieldedActivityRow {
+        kind_label,
+        amount_credits: entry.amount,
+        memo_label,
+        block_height: entry.block_height,
+        pending: entry.status == ShieldedActivityStatus::Pending,
+        created_at_ms: entry.created_at_ms,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +198,11 @@ pub enum OrchardPayTask {
     LoadRecentActivity {
         qualified_identity: QualifiedIdentity,
     },
+    /// Load the shielded transaction history (sent + received) for
+    /// `seed_hash`'s wallet, for the Payments tab's diagnostic view.
+    /// Wallet-scoped, no identity needed. See
+    /// `wallet_backend::shielded::shielded_activity`.
+    LoadShieldedActivity { seed_hash: WalletSeedHash },
 }
 
 impl AppContext {
@@ -332,6 +381,14 @@ impl AppContext {
             OrchardPayTask::LoadRecentActivity { qualified_identity } => {
                 messages::fetch_recent_activity(self, sdk, &qualified_identity).await
             }
+            OrchardPayTask::LoadShieldedActivity { seed_hash } => {
+                let entries = self.wallet_backend()?.shielded_activity(&seed_hash).await?;
+                let rows = entries
+                    .into_iter()
+                    .map(shielded_activity_row_from_entry)
+                    .collect();
+                Ok(BackendTaskSuccessResult::OrchardPayShieldedActivity(rows))
+            }
         }
     }
 }
@@ -345,13 +402,99 @@ pub const CONTRACT_SCHEMA_JSON: &str = include_str!("orchardpay/contract_schema.
 
 #[cfg(test)]
 mod tests {
-    use super::CONTRACT_SCHEMA_JSON;
+    use super::{CONTRACT_SCHEMA_JSON, shielded_activity_row_from_entry};
     use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
     use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
     use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
     use dash_sdk::dpp::data_contract::storage_requirements::keys_for_document_type::StorageKeyRequirements;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::DataContract;
+    use platform_wallet::wallet::shielded::{
+        ShieldedActivityEntry, ShieldedActivityKind, ShieldedActivityStatus, ShieldedDirection,
+    };
+
+    fn base_entry() -> ShieldedActivityEntry {
+        ShieldedActivityEntry {
+            id: [0u8; 32],
+            kind: ShieldedActivityKind::Sent,
+            direction: ShieldedDirection::Out,
+            amount: 100_000_000,
+            fee: None,
+            counterparty: None,
+            memo: None,
+            block_height: Some(42),
+            status: ShieldedActivityStatus::Confirmed,
+            created_at_ms: 1_700_000_000_000,
+            note_cmxs: Vec::new(),
+            spent_nullifiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_contact_anchor_memo_tag() {
+        let mut memo = vec![0u8; 36];
+        memo[..4].copy_from_slice(&super::contact_anchor::MEMO_TAG_ANCHOR);
+        let entry = ShieldedActivityEntry {
+            memo: Some(memo),
+            ..base_entry()
+        };
+        let row = shielded_activity_row_from_entry(entry);
+        assert_eq!(row.memo_label, "Contact request signal");
+    }
+
+    #[test]
+    fn recognizes_payment_memo_tag() {
+        let mut memo = vec![0u8; 36];
+        memo[..4].copy_from_slice(&super::messages::MEMO_TAG_PAYMENT);
+        let entry = ShieldedActivityEntry {
+            memo: Some(memo),
+            ..base_entry()
+        };
+        let row = shielded_activity_row_from_entry(entry);
+        assert_eq!(row.memo_label, "OrchardPay payment");
+    }
+
+    #[test]
+    fn unrecognized_memo_falls_back_to_hex() {
+        let memo = vec![0xABu8; 36];
+        let entry = ShieldedActivityEntry {
+            memo: Some(memo.clone()),
+            ..base_entry()
+        };
+        let row = shielded_activity_row_from_entry(entry);
+        assert_eq!(
+            row.memo_label,
+            format!("Unrecognized memo: {}", hex::encode(&memo))
+        );
+    }
+
+    #[test]
+    fn no_memo_is_labeled_explicitly() {
+        let row = shielded_activity_row_from_entry(base_entry());
+        assert_eq!(row.memo_label, "No memo");
+    }
+
+    #[test]
+    fn pending_status_maps_to_pending_flag() {
+        let entry = ShieldedActivityEntry {
+            status: ShieldedActivityStatus::Pending,
+            block_height: None,
+            ..base_entry()
+        };
+        let row = shielded_activity_row_from_entry(entry);
+        assert!(row.pending);
+    }
+
+    #[test]
+    fn self_transfer_shielded_spend_gets_internal_label() {
+        let entry = ShieldedActivityEntry {
+            kind: ShieldedActivityKind::ShieldedSpend,
+            direction: ShieldedDirection::SelfTransfer,
+            ..base_entry()
+        };
+        let row = shielded_activity_row_from_entry(entry);
+        assert_eq!(row.kind_label, "Internal Transfer");
+    }
 
     /// Guards against accidental schema corruption: the checked-in contract
     /// JSON must always parse as a valid `DataContract` against the pinned

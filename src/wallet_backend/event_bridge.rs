@@ -479,6 +479,7 @@ impl PlatformEventHandler for EventBridge {
         // rendering the "scanning / checking" indicators.
         self.connection_status.set_shielded_sync_progress(None);
         self.connection_status.set_shielded_tree_progress(None);
+        self.connection_status.note_shielded_sync_completed();
         self.emit_orchardpay_scan_trigger(synced_seed_hashes);
         self.nudge_refresh();
     }

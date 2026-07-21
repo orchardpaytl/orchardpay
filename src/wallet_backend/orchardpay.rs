@@ -407,10 +407,14 @@ impl WalletBackend {
     /// viewing key through the secret chokepoint, walk the raw note stream
     /// from `start_index`, and return every recognized [`IncomingMemoSignal`]
     /// — a `contactAnchor` handshake step ([`MEMO_TAG_ANCHOR`]) or a real
-    /// payment ([`MEMO_TAG_PAYMENT`]) — plus the resume index for the next
-    /// pass. Both tags are checked in the same pass over the same note
-    /// stream rather than two separate scans, since re-walking it twice
-    /// would double the redundant-scan cost this design already accepts.
+    /// payment ([`MEMO_TAG_PAYMENT`]) — tagged with the note's absolute
+    /// stream position, plus the resume index for the next pass. The
+    /// position lets the caller hold the persisted cursor back to a specific
+    /// signal that failed to process instead of always advancing past it —
+    /// see `memo_scan::scan_for_incoming_anchors`. Both tags are checked in
+    /// the same pass over the same note stream rather than two separate
+    /// scans, since re-walking it twice would double the redundant-scan cost
+    /// this design already accepts.
     ///
     /// Intentionally re-derives the IVK and re-fetches notes independently
     /// of the wallet's own sync coordinator, which cannot recover memos —
@@ -422,7 +426,7 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         network: Network,
         start_index: u64,
-    ) -> Result<(Vec<IncomingMemoSignal>, u64), TaskError> {
+    ) -> Result<(Vec<(u64, IncomingMemoSignal)>, u64), TaskError> {
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -447,22 +451,29 @@ impl WalletBackend {
                         })
                     })?;
 
-                    for note in &batch.notes {
+                    for (offset, note) in batch.notes.iter().enumerate() {
                         let Some((decrypted_note, _, memo)) =
                             try_decrypt_note_with_memo(&ivk, note)
                         else {
                             continue;
                         };
+                        let note_index = batch.start_index + offset as u64;
                         let tag: [u8; 4] = memo[..4].try_into().expect("memo is 36 bytes");
                         let doc_id_bytes: [u8; 32] =
                             memo[4..].try_into().expect("memo is 36 bytes, tag is 4");
                         if tag == MEMO_TAG_ANCHOR {
-                            found.push(IncomingMemoSignal::Anchor(Identifier::from(doc_id_bytes)));
+                            found.push((
+                                note_index,
+                                IncomingMemoSignal::Anchor(Identifier::from(doc_id_bytes)),
+                            ));
                         } else if tag == MEMO_TAG_PAYMENT {
-                            found.push(IncomingMemoSignal::Payment {
-                                referenced_document_id: Identifier::from(doc_id_bytes),
-                                received_amount_credits: decrypted_note.value().inner(),
-                            });
+                            found.push((
+                                note_index,
+                                IncomingMemoSignal::Payment {
+                                    referenced_document_id: Identifier::from(doc_id_bytes),
+                                    received_amount_credits: decrypted_note.value().inner(),
+                                },
+                            ));
                         }
                     }
 
