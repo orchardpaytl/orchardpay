@@ -1,13 +1,13 @@
 # OrchardPay
 
-**OrchardPay** is a cross-platform GUI application for interacting with [Dash Evolution](https://www.dash.org/). It supports Mainnet, Testnet, Devnet, and local regtest networks, and adds a privacy-first contact and messaging protocol — shielded, with no public, queryable record of who is connected to whom.
+**OrchardPay** is a Rust desktop GUI application (fork of DET) for interacting with [Dash Platform](https://www.dash.org/). It adds a privacy/anonymity-preserving contact and messaging protocol — shielded, with no public, queryable record of who is connected to whom.
 
 See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/orchardpay/) for setup and usage instructions.
 
 ## Features
 
 **Private Contacts & Messaging (OrchardPay)**
-- Publish a private shielded address so others can find and connect with you — unlike a public contact-request document, nothing about it reveals your social graph
+- Publish a shielded address so others can find and connect with you — unlike a public contact-request document, nothing about it reveals your social graph
 - Establish contacts through a shielded, two-way handshake: no on-chain document ever links two identities together
 - Exchange encrypted messages, payment requests, and real shielded payments with your contacts
 - Recover your contacts from the network alone, with no local backup needed
