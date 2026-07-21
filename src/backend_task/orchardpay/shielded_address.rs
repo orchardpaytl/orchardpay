@@ -137,7 +137,9 @@ pub async fn publish_own_shielded_address(
         }
     };
 
-    app_context.run_document_task(task, sdk).await
+    let result = app_context.run_document_task(task, sdk).await?;
+    backend.orchardpay_set_has_shielded_address(&owner_id)?;
+    Ok(result)
 }
 
 /// Looks up an identity's published `shieldedAddress`, if any. Returns the

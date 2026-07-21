@@ -167,6 +167,22 @@ const KV_PREFIX_MEMO_SCAN_CURSOR: &str = "det:orchardpay:memo_scan_cursor";
 /// wallet-level (not identity-level) reasoning.
 const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
 
+/// Presence marker: this identity's `shieldedAddress` document has been
+/// confirmed to exist on Platform. Value: `bool`, always `true` when
+/// present — there is deliberately no cached `false`. Caching "confirmed
+/// absent" would go stale the moment the identity actually publishes (from
+/// this device or another), and unlike the positive case there is no
+/// write-through moment to refresh it; the live check that would otherwise
+/// discover a *new* publish is exactly what a cached negative would
+/// suppress. A cached positive can't go stale the same way in the absence
+/// of a "delete my shielded address" flow (none exists today). Written by
+/// the `CheckOwnShieldedAddress` task on a positive result and by
+/// `publish_own_shielded_address` on success, so the next launch/visit
+/// knows instantly instead of re-querying Platform. Scope:
+/// [`DetScope::Identity`] of the owner. Key shape:
+/// `det:orchardpay:has_shielded_address`.
+const KV_PREFIX_HAS_SHIELDED_ADDRESS: &str = "det:orchardpay:has_shielded_address";
+
 fn contact_key(counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_CONTACT}{}",
@@ -209,6 +225,37 @@ impl WalletBackend {
         let key = contact_key(counterparty);
         self.kv()
             .put::<OrchardPayContactState>(DetScope::Identity(&owner_buf), &key, state)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Read the locally cached "has this identity published a
+    /// `shieldedAddress`" flag. `Ok(None)` means never confirmed locally
+    /// yet — callers should do a live Platform check. There is no cached
+    /// `false`; see [`KV_PREFIX_HAS_SHIELDED_ADDRESS`]'s doc comment for why.
+    pub fn orchardpay_get_has_shielded_address(
+        &self,
+        owner: &Identifier,
+    ) -> Result<Option<bool>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        self.kv()
+            .get::<bool>(
+                DetScope::Identity(&owner_buf),
+                KV_PREFIX_HAS_SHIELDED_ADDRESS,
+            )
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Persist that `owner` has a confirmed published `shieldedAddress`
+    /// document, so later launches/visits know instantly instead of
+    /// re-querying Platform.
+    pub fn orchardpay_set_has_shielded_address(&self, owner: &Identifier) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        self.kv()
+            .put::<bool>(
+                DetScope::Identity(&owner_buf),
+                KV_PREFIX_HAS_SHIELDED_ADDRESS,
+                &true,
+            )
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
@@ -294,7 +341,8 @@ impl WalletBackend {
     }
 
     /// Drop every OrchardPay sidecar entry for `owner` — the per-counterparty
-    /// contact-state records. Mirrors `dashpay_clear_owner_overlays` for the
+    /// contact-state records and the cached "has published a
+    /// shieldedAddress" flag. Mirrors `dashpay_clear_owner_overlays` for the
     /// network-clear path. The memo-scan cursor and verified-payment cache
     /// are wallet-scoped, not owner-scoped, so neither is covered here — see
     /// [`Self::orchardpay_clear_wallet_overlays`], called from wallet
@@ -311,6 +359,9 @@ impl WalletBackend {
             kv.delete(scope, &key)
                 .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
         }
+
+        kv.delete(scope, KV_PREFIX_HAS_SHIELDED_ADDRESS)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
 
         Ok(())
     }

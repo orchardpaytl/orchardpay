@@ -105,10 +105,14 @@ pub struct OrchardPayScreen {
     search_query: String,
     search_results: Vec<OrchardPayContactSearchResult>,
     searching: bool,
-    /// `None` = not checked yet this visit; `Some(_)` = last known publish
-    /// status for the active identity. Reset on `refresh()` so returning
-    /// from the shielded-address setup screen re-checks rather than
-    /// showing a stale "not published" prompt.
+    /// `None` = not yet known (renders a "checking…" state, not the
+    /// "publish" prompt — those two must never be conflated). `Some(true)` =
+    /// confirmed published, seeded from the local cache
+    /// (`wallet_backend::orchardpay_get_has_shielded_address`) when
+    /// available so a returning user never waits on a network round-trip.
+    /// `Some(false)` = a live `CheckOwnShieldedAddress` confirmed there is
+    /// none — this is the only state that shows the "publish" prompt.
+    /// Re-seeded from the cache on `refresh()`.
     has_shielded_address: Option<bool>,
     shielded_address_check_dispatched: bool,
     /// `None` = not fetched yet this visit (renders "Loading…").
@@ -122,6 +126,8 @@ pub struct OrchardPayScreen {
 impl OrchardPayScreen {
     pub fn new(app_context: &Arc<AppContext>, orchardpay_subscreen: OrchardPaySubscreen) -> Self {
         let (identity, selected_key, selected_wallet) = Self::resolve_identity_context(app_context);
+        let has_shielded_address =
+            Self::cached_shielded_address_status(app_context, identity.as_ref());
 
         Self {
             app_context: app_context.clone(),
@@ -136,11 +142,32 @@ impl OrchardPayScreen {
             search_query: String::new(),
             search_results: Vec::new(),
             searching: false,
-            has_shielded_address: None,
-            shielded_address_check_dispatched: false,
+            // If the cache already confirms it, skip the check entirely —
+            // no network round-trip, no "checking…"/"publish" flash on open.
+            shielded_address_check_dispatched: has_shielded_address == Some(true),
+            has_shielded_address,
             recent_activity: None,
             recent_activity_dispatched: false,
         }
+    }
+
+    /// Read the locally cached "has this identity published a
+    /// shieldedAddress" flag (`wallet_backend::orchardpay_get_has_shielded_address`)
+    /// — a synchronous, zero-network local read. `Some(true)` if confirmed;
+    /// `None` if never confirmed locally yet (including no identity, or the
+    /// wallet backend not being wired up yet), in which case the caller
+    /// falls back to the existing live `CheckOwnShieldedAddress` task.
+    fn cached_shielded_address_status(
+        app_context: &Arc<AppContext>,
+        identity: Option<&QualifiedIdentity>,
+    ) -> Option<bool> {
+        let identity = identity?;
+        app_context
+            .wallet_backend()
+            .ok()?
+            .orchardpay_get_has_shielded_address(&identity.identity.id())
+            .ok()
+            .flatten()
     }
 
     fn resolve_identity_context(
@@ -253,6 +280,18 @@ impl OrchardPayScreen {
         );
     }
 
+    /// Shown only while `has_shielded_address` is still `None` — genuinely
+    /// unknown, not confirmed absent. Never shows the "publish" call to
+    /// action, which would wrongly suggest the user needs to act before
+    /// the check has even finished.
+    fn render_checking_shielded_address(&self, ui: &mut Ui) -> AppAction {
+        ui.label(
+            RichText::new("Checking whether you've already published a shielded address…")
+                .color(DashColors::text_secondary(ui.style().visuals.dark_mode)),
+        );
+        AppAction::None
+    }
+
     fn render_needs_shielded_address(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let Some(identity) = self.identity.clone() else {
@@ -277,8 +316,10 @@ impl OrchardPayScreen {
     fn render_contacts(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        if self.has_shielded_address != Some(true) {
-            return self.render_needs_shielded_address(ui);
+        match self.has_shielded_address {
+            Some(true) => {}
+            Some(false) => return self.render_needs_shielded_address(ui),
+            None => return self.render_checking_shielded_address(ui),
         }
 
         let dark_mode = ui.style().visuals.dark_mode;
@@ -398,8 +439,10 @@ impl OrchardPayScreen {
     }
 
     fn render_most_recent(&mut self, ui: &mut Ui) -> AppAction {
-        if self.has_shielded_address != Some(true) {
-            return self.render_needs_shielded_address(ui);
+        match self.has_shielded_address {
+            Some(true) => {}
+            Some(false) => return self.render_needs_shielded_address(ui),
+            None => return self.render_checking_shielded_address(ui),
         }
 
         let mut action = AppAction::None;
@@ -591,8 +634,10 @@ impl OrchardPayScreen {
     }
 
     fn render_add_contact(&mut self, ui: &mut Ui) -> AppAction {
-        if self.has_shielded_address != Some(true) {
-            return self.render_needs_shielded_address(ui);
+        match self.has_shielded_address {
+            Some(true) => {}
+            Some(false) => return self.render_needs_shielded_address(ui),
+            None => return self.render_checking_shielded_address(ui),
         }
 
         let mut action = AppAction::None;
@@ -743,10 +788,14 @@ impl ScreenLike for OrchardPayScreen {
         self.selected_key = selected_key;
         self.selected_wallet = selected_wallet;
         self.wallet_open_attempted = false;
-        // Force a fresh shielded-address check — the most common reason to
-        // refresh is returning from having just published one.
-        self.has_shielded_address = None;
-        self.shielded_address_check_dispatched = false;
+        // Re-read the cache — the most common reason to refresh is
+        // returning from having just published a shielded address, which
+        // already wrote the cache before this screen is shown again, so
+        // this picks it up with no network round-trip. Falls back to a
+        // live check only if the cache still doesn't know.
+        self.has_shielded_address =
+            Self::cached_shielded_address_status(&self.app_context, self.identity.as_ref());
+        self.shielded_address_check_dispatched = self.has_shielded_address == Some(true);
         self.recent_activity = None;
         self.recent_activity_dispatched = false;
         self.profile_screen.refresh();
@@ -755,6 +804,12 @@ impl ScreenLike for OrchardPayScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.searching = false;
+            // A failed shielded-address check leaves `has_shielded_address`
+            // at `None` — reset the dispatch guard so the "checking…" state
+            // isn't permanently stuck; the next frame's `ui()` retries it.
+            if self.has_shielded_address.is_none() {
+                self.shielded_address_check_dispatched = false;
+            }
         }
         if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
             self.profile_screen.display_message(message, message_type);
@@ -800,7 +855,9 @@ impl ScreenLike for OrchardPayScreen {
         if readiness == LocalReadiness::ContractConfigured {
             // Kick off (once) the shielded-address check the Contacts/Send
             // Friend Request tabs need — cheap and harmless to run even
-            // while viewing Profile/Payments.
+            // while viewing Profile/Payments. Already skipped (dispatched
+            // guard pre-set) when `new()`/`refresh()` seeded a confirmed
+            // `Some(true)` from the local cache.
             if self.has_shielded_address.is_none()
                 && !self.shielded_address_check_dispatched
                 && let Some(identity) = &self.identity

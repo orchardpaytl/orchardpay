@@ -196,6 +196,10 @@ impl AppContext {
                 let published = shielded_address::lookup_shielded_address(self, sdk, identity_id)
                     .await?
                     .is_some();
+                if published {
+                    self.wallet_backend()?
+                        .orchardpay_set_has_shielded_address(&identity_id)?;
+                }
                 Ok(
                     BackendTaskSuccessResult::OrchardPayOwnShieldedAddressStatus {
                         identity_id,
