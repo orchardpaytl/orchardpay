@@ -1,10 +1,17 @@
 # OrchardPay
 
-**OrchardPay** is a cross-platform GUI application for interacting with [Dash Evolution](https://www.dash.org/). It supports Mainnet, Testnet, Devnet, and local regtest networks.
+**OrchardPay** is a cross-platform GUI application for interacting with [Dash Evolution](https://www.dash.org/). It supports Mainnet, Testnet, Devnet, and local regtest networks, and adds a privacy-first contact and messaging protocol — shielded, with no public, queryable record of who is connected to whom.
 
 See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/orchardpay/) for setup and usage instructions.
 
 ## Features
+
+**Private Contacts & Messaging (OrchardPay)**
+- Publish a private shielded address so others can find and connect with you — unlike a public contact-request document, nothing about it reveals your social graph
+- Establish contacts through a shielded, two-way handshake: no on-chain document ever links two identities together
+- Exchange encrypted messages, payment requests, and real shielded payments with your contacts
+- Recover your contacts from the network alone, with no local backup needed
+- Currently available on Testnet only — the OrchardPay contract isn't registered on Mainnet or Devnet yet
 
 **Identity**
 - Register, load, and manage Platform identities
@@ -49,11 +56,11 @@ See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/o
 
 ## Getting prebuilt binaries
 
-Download the latest release from the Releases page (TODO: OrchardPay repo not yet published).
+For now, only a Linux Flatpak build is published (see below). Download it from the Releases page (TODO: link once the repo is public). Windows and macOS builds aren't currently published — see [Building from source](#building-from-source) to run OrchardPay on those platforms today.
 
 ### Install via Flatpak (Linux)
 
-The easiest way to run OrchardPay on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the latest release (TODO: OrchardPay repo not yet published) and install it:
+The easiest way to run OrchardPay on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the latest release (TODO: link once the repo is public) and install it:
 
 ``` shell
 # x86_64
@@ -81,7 +88,7 @@ The Flatpak version runs in SPV (light client) mode — no full Dash Core node i
 
 ### Windows runtime dependencies
 
-If you use the prebuilt Windows binary, make sure the target machine has:
+If you build and run OrchardPay on Windows, make sure the target machine has:
 
 - Microsoft Visual C++ Redistributable (vc_redist x64): https://aka.ms/vc14/vc_redist.x64.exe
 - OpenGL 2.0 support. If OpenGL 2.0 is not available (or the app fails to start with OpenGL-related errors), install the OpenCL, OpenGL, and Vulkan Compatibility Pack:
@@ -118,11 +125,11 @@ Contributions are welcome! See the [Contributing Guide](CONTRIBUTING.md) for det
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE.md) file for details.
 
 ## Support
 
-- **Issues**: Open an issue on GitHub Issues (TODO: OrchardPay repo not yet published).
+- **Issues**: Open an issue on GitHub Issues (TODO: link once the repo is public).
 - **Community**: Join the Dash community forums or Discord server for discussions.
 
 ## Security Note
