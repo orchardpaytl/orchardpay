@@ -117,6 +117,13 @@ pub enum OrchardPayTask {
         qualified_identity: QualifiedIdentity,
         seed_hash: WalletSeedHash,
     },
+    /// Order every established contact by their conversation's most recent
+    /// activity, for the "Most Recent" navigation view. Pure Platform reads
+    /// — no wallet/signing involved, so no `seed_hash`. See
+    /// `messages::fetch_recent_activity`.
+    LoadRecentActivity {
+        qualified_identity: QualifiedIdentity,
+    },
 }
 
 impl AppContext {
@@ -287,6 +294,9 @@ impl AppContext {
                     already_tracked: summary.already_tracked,
                     undecryptable: summary.undecryptable,
                 })
+            }
+            OrchardPayTask::LoadRecentActivity { qualified_identity } => {
+                messages::fetch_recent_activity(self, sdk, &qualified_identity).await
             }
         }
     }

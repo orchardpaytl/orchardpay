@@ -22,6 +22,7 @@
 use crate::app::AppAction;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult;
+use crate::backend_task::orchardpay::messages::RecentContactActivity;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -58,6 +59,9 @@ use std::sync::{Arc, RwLock};
 pub enum OrchardPaySubscreen {
     Profile,
     Contacts,
+    /// Established contacts ordered by their conversation's most recent
+    /// activity (newest first), instead of Contacts' unordered list.
+    MostRecent,
     Payments,
     /// "Send Friend Request": DPNS search + initiate a new contact.
     AddContact,
@@ -71,6 +75,7 @@ pub enum OrchardPaySubscreen {
 
 const TAB_PROFILE: &str = "orchardpay_tab_profile";
 const TAB_CONTACTS: &str = "orchardpay_tab_contacts";
+const TAB_MOST_RECENT: &str = "orchardpay_tab_most_recent";
 const TAB_PAYMENTS: &str = "orchardpay_tab_payments";
 const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
 const TAB_ABOUT: &str = "orchardpay_tab_about";
@@ -106,6 +111,12 @@ pub struct OrchardPayScreen {
     /// showing a stale "not published" prompt.
     has_shielded_address: Option<bool>,
     shielded_address_check_dispatched: bool,
+    /// `None` = not fetched yet this visit (renders "Loading…").
+    /// `Some(_)` = last-known ordering. Reset on `refresh()` and by the
+    /// "Refresh" button so leaving/re-entering or an explicit refresh
+    /// re-fetches rather than showing stale ordering.
+    recent_activity: Option<Vec<RecentContactActivity>>,
+    recent_activity_dispatched: bool,
 }
 
 impl OrchardPayScreen {
@@ -127,6 +138,8 @@ impl OrchardPayScreen {
             searching: false,
             has_shielded_address: None,
             shielded_address_check_dispatched: false,
+            recent_activity: None,
+            recent_activity_dispatched: false,
         }
     }
 
@@ -384,6 +397,109 @@ impl OrchardPayScreen {
         action
     }
 
+    fn render_most_recent(&mut self, ui: &mut Ui) -> AppAction {
+        if self.has_shielded_address != Some(true) {
+            return self.render_needs_shielded_address(ui);
+        }
+
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        let Some(identity) = self.identity.clone() else {
+            ui.label("No identity available. Register or select an identity first.");
+            return action;
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(
+                    "Established contacts, ordered by their conversation's most recent activity.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            if ui.button("Refresh").clicked() {
+                self.recent_activity = None;
+                self.recent_activity_dispatched = false;
+            }
+        });
+        ui.add_space(8.0);
+
+        if !self.recent_activity_dispatched && self.recent_activity.is_none() {
+            self.recent_activity_dispatched = true;
+            action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+                OrchardPayTask::LoadRecentActivity {
+                    qualified_identity: identity.clone(),
+                },
+            )));
+        }
+
+        let Some(entries) = self.recent_activity.clone() else {
+            ui.label(RichText::new("Loading…").color(DashColors::text_secondary(dark_mode)));
+            return action;
+        };
+
+        if entries.is_empty() {
+            ui.label(
+                RichText::new(
+                    "No established contacts yet. Use Send Friend Request to find someone on OrchardPay.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            return action;
+        }
+
+        let backend = match self.app_context.wallet_backend() {
+            Ok(backend) => backend,
+            Err(_) => {
+                ui.label("Wallet backend is not ready yet.");
+                return action;
+            }
+        };
+        let owner_id = identity.identity.id();
+
+        for entry in entries {
+            let Ok(Some(OrchardPayContactState::Established { name, .. })) =
+                backend.orchardpay_get_contact_state(&owner_id, &entry.identity_id)
+            else {
+                continue;
+            };
+
+            ui.group(|ui| {
+                match &name {
+                    Some(name) => ui.label(RichText::new(name)),
+                    None => ui.label(
+                        RichText::new(entry.identity_id.to_string(Encoding::Base58)).monospace(),
+                    ),
+                };
+                let activity_label = match (
+                    entry.has_messages,
+                    entry.last_activity.and_then(format_relative_time),
+                ) {
+                    (true, Some(when)) => format!("Last activity {when}"),
+                    (false, Some(when)) => format!("No messages yet — connected {when}"),
+                    (_, None) => "No messages yet".to_string(),
+                };
+                ui.label(
+                    RichText::new(activity_label)
+                        .size(11.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                if ui.button("Open Conversation").clicked() {
+                    action |= AppAction::AddScreen(Screen::MessageThreadScreen(
+                        crate::ui::orchardpay::message_thread_screen::MessageThreadScreen::new(
+                            identity.clone(),
+                            entry.identity_id,
+                            &self.app_context,
+                        ),
+                    ));
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        action
+    }
+
     fn render_payments(&self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
@@ -631,6 +747,8 @@ impl ScreenLike for OrchardPayScreen {
         // refresh is returning from having just published one.
         self.has_shielded_address = None;
         self.shielded_address_check_dispatched = false;
+        self.recent_activity = None;
+        self.recent_activity_dispatched = false;
         self.profile_screen.refresh();
     }
 
@@ -656,6 +774,9 @@ impl ScreenLike for OrchardPayScreen {
                 if self.identity.as_ref().map(|i| i.identity.id()) == Some(*identity_id) {
                     self.has_shielded_address = Some(*published);
                 }
+            }
+            BackendTaskSuccessResult::OrchardPayRecentActivity(entries) => {
+                self.recent_activity = Some(entries.clone());
             }
             _ => {}
         }
@@ -704,6 +825,11 @@ impl ScreenLike for OrchardPayScreen {
                     AppAction::Custom(TAB_CONTACTS.to_string()),
                 ),
                 SubscreenNavItem::new(
+                    "Most Recent",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::MostRecent,
+                    AppAction::Custom(TAB_MOST_RECENT.to_string()),
+                ),
+                SubscreenNavItem::new(
                     "Payments",
                     self.orchardpay_subscreen == OrchardPaySubscreen::Payments,
                     AppAction::Custom(TAB_PAYMENTS.to_string()),
@@ -737,6 +863,9 @@ impl ScreenLike for OrchardPayScreen {
                 }
                 AppAction::Custom(ref tag) if tag == TAB_CONTACTS => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::Contacts;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_MOST_RECENT => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::MostRecent;
                 }
                 AppAction::Custom(ref tag) if tag == TAB_PAYMENTS => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::Payments;
@@ -792,6 +921,7 @@ impl ScreenLike for OrchardPayScreen {
                     inner_action |= match self.orchardpay_subscreen {
                         OrchardPaySubscreen::Profile => self.profile_screen.render(ui),
                         OrchardPaySubscreen::Contacts => self.render_contacts(ui),
+                        OrchardPaySubscreen::MostRecent => self.render_most_recent(ui),
                         OrchardPaySubscreen::Payments => {
                             self.render_payments(ui);
                             AppAction::None

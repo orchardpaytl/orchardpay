@@ -40,10 +40,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, FetchMany, Identifier, IdentityPublicKey,
 };
+use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -477,6 +478,160 @@ async fn fetch_messages_by_ref_id(
     .map_err(TaskError::from)?;
 
     Ok(results.into_values().flatten().collect())
+}
+
+/// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id`, via
+/// the same `byReferenceIdAndCreated` index as [`fetch_messages_by_ref_id`],
+/// but sorted descending and capped to one result — for "when did this
+/// side of the conversation last say anything" without fetching the whole
+/// thread.
+async fn fetch_latest_message_created_at(
+    orchardpay_contract: &DataContract,
+    sdk: &Sdk,
+    ref_id: [u8; 32],
+) -> Result<Option<u64>, TaskError> {
+    let mut query =
+        DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
+            |e| OrchardPayError::QueryCreation {
+                query_target: "encryptedMessage latest-activity fetch",
+                source: Box::new(e),
+            },
+        )?;
+    query = query
+        .with_where(WhereClause {
+            field: REF_ID_FIELD.to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Bytes(ref_id.to_vec()),
+        })
+        .with_order_by(OrderClause {
+            field: "$createdAt".to_string(),
+            ascending: false,
+        });
+    query.limit = 1;
+
+    let results = await_network_request_with_timeout(
+        NETWORK_REQUEST_TIMEOUT,
+        Document::fetch_many(sdk, query),
+        |source| TaskError::DocumentFetchTimeout { source },
+    )
+    .await?
+    .map_err(TaskError::from)?;
+
+    Ok(results
+        .into_values()
+        .flatten()
+        .next()
+        .and_then(|document| document.created_at()))
+}
+
+/// One established contact's most-recent-activity summary, used by the
+/// "Most Recent" navigation view to order conversations by freshness
+/// instead of contact-request order. See [`fetch_recent_activity`].
+#[derive(Debug, Clone)]
+pub struct RecentContactActivity {
+    pub identity_id: Identifier,
+    /// The sort key: the latest message timestamp if any messages have
+    /// been exchanged, otherwise the `contactAnchor`'s own `$createdAt`
+    /// (when the relationship was established) as a fallback, so contacts
+    /// with no conversation yet still sort somewhere meaningful.
+    pub last_activity: Option<u64>,
+    /// `false` means `last_activity` (if `Some`) is the anchor-date
+    /// fallback, not a real message timestamp — the UI shows "No messages
+    /// yet" instead of a "last activity" label in that case.
+    pub has_messages: bool,
+}
+
+/// The subset of an established contact's state [`fetch_recent_activity`]
+/// needs: both directional reference IDs (to query each side's latest
+/// message) and the anchor's own timestamp (the no-messages-yet fallback).
+struct EstablishedContactRefs {
+    identity_id: Identifier,
+    my_reference_id: [u8; 32],
+    their_reference_id: [u8; 32],
+    anchor_created_at: Option<u64>,
+}
+
+/// Build the "Most Recent" ordering: every established contact, sorted by
+/// their conversation's latest activity (newest first), with contacts that
+/// have no messages yet sorted after those that do, by connection date.
+/// One query pair per contact (their sent side + my sent side), run
+/// concurrently — there is no single index that covers "most recent across
+/// all my relationships" in the current `encryptedMessage` schema
+/// (`byReferenceIdAndCreated` is scoped to one `refId` at a time), so this
+/// is inherently O(contacts) network calls, computed on-demand rather than
+/// cached. A per-contact query failure is treated as "no messages found"
+/// rather than failing the whole view, mirroring `recover_own_anchors`'s
+/// best-effort handling of individual anchors.
+pub async fn fetch_recent_activity(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: &QualifiedIdentity,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = app_context
+        .orchardpay_contract()
+        .ok_or(OrchardPayError::ContractNotConfigured)?;
+    let backend = app_context.wallet_backend()?;
+
+    let contacts = backend.orchardpay_list_contacts(&owner_id)?;
+    let established: Vec<EstablishedContactRefs> = contacts
+        .into_iter()
+        .filter_map(|counterparty| {
+            match backend
+                .orchardpay_get_contact_state(&owner_id, &counterparty)
+                .ok()?
+            {
+                Some(OrchardPayContactState::Established {
+                    my_reference_id,
+                    their_reference_id,
+                    created_at,
+                    ..
+                }) => Some(EstablishedContactRefs {
+                    identity_id: counterparty,
+                    my_reference_id,
+                    their_reference_id,
+                    anchor_created_at: created_at,
+                }),
+                _ => None,
+            }
+        })
+        .collect();
+
+    let contract_ref = &orchardpay_contract;
+    let futures = established.into_iter().map(move |contact| async move {
+        let (mine, theirs) = futures::future::join(
+            fetch_latest_message_created_at(contract_ref, sdk, contact.my_reference_id),
+            fetch_latest_message_created_at(contract_ref, sdk, contact.their_reference_id),
+        )
+        .await;
+        let latest_message = mine
+            .ok()
+            .flatten()
+            .into_iter()
+            .chain(theirs.ok().flatten())
+            .max();
+        match latest_message {
+            Some(ts) => RecentContactActivity {
+                identity_id: contact.identity_id,
+                last_activity: Some(ts),
+                has_messages: true,
+            },
+            None => RecentContactActivity {
+                identity_id: contact.identity_id,
+                last_activity: contact.anchor_created_at,
+                has_messages: false,
+            },
+        }
+    });
+
+    let mut entries: Vec<RecentContactActivity> = join_all(futures).await;
+    entries.sort_by(|a, b| {
+        b.has_messages
+            .cmp(&a.has_messages)
+            .then(b.last_activity.cmp(&a.last_activity))
+    });
+
+    Ok(BackendTaskSuccessResult::OrchardPayRecentActivity(entries))
 }
 
 fn decode_thread_message(

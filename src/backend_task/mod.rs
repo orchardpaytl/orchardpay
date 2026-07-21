@@ -559,6 +559,11 @@ pub enum BackendTaskSuccessResult {
         already_tracked: usize,
         undecryptable: usize,
     },
+    /// Result of `OrchardPayTask::LoadRecentActivity` — every established
+    /// contact, sorted by their conversation's most recent activity (newest
+    /// first), contacts with no messages yet sorted after by connection
+    /// date. See `backend_task::orchardpay::messages::fetch_recent_activity`.
+    OrchardPayRecentActivity(Vec<crate::backend_task::orchardpay::messages::RecentContactActivity>),
     /// Platform became reachable (masternode list `Synced`), so the wallet
     /// backend asked the frame loop to start the automatic all-wallets identity
     /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`
