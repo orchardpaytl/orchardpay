@@ -250,7 +250,7 @@ impl OrchardPayScreen {
 
     fn render_needs_identity(&self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        ui.label("OrchardPay needs an identity to publish a private address for.");
+        ui.label("OrchardPay needs an identity to publish a shielded address for.");
         ui.add_space(8.0);
         if ui.button("Create an Identity").clicked() {
             action |=
@@ -299,7 +299,7 @@ impl OrchardPayScreen {
         };
 
         ui.label(
-            "You haven't published a private address yet — this is how contacts find you. Publishing sets up everything OrchardPay needs, including your private encryption keys.",
+            "You haven't published a shielded address yet — this is how contacts find you. Publishing sets up everything OrchardPay needs, including your private encryption keys.",
         );
         ui.add_space(8.0);
         if ui

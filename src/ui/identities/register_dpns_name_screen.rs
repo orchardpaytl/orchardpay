@@ -329,7 +329,7 @@ impl RegisterDpnsNameScreen {
         let mut buttons = vec![("Back".to_string(), AppAction::PopScreenAndRefresh)];
         if self.from_onboarding {
             buttons.push((
-                "Set Up Private Address".to_string(),
+                "Set Up OrchardPay".to_string(),
                 AppAction::Custom("orchardpay_shielded_setup".to_string()),
             ));
         } else {

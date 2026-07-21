@@ -25,6 +25,8 @@ pub const SHIELDED_VERIFIED_LABEL: &str = "Shielded balance verified.";
 pub const SHIELDED_SPEND_LOCKED_LABEL: &str = "Spending paused.";
 pub const SHIELDED_SPEND_LOCKED_TOOLTIP: &str =
     "Spending paused until shielded balance is verified.";
+pub const SHIELDED_WALLET_LOADING_TOOLTIP: &str =
+    "Your shielded wallet is still loading. Try again in a few seconds.";
 pub const SHIELDED_LOCK_ICON: &str = "\u{1F512}"; // 🔒
 pub const SHIELDED_VERIFIED_ICON: &str = "\u{2714}"; // ✔
 pub const SHIELDED_RETRY_MIGRATION_LABEL: &str = "Retry shielded migration";
@@ -643,6 +645,11 @@ impl ShieldedTabView {
                     indicator,
                     ShieldedIndicator::Verifying | ShieldedIndicator::Failed
                 );
+                // The Orchard address is `None` until this wallet's shielded keys
+                // finish binding in the background (see `shielded_address`'s doc
+                // comment) — shielding before that completes fails with
+                // `TaskError::ShieldedNotBound`, so gate the button on it too.
+                let shield_ready = self.shielded_address.is_some();
 
                 // Action buttons
                 ui.horizontal(|ui| {
@@ -650,9 +657,11 @@ impl ShieldedTabView {
                         egui::Button::new(RichText::new("Shield").color(Color32::WHITE).size(14.0))
                             .fill(DashColors::DASH_BLUE);
                     if ui
-                        .add_enabled(!self.syncing && !spend_locked, shield_btn)
+                        .add_enabled(!self.syncing && !spend_locked && shield_ready, shield_btn)
                         .on_hover_text(if spend_locked {
                             SHIELDED_SPEND_LOCKED_TOOLTIP
+                        } else if !shield_ready {
+                            SHIELDED_WALLET_LOADING_TOOLTIP
                         } else {
                             "Shield funds from a platform or core address into the shielded pool"
                         })

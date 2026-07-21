@@ -87,7 +87,7 @@ impl ShieldedAddressSetupScreen {
         self.status = PublishStatus::WaitingForResult;
         self.op_overlay.raise(
             ctx,
-            "Publishing your private address to the network.",
+            "Publishing your shielded address to the network.",
             OverlayConfig::default(),
         );
 
@@ -103,14 +103,14 @@ impl ShieldedAddressSetupScreen {
     fn show_success(&mut self, ui: &mut Ui) -> AppAction {
         crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "Private Address Published!".to_string(),
+            "Shielded Address Published!".to_string(),
             vec![(
-                "Back to Identities".to_string(),
-                AppAction::PopScreenAndRefresh,
+                "Go to OrchardPay".to_string(),
+                AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenOrchardPay),
             )],
             Some((
                 "What's next",
-                "Contacts can now find your private shielded address to reach you through \
+                "Contacts can now find your shielded address to reach you through \
                  OrchardPay.",
             )),
         )
@@ -146,7 +146,7 @@ impl ScreenLike for ShieldedAddressSetupScreen {
                 "Identities",
                 AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentities),
             ),
-            ("Private Address", AppAction::None),
+            ("Setup OrchardPay", AppAction::None),
         ];
         let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
         action |= add_left_panel(
@@ -163,10 +163,10 @@ impl ScreenLike for ShieldedAddressSetupScreen {
                 return inner_action;
             }
 
-            ui.heading("Set Up Your Private Address");
+            ui.heading("Set Up Keys and Address for OrchardPay");
             ui.add_space(10.0);
             ui.label(
-                "Publishing a private shielded address lets other people find you and start \
+                "Publishing a shielded address lets other people find you and start \
                  a private, encrypted conversation through OrchardPay — without revealing your \
                  identity publicly.",
             );
@@ -195,7 +195,7 @@ impl ScreenLike for ShieldedAddressSetupScreen {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     "No wallet found for this identity. A wallet is required to derive your \
-                     private address.",
+                     shielded address.",
                 );
                 return inner_action;
             }
@@ -208,7 +208,8 @@ impl ScreenLike for ShieldedAddressSetupScreen {
                 .and_then(|seed_hash| self.app_context.shielded_receive_address(&seed_hash));
 
             ui.label(
-                RichText::new("Your private address:").color(DashColors::text_secondary(dark_mode)),
+                RichText::new("Your shielded address:")
+                    .color(DashColors::text_secondary(dark_mode)),
             );
             ui.add_space(4.0);
             match &address_preview {

@@ -127,7 +127,7 @@ impl AddressKind {
         match self {
             Self::Core => "Wallet address",
             Self::Platform => "Platform address",
-            Self::Shielded => "Private address",
+            Self::Shielded => "Shielded address",
             Self::Identity => "Identity",
         }
     }
@@ -511,7 +511,7 @@ mod tests {
     fn address_kind_display_names() {
         assert_eq!(AddressKind::Core.display_name(), "Wallet address");
         assert_eq!(AddressKind::Platform.display_name(), "Platform address");
-        assert_eq!(AddressKind::Shielded.display_name(), "Private address");
+        assert_eq!(AddressKind::Shielded.display_name(), "Shielded address");
         assert_eq!(AddressKind::Identity.display_name(), "Identity");
     }
 

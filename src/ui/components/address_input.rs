@@ -682,7 +682,7 @@ impl AddressInput {
             let msg = match self.enabled_kinds.as_slice() {
                 [AddressKind::Core] => "Only wallet addresses are accepted here.",
                 [AddressKind::Platform] => "Only platform addresses are accepted here.",
-                [AddressKind::Shielded] => "Only private addresses are accepted here.",
+                [AddressKind::Shielded] => "Only shielded addresses are accepted here.",
                 [AddressKind::Identity] => "Only identity IDs are accepted here.",
                 _ => "This address type is not accepted here.",
             };
@@ -763,7 +763,7 @@ impl AddressInput {
                 Some(_) => (None, Some(ValidatedAddress::Shielded(trimmed.to_string()))),
                 None => (
                     Some(
-                        "This private address is not valid. Please check it and try again."
+                        "This shielded address is not valid. Please check it and try again."
                             .to_string(),
                     ),
                     None,
@@ -782,7 +782,7 @@ impl AddressInput {
         if trimmed.len() < 60 {
             return (
                 Some(
-                    "This private address looks incomplete. Please paste the full address."
+                    "This shielded address looks incomplete. Please paste the full address."
                         .to_string(),
                 ),
                 None,
@@ -799,7 +799,8 @@ impl AddressInput {
             }
             Err(_) => (
                 Some(
-                    "This private address is not valid. Please check it and try again.".to_string(),
+                    "This shielded address is not valid. Please check it and try again."
+                        .to_string(),
                 ),
                 None,
             ),
@@ -1654,7 +1655,7 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This private address looks incomplete. Please paste the full address.")
+            Some("This shielded address looks incomplete. Please paste the full address.")
         );
     }
 
@@ -1665,7 +1666,7 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This private address looks incomplete. Please paste the full address.")
+            Some("This shielded address looks incomplete. Please paste the full address.")
         );
     }
 
@@ -1677,7 +1678,7 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This private address is not valid. Please check it and try again.")
+            Some("This shielded address is not valid. Please check it and try again.")
         );
     }
 
@@ -1848,7 +1849,7 @@ mod tests {
     fn address_kind_display_names() {
         assert_eq!(AddressKind::Core.display_name(), "Wallet address");
         assert_eq!(AddressKind::Platform.display_name(), "Platform address");
-        assert_eq!(AddressKind::Shielded.display_name(), "Private address");
+        assert_eq!(AddressKind::Shielded.display_name(), "Shielded address");
         assert_eq!(AddressKind::Identity.display_name(), "Identity");
     }
 

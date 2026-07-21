@@ -28,7 +28,7 @@ impl OnboardingStep {
             OnboardingStep::Wallet => "Wallet",
             OnboardingStep::Identity => "Identity",
             OnboardingStep::DpnsName => "Name",
-            OnboardingStep::PrivateAddress => "Private Address",
+            OnboardingStep::PrivateAddress => "OrchardPay",
         }
     }
 
