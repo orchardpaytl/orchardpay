@@ -15,12 +15,16 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::subscreen_chooser_panel::{
+    SubscreenNavItem, add_subscreen_chooser_panel,
+};
 use crate::ui::components::top_panel::add_top_panel_with_label;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -382,7 +386,7 @@ impl ScreenLike for MessageThreadScreen {
         let breadcrumbs = vec![
             (
                 "OrchardPay",
-                AppAction::SetMainScreen(RootScreenType::RootScreenOrchardPay),
+                AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenOrchardPay),
             ),
             ("Conversation", AppAction::None),
         ];
@@ -394,6 +398,59 @@ impl ScreenLike for MessageThreadScreen {
             self.shielded_balance_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+
+        // Mirrors orchardpay_screen.rs's own subscreen nav so it stays
+        // visible while viewing a conversation instead of disappearing.
+        // Each item dispatches NavigateToOrchardPaySubscreen directly
+        // (rather than orchardpay_screen.rs's Custom-tag-then-match
+        // pattern) since this screen doesn't own the OrchardPayScreen
+        // instance to mutate locally — the central app.rs dispatcher does
+        // it instead. None marked active: this screen doesn't track which
+        // tab the conversation was opened from.
+        let subscreen_items = vec![
+            SubscreenNavItem::new(
+                "My Profile",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Profile),
+            ),
+            SubscreenNavItem::new(
+                "Contacts",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Contacts),
+            ),
+            SubscreenNavItem::new(
+                "Most Recent",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::MostRecent),
+            ),
+            SubscreenNavItem::new(
+                "Payments",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Payments),
+            ),
+            SubscreenNavItem::new(
+                "Send Friend Request",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::AddContact),
+            ),
+            SubscreenNavItem::new(
+                "About",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::About),
+            ),
+            SubscreenNavItem::new(
+                "QC Warning",
+                false,
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::QcWarning),
+            ),
+        ];
+        action |= add_subscreen_chooser_panel(
+            ui,
+            "orchardpay_subscreen_chooser",
+            false,
+            false,
+            subscreen_items,
+        );
 
         if !self.load_dispatched {
             action |= self.dispatch_load();

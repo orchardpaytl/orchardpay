@@ -905,6 +905,15 @@ pub enum AppAction {
     SetMainScreenThenGoToMainScreen(RootScreenType),
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
+    /// Set the persisted `OrchardPayScreen`'s active subscreen tab, clear
+    /// the detail-screen stack, and switch to the OrchardPay root tab — the
+    /// "jump to a specific OrchardPay tab from a stacked detail screen"
+    /// primitive `MessageThreadScreen`'s subscreen panel uses. Plain
+    /// `SetMainScreen` doesn't clear `screen_stack`, so it can't be used to
+    /// leave a stacked screen when `selected_main_screen` is already
+    /// `RootScreenOrchardPay` (the common case here, since pushing a detail
+    /// screen never changes it).
+    NavigateToOrchardPaySubscreen(OrchardPaySubscreen),
     BackendTask(BackendTask),
     BackendTaskWithContext {
         task: BackendTask,
@@ -2940,6 +2949,16 @@ impl App for AppState {
                 AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
                     self.screen_stack = vec![screen];
                     self.set_main_screen(root_screen_type);
+                }
+                AppAction::NavigateToOrchardPaySubscreen(subscreen) => {
+                    if let Some(Screen::OrchardPayScreen(screen)) = self
+                        .main_screens
+                        .get_mut(&RootScreenType::RootScreenOrchardPay)
+                    {
+                        screen.orchardpay_subscreen = subscreen;
+                    }
+                    self.screen_stack = vec![];
+                    self.set_main_screen(RootScreenType::RootScreenOrchardPay);
                 }
                 AppAction::StartSpv => {
                     // Arm the SPV-sync block for this user-initiated Connect (a
