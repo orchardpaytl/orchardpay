@@ -640,15 +640,6 @@ impl OrchardPayScreen {
     fn render_payments(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
-        ui.label(
-            RichText::new(
-                "Payments are sent from a conversation with a contact — open a contact from the Contacts tab to send or request one.",
-            )
-            .color(DashColors::text_secondary(dark_mode)),
-        );
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
 
         let Some(wallet) = self.selected_wallet.clone() else {
             ui.label(
