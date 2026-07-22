@@ -3,6 +3,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use orchardpay::model::secret::Secret;
 use orchardpay::model::wallet::Wallet;
+use orchardpay::model::wallet::birth_height::WalletOrigin;
 use orchardpay::ui::ScreenLike;
 use orchardpay::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use std::sync::{Arc, RwLock};
