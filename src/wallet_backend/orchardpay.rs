@@ -317,11 +317,17 @@ impl WalletBackend {
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
-    /// Read the real credits value this wallet observed for a
-    /// `MEMO_TAG_PAYMENT`-tagged incoming note referencing `document_id`.
-    /// `Ok(None)` means either the scan hasn't reached it yet, or it was
-    /// never addressed to this wallet (e.g. a payment I sent myself, which
-    /// needs no verification).
+    /// Read the real credits value this wallet has confirmed for a
+    /// `MEMO_TAG_PAYMENT` signal referencing `document_id` — written by
+    /// either of two callers, depending on which side of the transfer this
+    /// wallet is on: the incoming-memo scan (a fulfillment transfer this
+    /// wallet *received*, i.e. it made the original `PaymentRequest`), or
+    /// `messages::send_payment`'s own optimistic post-broadcast record (a
+    /// fulfillment this wallet *sent*, i.e. it's paying someone else's
+    /// request). `Ok(None)` means neither has happened yet for this wallet
+    /// — see `WalletBackend::orchardpay_outgoing_payments_by_document` for
+    /// the chain-derived fallback that survives this local cache being
+    /// wiped.
     pub fn orchardpay_get_verified_payment_amount(
         &self,
         seed_hash: &WalletSeedHash,
@@ -333,9 +339,11 @@ impl WalletBackend {
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
-    /// Persist the real credits value observed for a `MEMO_TAG_PAYMENT`
-    /// signal referencing `document_id`. Called once by the incoming-memo
-    /// scan, at the point the decrypted `Note`'s real value is in hand.
+    /// Persist the real credits value confirmed for a `MEMO_TAG_PAYMENT`
+    /// signal referencing `document_id`. Two call sites, per
+    /// [`Self::orchardpay_get_verified_payment_amount`]'s doc comment: the
+    /// incoming-memo scan (received a fulfillment) and
+    /// `messages::send_payment` (sent one).
     pub fn orchardpay_set_verified_payment_amount(
         &self,
         seed_hash: &WalletSeedHash,

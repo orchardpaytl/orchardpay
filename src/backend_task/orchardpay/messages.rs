@@ -73,13 +73,16 @@ pub struct ThreadMessage {
     pub updated_at: Option<u64>,
     pub content: MessageContent,
     /// For `Payment`/`PaymentRequest` content: the real credits value this
-    /// wallet independently observed for the correlated shielded transfer,
-    /// from `WalletBackend::orchardpay_get_verified_payment_amount`.
-    /// `None` when not yet verified (a message this wallet's memo scan
-    /// hasn't reached, or a payment `from_me` — which needs no
+    /// wallet has confirmed for the correlated shielded transfer — see
+    /// `decode_thread_message` for exactly which source(s) populate this
+    /// per content kind/direction. `None` means not yet confirmed (a
+    /// message this wallet's memo scan hasn't reached, an unfulfilled
+    /// `PaymentRequest`, or a `Payment` `from_me` — which needs no
     /// verification, since I chose the real amount myself). Compare
     /// against `content`'s own claimed `amount` to detect a mismatch — see
-    /// the protocol doc's "Amount trust model".
+    /// the protocol doc's "Amount trust model". For `PaymentRequest`,
+    /// `Some` also means "paid" — the UI hides the "Pay" button and shows
+    /// a PAID badge once this is set, on both sides of the relationship.
     pub verified_amount: Option<u64>,
 }
 
@@ -431,6 +434,36 @@ pub async fn send_payment(
         )
         .await?;
 
+    if fulfilling_request_document_id.is_some() {
+        // Optimistic local "paid" record so this wallet's own copy of the
+        // PaymentRequest bubble flips to Paid and hides its "Pay" button
+        // immediately — without waiting on a shielded sync/OVK-recovery
+        // pass to notice the note we just sent (which, for the payer, may
+        // never happen locally at all: a payer never receives a transfer
+        // for its own outgoing payment, unlike the requester's own
+        // incoming-memo scan, which writes this same cache entry from the
+        // other direction). Reuses `orchardpay_get/set_verified_payment_amount`
+        // rather than a payer-specific key: the value is exactly what that
+        // cache already means ("the real credits value confirmed for this
+        // document"), and I know it with certainty here since I chose it
+        // myself. If this local write is ever lost (reinstall, new
+        // device), `orchardpay_outgoing_payments_by_document` reconstructs
+        // the same answer straight from chain data as a fallback — see
+        // `decode_thread_message`.
+        if let Err(e) = backend.orchardpay_set_verified_payment_amount(
+            &seed_hash,
+            &memo_target_document_id,
+            amount,
+        ) {
+            tracing::warn!(
+                document = %memo_target_document_id,
+                error = ?e,
+                "OrchardPay: payment broadcast succeeded but failed to record the local paid \
+                 marker; still recoverable from this wallet's own outgoing notes"
+            );
+        }
+    }
+
     Ok(BackendTaskSuccessResult::OrchardPayPaymentSent {
         counterparty_identity_id,
         amount,
@@ -626,6 +659,8 @@ fn decode_thread_message(
     document: &Document,
     from_me: bool,
     shared_secret: &[u8; 32],
+    outgoing_payments: &BTreeMap<Identifier, u64>,
+    incoming_payments: &BTreeMap<Identifier, u64>,
 ) -> Option<ThreadMessage> {
     let msg_bytes = match document.properties().get(MSG_DATA_FIELD) {
         Some(Value::Bytes(bytes)) => bytes.as_slice(),
@@ -634,10 +669,26 @@ fn decode_thread_message(
     let content = MessageContent::decrypt(shared_secret, msg_bytes).ok()?;
 
     let verified_amount = match &content {
-        MessageContent::Payment { .. } | MessageContent::PaymentRequest { .. } => backend
+        MessageContent::Payment { .. } => backend
             .orchardpay_get_verified_payment_amount(seed_hash, &document.id())
             .ok()
             .flatten(),
+        // The k/v cache is the fast path, written by the incoming-memo
+        // scan (requester received a fulfillment) or `send_payment`'s own
+        // optimistic post-send record (payer sent one) — but both of
+        // those can lag or be lost: the scan runs on its own resumable
+        // cursor independent of the wallet's normal sync, and the payer's
+        // local write doesn't survive a reinstall. `outgoing_payments`/
+        // `incoming_payments` reconstruct the same fact straight from this
+        // wallet's already-synced notes, so a `PaymentRequest`'s status
+        // here is never less current than what the Shielded TXs tab
+        // already shows for the same note.
+        MessageContent::PaymentRequest { .. } => backend
+            .orchardpay_get_verified_payment_amount(seed_hash, &document.id())
+            .ok()
+            .flatten()
+            .or_else(|| outgoing_payments.get(&document.id()).copied())
+            .or_else(|| incoming_payments.get(&document.id()).copied()),
         MessageContent::Message { .. } => None,
     };
 
@@ -692,19 +743,37 @@ pub async fn load_thread(
 
     let mine = fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id).await?;
     let theirs = fetch_messages_by_ref_id(&orchardpay_contract, sdk, their_reference_id).await?;
+    let outgoing_payments = backend
+        .orchardpay_outgoing_payments_by_document(&seed_hash)
+        .await?;
+    let incoming_payments = backend
+        .orchardpay_incoming_payments_by_document(sdk, &seed_hash)
+        .await?;
 
     let mut thread = Vec::with_capacity(mine.len() + theirs.len());
     for document in &mine {
-        if let Some(message) =
-            decode_thread_message(&backend, &seed_hash, document, true, &outbound_secret)
-        {
+        if let Some(message) = decode_thread_message(
+            &backend,
+            &seed_hash,
+            document,
+            true,
+            &outbound_secret,
+            &outgoing_payments,
+            &incoming_payments,
+        ) {
             thread.push(message);
         }
     }
     for document in &theirs {
-        if let Some(message) =
-            decode_thread_message(&backend, &seed_hash, document, false, &inbound_secret)
-        {
+        if let Some(message) = decode_thread_message(
+            &backend,
+            &seed_hash,
+            document,
+            false,
+            &inbound_secret,
+            &outgoing_payments,
+            &incoming_payments,
+        ) {
             thread.push(message);
         }
     }

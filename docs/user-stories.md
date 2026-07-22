@@ -908,7 +908,7 @@ As a user, I want to send a private text message to an established contact so th
 
 As a user, I want to send a contact a request for a specific amount so that I can ask to be paid without also having to share my address out-of-band.
 
-- Specify an amount (whole credits) and an optional memo.
+- Specify an amount (in DASH) and an optional memo.
 - Delivered as an encrypted message the recipient can reply to directly with a payment.
 
 ### ORP-008: Send a real payment to a contact [Implemented]
@@ -943,6 +943,17 @@ As a user, I want to see my wallet's shielded notes grouped into what's still sp
 - The Shielded TXs tab (formerly "Payments") lists notes in two sections: Unspent Notes (still contributing to spendable balance, with a note count and running total) and Spent Notes (notes already consumed, plus every outgoing send).
 - Within Spent Notes, a spent note is shown side by side with the outgoing send of the same amount that most likely consumed it, when one exists; unmatched notes and sends are shown on their own.
 - The pairing is a best-effort amount match, not true note-level linkage — when several notes share an amount (e.g. repeated contact-request signals), a pairing may not be the literal note that was spent.
+
+### ORP-012: See a payment request marked PAID once fulfilled [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want a payment request to show as PAID once it's been fulfilled, so that both sides know the payment went through and I don't accidentally pay the same request twice.
+
+- Fulfilling a `PaymentRequest` verifies the shielded transfer's on-chain memo against the request's own document ID and the transferred amount against the requested amount, then flips the bubble to a "PAID" state on both the requester's and the payer's own copy of the conversation.
+- The "Pay" button disappears once a request is marked PAID, on both sides — the payer's own wallet knows immediately, without waiting for the requester to notice, so they can't send a second fulfillment for the same request.
+- A mismatched amount (the actual transfer differs from what was requested) still counts as paid — flagged, not offered for a second attempt, matching the existing no-partial-payment design.
+- Before this wallet's shielded state has finished loading (no sync pass has completed yet this session), a `PaymentRequest` bubble shows "Checking payment status…" instead of either a "Pay" button or an "Awaiting payment" label — an unconfirmed local state is never presented as "definitely not paid yet", and the payer specifically cannot fulfill a request until that check is possible. Once confirmed unpaid, the requester's own copy shows "Awaiting payment" so their side of the conversation is never silent either.
+- On both sides, a "PAID" status is never staler than what the Shielded TXs tab already shows for the same note: each side's own status cache (populated by the memo-detection scan/optimistic send-time write) is backed by a fallback that reconstructs the same answer directly from this wallet's already-synced notes, so a `PaymentRequest` doesn't linger as "Awaiting payment" or "Pay" after the paying transaction is already visible elsewhere in the app.
 
 ---
 

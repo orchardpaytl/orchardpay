@@ -302,6 +302,19 @@ impl MessageThreadScreen {
             self.counterparty_name.as_deref().unwrap_or("Them")
         };
         let mut reply_target = None;
+        // Whether at least one shielded sync pass has completed this
+        // session — `PaymentRequest`'s "paid" check reads the shielded
+        // store directly (see `decode_thread_message`), so before this a
+        // `None` verified_amount doesn't mean "not paid", just "haven't
+        // finished checking yet". Gates both the requester's status label
+        // and the payer's "Pay" button, so neither side acts on an
+        // incomplete picture — see the payer-side note in `send_payment`'s
+        // doc comment on why that matters for double-payment risk.
+        let shielded_state_ready = self
+            .app_context
+            .connection_status()
+            .last_shielded_sync_completed_at()
+            .is_some();
 
         ui.group(|ui| {
             ui.horizontal(|ui| {
@@ -353,8 +366,47 @@ impl MessageThreadScreen {
                     if let Some(memo) = memo {
                         ui.label(memo);
                     }
-                    if !message.from_me && ui.button("Pay").clicked() {
-                        reply_target = Some((message.document_id, *amount));
+                    match message.verified_amount {
+                        Some(paid_amount) if paid_amount == *amount => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "PAID — {}",
+                                    format_credits_as_dash(paid_amount)
+                                ))
+                                .strong()
+                                .color(DashColors::success_color(dark_mode)),
+                            );
+                        }
+                        Some(paid_amount) => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "PAID — but the amount received was {} (requested {})",
+                                    format_credits_as_dash(paid_amount),
+                                    format_credits_as_dash(*amount)
+                                ))
+                                .strong()
+                                .color(DashColors::warning_color(dark_mode)),
+                            );
+                        }
+                        None if !shielded_state_ready => {
+                            ui.label(
+                                RichText::new("Checking payment status…")
+                                    .italics()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                        None if message.from_me => {
+                            ui.label(
+                                RichText::new("Awaiting payment")
+                                    .italics()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                        None => {
+                            if ui.button("Pay").clicked() {
+                                reply_target = Some((message.document_id, *amount));
+                            }
+                        }
                     }
                 }
             }

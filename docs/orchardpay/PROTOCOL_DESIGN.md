@@ -784,6 +784,62 @@ against a request surfaces as a flagged mismatch, not a distinct "partially
 paid" state — no `fulfills_request_id`-style tracking was added to
 disambiguate that case for this increment.
 
+**`PaymentRequest` fulfillment status (decided 2026-07-22).** Both sides of
+a fulfilled `PaymentRequest` need to know it's paid — the requester so they
+stop expecting it, and *especially* the payer, so they don't send a second
+transfer for the same request. Each side has its own fast path plus a
+chain-derived fallback that reconstructs the same fact directly from this
+wallet's already-synced local notes, so a `PaymentRequest`'s status is
+never less current than what the Shielded TXs tab already shows for the
+same note:
+
+- **Payer.** The instant the fulfillment broadcast succeeds, the payer's
+  wallet writes a "confirmed amount for this document" cache entry locally
+  (reusing the requester-side cache — there's no need for a distinct key,
+  since the payer knows the true amount with certainty, having chosen it).
+  This is what makes the "Pay" button disappear immediately, with no
+  dependency on a sync pass. Because that write is local-only, a wiped or
+  reinstalled payer wallet falls back to scanning its own already-synced
+  outgoing notes for a `MEMO_TAG_PAYMENT` memo referencing the request's
+  DocumentID — an outgoing note's memo is available at sync time with no
+  extra recovery step (unlike a *received* note's memo, below).
+- **Requester.** The memo-scan-recognizes-its-own-outstanding-request path
+  above is the fast path, but it's a *separate* scan from the wallet's
+  normal sync coordinator: it walks the raw note stream on its own
+  resumable cursor, independently re-deriving the incoming viewing key
+  each pass. That cursor can genuinely lag behind the wallet's normal
+  sync — which is what feeds both the Shielded TXs tab and this fallback —
+  so a stale-looking "Awaiting payment" can appear even though the note
+  paying the request already shows up in the Shielded TXs tab. The
+  fallback closes that gap by independently recovering the memo for every
+  already-synced received note (the same targeted full-decrypt
+  `shielded_activity` itself uses to label a receipt in the Shielded TXs
+  tab — see `orchardpay_recover_received_memos`) and checking each one
+  for a `MEMO_TAG_PAYMENT` tag naming the request's DocumentID, with no
+  dependency on the separate scan's cursor position.
+
+Either source on either side flips the `PaymentRequest` bubble to a "PAID"
+state and hides the "Pay" button — matching the accepted no-partial-payment
+consequence above, a mismatched amount still counts as paid (flagged, not
+re-payable) rather than introducing a distinct partial state.
+
+Both sources above only ever reflect what this wallet's local shielded
+store already knows, which on a cold start (or shortly after
+reinstall/switching devices) can simply be incomplete — not yet caught up
+with chain data at all. Treating "no cached PAID record" as "confirmed
+unpaid" in that window is itself a bad assumption: it would let a payer's
+"Pay" button appear even though they may have already paid before their
+local state was wiped. So the bubble gates on
+`ConnectionStatus::last_shielded_sync_completed_at()` (`None` until at
+least one shielded sync pass has completed this session): before that,
+neither side sees a firm "PAID" or "unpaid" conclusion, only "Checking
+payment status…", and specifically the payer's "Pay" button does not
+render at all. Once a first pass completes, the bubble falls back to its
+normal PAID / "Awaiting payment" / "Pay" states — later incremental passes
+don't re-trigger the gate, since the store is by then reasonably caught up
+and treated the same way the rest of the app treats incremental shielded
+updates.
+
 ## Dropped: `protocolVersion`
 
 The v0 draft carried a plaintext `protocolVersion` field on all three

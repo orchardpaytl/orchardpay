@@ -680,6 +680,23 @@ impl OrchardPayScreen {
         );
         ui.add_space(8.0);
 
+        if self
+            .app_context
+            .connection_status()
+            .last_shielded_sync_completed_at()
+            .is_none()
+        {
+            ui.label(
+                RichText::new(
+                    "Still syncing shielded activity — the notes and totals below may not \
+                     reflect the full picture yet.",
+                )
+                .size(11.0)
+                .color(DashColors::warning_color(dark_mode)),
+            );
+            ui.add_space(8.0);
+        }
+
         if !self.shielded_activity_dispatched && self.shielded_activity.is_none() {
             self.shielded_activity_dispatched = true;
             action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(

@@ -13,7 +13,11 @@ use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
 use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
 use crate::model::orchardpay::{ShieldedActivityRow, ShieldedNoteKind};
 use crate::model::wallet::WalletSeedHash;
-use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+use dash_sdk::platform::Identifier;
+use platform_wallet::wallet::shielded::{
+    ShieldedNote, ShieldedOutgoingNote, ShieldedStore, SubwalletId,
+};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::{
@@ -430,6 +434,146 @@ impl WalletBackend {
         rows.sort_by(|a, b| b.block_height.cmp(&a.block_height));
         Ok(rows)
     }
+
+    /// Every locally-known outgoing [`MEMO_TAG_PAYMENT`]-tagged transfer for
+    /// `seed_hash`'s account-0 subwallet, keyed by the `Payment`/
+    /// `PaymentRequest` document ID its memo referenced, valued at the
+    /// credits actually sent.
+    ///
+    /// This is the recovery path for "did I already fulfill this
+    /// `PaymentRequest`" on the *payer's* side: `send_payment` also writes
+    /// an immediate optimistic record via
+    /// `WalletBackend::orchardpay_set_verified_payment_amount` right after
+    /// a successful fulfillment broadcast (so the UI flips to "Paid"
+    /// without waiting on a sync pass), but that's local k/v state — lost
+    /// on reinstall or a new device, same as any other local cache. This
+    /// method reconstructs the same answer straight from chain data: an
+    /// outgoing note's memo is already available at sync time (contrast
+    /// [`WalletBackend::orchardpay_recover_received_memos`], needed only
+    /// for *received* notes), so no separate scan-and-cache mechanism is
+    /// needed here — just read the already-synced local store fresh on
+    /// every call.
+    ///
+    /// Returns an empty map rather than an error when the wallet isn't
+    /// bound/registered yet this session, matching this file's existing
+    /// "not bound" convention.
+    pub async fn orchardpay_outgoing_payments_by_document(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<BTreeMap<Identifier, u64>, TaskError> {
+        let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
+            return Ok(BTreeMap::new());
+        };
+        let subwallet_id = SubwalletId::new(wallet_id, 0);
+
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let outgoing = {
+            let store = coordinator.store().read().await;
+            store.get_outgoing_notes(subwallet_id).map_err(|e| {
+                TaskError::ShieldedActivityUnavailable {
+                    source: Box::new(e),
+                }
+            })?
+        };
+
+        Ok(outgoing_payments_by_document(&outgoing))
+    }
+
+    /// Every locally-known incoming [`MEMO_TAG_PAYMENT`]-tagged transfer
+    /// for `seed_hash`'s account-0 subwallet, keyed by the `PaymentRequest`
+    /// document ID its memo referenced, valued at the credits actually
+    /// received.
+    ///
+    /// This is the *requester's*-side counterpart to
+    /// [`Self::orchardpay_outgoing_payments_by_document`], and exists to
+    /// close the same kind of consistency gap: the separate incoming-memo
+    /// scan (`orchardpay_scan_incoming_memos`, which caches its findings
+    /// via `orchardpay_set_verified_payment_amount`) walks the raw note
+    /// stream independently of this wallet's own normal sync coordinator,
+    /// on its own resumable cursor — so it can genuinely lag behind a note
+    /// that's already visible in [`Self::shielded_activity`] (the Shielded
+    /// TXs tab), which reads the coordinator's already-synced local store
+    /// directly. A `PaymentRequest`'s "paid" status should never be less
+    /// current than what the Shielded TXs tab already shows for the same
+    /// note, so this reads the same already-synced notes and recovers
+    /// their memos the same way `shielded_activity` does (via
+    /// [`Self::orchardpay_recover_received_memos`]), independent of the
+    /// memo-scan's own cursor.
+    ///
+    /// Returns an empty map rather than an error when the wallet isn't
+    /// bound/registered yet this session, matching this file's existing
+    /// "not bound" convention.
+    pub async fn orchardpay_incoming_payments_by_document(
+        &self,
+        sdk: &dash_sdk::Sdk,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<BTreeMap<Identifier, u64>, TaskError> {
+        let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
+            return Ok(BTreeMap::new());
+        };
+        let subwallet_id = SubwalletId::new(wallet_id, 0);
+
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let notes = {
+            let store = coordinator.store().read().await;
+            store.get_all_notes(subwallet_id).map_err(|e| {
+                TaskError::ShieldedActivityUnavailable {
+                    source: Box::new(e),
+                }
+            })?
+        };
+
+        let positions: std::collections::BTreeSet<u64> = notes.iter().map(|n| n.position).collect();
+        let recovered_memos = self
+            .orchardpay_recover_received_memos(sdk, seed_hash, &positions)
+            .await;
+
+        Ok(incoming_payments_by_document(&notes, &recovered_memos))
+    }
+}
+
+/// Pure parsing step behind
+/// [`WalletBackend::orchardpay_outgoing_payments_by_document`]: filters
+/// `outgoing` down to [`MEMO_TAG_PAYMENT`]-tagged notes and maps each to
+/// the document ID its memo's 32-byte suffix names. A short or malformed
+/// memo — never produced by this wallet's own send path, but not assumed —
+/// is skipped rather than treated as a match.
+fn outgoing_payments_by_document(outgoing: &[ShieldedOutgoingNote]) -> BTreeMap<Identifier, u64> {
+    outgoing
+        .iter()
+        .filter_map(|note| {
+            if note.memo.len() < 36 || note.memo[..4] != MEMO_TAG_PAYMENT {
+                return None;
+            }
+            let document_id = Identifier::from_bytes(&note.memo[4..36]).ok()?;
+            Some((document_id, note.value))
+        })
+        .collect()
+}
+
+/// Pure parsing step behind
+/// [`WalletBackend::orchardpay_incoming_payments_by_document`]: pairs
+/// `notes` with their recovered memo (by position) and maps each
+/// [`MEMO_TAG_PAYMENT`]-tagged one to the document ID its memo names. A
+/// note with no recovered memo (not yet reached by
+/// `orchardpay_recover_received_memos`, e.g. a network hiccup on that
+/// chunk) is skipped rather than treated as a non-match — the caller
+/// re-derives this fresh on every call, so it's picked up on the next one.
+fn incoming_payments_by_document(
+    notes: &[ShieldedNote],
+    recovered_memos: &BTreeMap<u64, [u8; 36]>,
+) -> BTreeMap<Identifier, u64> {
+    notes
+        .iter()
+        .filter_map(|note| {
+            let memo = recovered_memos.get(&note.position)?;
+            if memo[..4] != MEMO_TAG_PAYMENT {
+                return None;
+            }
+            let document_id = Identifier::from_bytes(&memo[4..36]).ok()?;
+            Some((document_id, note.value))
+        })
+        .collect()
 }
 
 /// Decode an outgoing note's raw memo against OrchardPay's known tags.
@@ -452,9 +596,36 @@ fn decode_memo_label(memo: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_memo_label;
+    use super::{
+        ShieldedNote, ShieldedOutgoingNote, decode_memo_label, incoming_payments_by_document,
+        outgoing_payments_by_document,
+    };
     use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
     use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
+    use dash_sdk::platform::Identifier;
+    use std::collections::BTreeMap;
+
+    fn outgoing_note(memo: Vec<u8>, value: u64) -> ShieldedOutgoingNote {
+        ShieldedOutgoingNote {
+            cmx: [0u8; 32],
+            recipient: vec![0u8; 43],
+            value,
+            memo,
+            block_height: 100,
+        }
+    }
+
+    fn received_note(position: u64, value: u64) -> ShieldedNote {
+        ShieldedNote {
+            position,
+            cmx: [0u8; 32],
+            nullifier: [0u8; 32],
+            block_height: 100,
+            is_spent: false,
+            value,
+            note_data: Vec::new(),
+        }
+    }
 
     #[test]
     fn recognizes_contact_anchor_memo_tag() {
@@ -482,5 +653,83 @@ mod tests {
     #[test]
     fn empty_memo_is_labeled_explicitly() {
         assert_eq!(decode_memo_label(&[]), "No memo");
+    }
+
+    #[test]
+    fn maps_payment_tagged_outgoing_notes_by_document_id() {
+        let document_id = Identifier::from([7u8; 32]);
+        let mut memo = vec![0u8; 36];
+        memo[..4].copy_from_slice(&MEMO_TAG_PAYMENT);
+        memo[4..].copy_from_slice(&document_id.to_buffer());
+
+        let map = outgoing_payments_by_document(&[outgoing_note(memo, 12_345)]);
+
+        assert_eq!(map.get(&document_id), Some(&12_345));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn ignores_notes_without_the_payment_tag() {
+        let map = outgoing_payments_by_document(&[outgoing_note(vec![0u8; 36], 999)]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn ignores_a_memo_shorter_than_the_tagged_document_id_layout() {
+        let mut memo = vec![0u8; 10];
+        memo[..4].copy_from_slice(&MEMO_TAG_PAYMENT);
+        let map = outgoing_payments_by_document(&[outgoing_note(memo, 1)]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn keeps_multiple_distinct_payments_separate() {
+        let doc_a = Identifier::from([1u8; 32]);
+        let doc_b = Identifier::from([2u8; 32]);
+        let mut memo_a = vec![0u8; 36];
+        memo_a[..4].copy_from_slice(&MEMO_TAG_PAYMENT);
+        memo_a[4..].copy_from_slice(&doc_a.to_buffer());
+        let mut memo_b = vec![0u8; 36];
+        memo_b[..4].copy_from_slice(&MEMO_TAG_PAYMENT);
+        memo_b[4..].copy_from_slice(&doc_b.to_buffer());
+
+        let map = outgoing_payments_by_document(&[
+            outgoing_note(memo_a, 100),
+            outgoing_note(memo_b, 200),
+        ]);
+
+        assert_eq!(map.get(&doc_a), Some(&100));
+        assert_eq!(map.get(&doc_b), Some(&200));
+    }
+
+    #[test]
+    fn maps_payment_tagged_received_notes_by_document_id() {
+        let document_id = Identifier::from([9u8; 32]);
+        let mut memo = [0u8; 36];
+        memo[..4].copy_from_slice(&MEMO_TAG_PAYMENT);
+        memo[4..].copy_from_slice(&document_id.to_buffer());
+        let mut recovered = BTreeMap::new();
+        recovered.insert(5u64, memo);
+
+        let map = incoming_payments_by_document(&[received_note(5, 555)], &recovered);
+
+        assert_eq!(map.get(&document_id), Some(&555));
+    }
+
+    #[test]
+    fn a_note_with_no_recovered_memo_is_skipped_not_treated_as_unmatched() {
+        // Position 5 has no entry in `recovered` at all — e.g. that chunk's
+        // memo recovery hasn't completed yet — so it must be absent from
+        // the result, not silently mapped as "no payment".
+        let map = incoming_payments_by_document(&[received_note(5, 1)], &BTreeMap::new());
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn ignores_received_notes_without_the_payment_tag() {
+        let mut recovered = BTreeMap::new();
+        recovered.insert(1u64, [0u8; 36]);
+        let map = incoming_payments_by_document(&[received_note(1, 1)], &recovered);
+        assert!(map.is_empty());
     }
 }
