@@ -10,7 +10,9 @@ use crate::backend_task::orchardpay::encryption::MessageContent;
 use crate::backend_task::orchardpay::messages::ThreadMessage;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dpns::strip_dash_suffix;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -18,7 +20,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
 };
-use crate::ui::components::top_panel::add_top_panel_with_label;
+use crate::ui::components::top_panel::add_top_panel_with_breadcrumb_and_label;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -63,6 +65,15 @@ pub struct MessageThreadScreen {
     /// amount — used only to pre-fill the composer, not to lock it).
     fulfilling_request: Option<(Identifier, u64)>,
     refresh_banner: Option<BannerHandle>,
+    /// The active identity's own primary DPNS name, for the "You" message
+    /// label. `None` falls back to "You" — shouldn't normally happen since
+    /// OrchardPay requires a DPNS name to use at all.
+    my_name: Option<String>,
+    /// The counterparty's name, cached on the established contact state
+    /// (`OrchardPayContactState::Established.name`) — the same name
+    /// Contacts/Most Recent already show, read locally with no network
+    /// call. `None` falls back to "Them" / the raw identity ID.
+    counterparty_name: Option<String>,
 }
 
 impl MessageThreadScreen {
@@ -87,6 +98,12 @@ impl MessageThreadScreen {
             .cloned();
         let selected_wallet =
             get_selected_wallet(&identity, Some(app_context), None).unwrap_or(None);
+        let my_name = identity
+            .dpns_names
+            .first()
+            .map(|n| strip_dash_suffix(&n.name).to_string());
+        let counterparty_name =
+            Self::resolve_counterparty_name(app_context, &identity, counterparty_identity_id);
 
         Self {
             app_context: app_context.clone(),
@@ -107,6 +124,30 @@ impl MessageThreadScreen {
             sending: false,
             fulfilling_request: None,
             refresh_banner: None,
+            my_name,
+            counterparty_name,
+        }
+    }
+
+    /// Read the counterparty's name off the locally cached established
+    /// contact state — local KV read, no network call. `None` if the
+    /// relationship isn't `Established` (shouldn't happen for a screen only
+    /// reachable via an established contact's "Open Conversation" button) or
+    /// no name was ever resolved for it.
+    fn resolve_counterparty_name(
+        app_context: &Arc<AppContext>,
+        identity: &QualifiedIdentity,
+        counterparty_identity_id: Identifier,
+    ) -> Option<String> {
+        let backend = app_context.wallet_backend().ok()?;
+        let state = backend
+            .orchardpay_get_contact_state(&identity.identity.id(), &counterparty_identity_id)
+            .ok()??;
+        match state {
+            OrchardPayContactState::Established { name, .. } => {
+                name.map(|n| strip_dash_suffix(&n).to_string())
+            }
+            _ => None,
         }
     }
 
@@ -238,7 +279,11 @@ impl MessageThreadScreen {
         message: &ThreadMessage,
     ) -> Option<(Identifier, u64)> {
         let dark_mode = ui.style().visuals.dark_mode;
-        let sender_label = if message.from_me { "You" } else { "Them" };
+        let sender_label = if message.from_me {
+            self.my_name.as_deref().unwrap_or("You")
+        } else {
+            self.counterparty_name.as_deref().unwrap_or("Them")
+        };
         let mut reply_target = None;
 
         ui.group(|ui| {
@@ -348,6 +393,13 @@ impl MessageThreadScreen {
 impl ScreenLike for MessageThreadScreen {
     fn refresh(&mut self) {
         self.load_dispatched = false;
+        // Re-read in case the name wasn't resolved yet when this screen was
+        // constructed (e.g. opened right as the contact became established).
+        self.counterparty_name = Self::resolve_counterparty_name(
+            &self.app_context,
+            &self.identity,
+            self.counterparty_identity_id,
+        );
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -383,17 +435,69 @@ impl ScreenLike for MessageThreadScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        // "OrchardPay > wallet > my name", matching the rest of the app's
+        // "root > wallet > name" breadcrumb shape instead of a static
+        // "Conversation" label. The *other* party's name is deliberately
+        // not repeated here — it's already shown in the "Conversation with
+        // <name>" heading below; this breadcrumb's job is to say which of
+        // my own identities is having this conversation.
+        let wallet_name = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok())
+            .map(|w| w.alias.clone().unwrap_or_else(|| "Wallet".to_string()))
+            .unwrap_or_else(|| "Wallet".to_string());
+        let my_label = self.my_name.clone().unwrap_or_else(|| {
+            crate::model::address::truncate_address(
+                &self.identity.identity.id().to_string(Encoding::Base58),
+                8,
+                6,
+            )
+        });
         let breadcrumbs = vec![
             (
                 "OrchardPay",
                 AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenOrchardPay),
             ),
-            ("Conversation", AppAction::None),
+            (wallet_name.as_str(), AppAction::None),
+            (my_label.as_str(), AppAction::None),
         ];
-        let mut action = add_top_panel_with_label(
+        // A custom breadcrumb closure instead of add_top_panel_with_label:
+        // that helper's shared add_location_view renders every segment at a
+        // fixed 22pt (the app-wide convention for breadcrumb-style detail
+        // screens), which reads as oversized next to the plain-default-size
+        // page label the OrchardPay tab's own top panel uses. This mirrors
+        // add_location_view's structure — clickable segments, "›" separator
+        // — just without the font override, so it visually matches the tab
+        // panel this screen otherwise mirrors (subscreen nav, etc.).
+        let dark_mode = ui.style().visuals.dark_mode;
+        let mut action = add_top_panel_with_breadcrumb_and_label(
             ui,
             &self.app_context,
-            breadcrumbs,
+            |ui| {
+                let mut breadcrumb_action = AppAction::None;
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let len = breadcrumbs.len();
+                        for (idx, (text, seg_action)) in breadcrumbs.into_iter().enumerate() {
+                            if ui
+                                .button(
+                                    RichText::new(text).color(DashColors::text_primary(dark_mode)),
+                                )
+                                .clicked()
+                            {
+                                breadcrumb_action = seg_action;
+                            }
+                            if idx < len - 1 {
+                                ui.label(
+                                    RichText::new("›").color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+                        }
+                    });
+                });
+                breadcrumb_action
+            },
             vec![],
             self.shielded_balance_label(),
         );
@@ -483,9 +587,14 @@ impl ScreenLike for MessageThreadScreen {
                 }
             }
 
-            ui.heading(RichText::new(
-                self.counterparty_identity_id.to_string(Encoding::Base58),
-            ));
+            let heading = match &self.counterparty_name {
+                Some(name) => format!("Conversation with {name}"),
+                None => format!(
+                    "Conversation with {}",
+                    self.counterparty_identity_id.to_string(Encoding::Base58)
+                ),
+            };
+            ui.heading(RichText::new(heading));
             ui.add_space(8.0);
 
             if self.loading && self.messages.is_empty() {

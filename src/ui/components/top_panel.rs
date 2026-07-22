@@ -379,6 +379,21 @@ pub fn add_top_panel_with_breadcrumb(
     render_top_island(ui, app_context, breadcrumb, right_buttons, None)
 }
 
+/// Like [`add_top_panel_with_breadcrumb`], but also renders `right_label` as
+/// a plain, non-interactive readout anchored to the far right edge of the
+/// island — e.g. a balance summary — same as
+/// [`add_top_panel_with_label`]/[`add_top_panel_with_global_nav_and_label`]
+/// offer for their own left-region styles.
+pub fn add_top_panel_with_breadcrumb_and_label(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    breadcrumb: impl FnOnce(&mut Ui) -> AppAction,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+    right_label: Option<String>,
+) -> AppAction {
+    render_top_island(ui, app_context, breadcrumb, right_buttons, right_label)
+}
+
 /// Standard how-to-change tooltip for an unwired wallet pill (FR-GLOBAL-NAV-2
 /// rule 3). A single translation unit; keep it a complete sentence.
 const TT_WALLET_UNWIRED: &str = "Change the active wallet from the Wallets tab.";

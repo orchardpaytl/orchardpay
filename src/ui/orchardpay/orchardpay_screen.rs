@@ -25,6 +25,7 @@ use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResu
 use crate::backend_task::orchardpay::messages::RecentContactActivity;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dpns::strip_dash_suffix;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::orchardpay::{OrchardPayContactState, ShieldedActivityRow};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -447,7 +448,7 @@ impl OrchardPayScreen {
 
             ui.group(|ui| {
                 match &name {
-                    Some(name) => ui.label(RichText::new(name)),
+                    Some(name) => ui.label(RichText::new(strip_dash_suffix(name))),
                     None => {
                         ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace())
                     }
@@ -573,7 +574,7 @@ impl OrchardPayScreen {
 
             ui.group(|ui| {
                 match &name {
-                    Some(name) => ui.label(RichText::new(name)),
+                    Some(name) => ui.label(RichText::new(strip_dash_suffix(name))),
                     None => ui.label(
                         RichText::new(entry.identity_id.to_string(Encoding::Base58)).monospace(),
                     ),
@@ -820,7 +821,7 @@ impl OrchardPayScreen {
         for result in self.search_results.clone() {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&result.username);
+                    ui.label(strip_dash_suffix(&result.username));
                     match &result.existing_relationship {
                         Some(OrchardPayContactState::PendingOutbound { .. }) => {
                             ui.label(
