@@ -935,6 +935,15 @@ As a user, I want to edit or delete a message I sent so that I can correct mista
 - The `encryptedMessage` schema already supports mutation and deletion, and the thread view already renders an "(edited)" indicator when a message's update time differs from its creation time.
 - No compose-side edit or delete action exists yet in the UI — messages can only be sent, not modified afterward from this app.
 
+### ORP-011: Review my shielded notes as unspent and spent [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want to see my wallet's shielded notes grouped into what's still spendable and what's already been used, so that I can tell my real available balance apart from history.
+
+- The Shielded TXs tab (formerly "Payments") lists notes in two sections: Unspent Notes (still contributing to spendable balance, with a note count and running total) and Spent Notes (notes already consumed, plus every outgoing send).
+- Within Spent Notes, a spent note is shown side by side with the outgoing send of the same amount that most likely consumed it, when one exists; unmatched notes and sends are shown on their own.
+- The pairing is a best-effort amount match, not true note-level linkage — when several notes share an amount (e.g. repeated contact-request signals), a pairing may not be the literal note that was spent.
+
 ---
 
 ## Token Operations (TOK)

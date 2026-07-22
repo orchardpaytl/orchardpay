@@ -528,7 +528,7 @@ impl ScreenLike for MessageThreadScreen {
                 AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::MostRecent),
             ),
             SubscreenNavItem::new(
-                "Payments",
+                "Shielded TXs",
                 false,
                 AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Payments),
             ),

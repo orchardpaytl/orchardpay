@@ -11,7 +11,7 @@
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
 use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
-use crate::model::orchardpay::ShieldedActivityRow;
+use crate::model::orchardpay::{ShieldedActivityRow, ShieldedNoteKind};
 use crate::model::wallet::WalletSeedHash;
 use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
 use std::sync::Arc;
@@ -337,7 +337,7 @@ impl WalletBackend {
     }
 
     /// Read-only shielded transaction history (sent + received) for
-    /// `seed_hash`'s account-0 subwallet — the OrchardPay Payments tab's
+    /// `seed_hash`'s account-0 subwallet — the OrchardPay Shielded TXs tab's
     /// diagnostic view. One row per raw note, straight from
     /// `ShieldedStore::get_all_notes` (received) and `get_outgoing_notes`
     /// (sent) — no network calls, no writes, safe to call on every tab
@@ -409,10 +409,8 @@ impl WalletBackend {
                 None => "Memo not available for received notes".to_string(),
             };
             rows.push(ShieldedActivityRow {
-                kind_label: if note.is_spent {
-                    "Received (spent)"
-                } else {
-                    "Received"
+                kind: ShieldedNoteKind::Received {
+                    spent: note.is_spent,
                 },
                 amount_credits: note.value,
                 memo_label,
@@ -422,7 +420,7 @@ impl WalletBackend {
         }
         for out in &outgoing {
             rows.push(ShieldedActivityRow {
-                kind_label: "Sent",
+                kind: ShieldedNoteKind::Sent,
                 amount_credits: out.value,
                 memo_label: decode_memo_label(&out.memo),
                 block_height: Some(out.block_height),

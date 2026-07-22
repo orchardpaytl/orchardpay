@@ -1,6 +1,6 @@
 //! OrchardPay's consolidated private-contacts root screen (Milestone D):
 //! visually mirrors `DashPayScreen`/`DashPaySubscreen` — a left-hand
-//! subscreen nav with Profile / Contacts / Payments / Send Friend Request —
+//! subscreen nav with Profile / Contacts / Shielded TXs / Send Friend Request —
 //! but keeps a single screen instance with a local subscreen toggle rather
 //! than DashPay's one-`RootScreenType`-per-subscreen pattern (simpler, and
 //! OrchardPay has no need for deep-linkable subscreen URLs yet).
@@ -14,7 +14,7 @@
 //! and OrchardPay's contract is configured for this network — otherwise the
 //! screen guides the user through whichever is missing, in order. Within
 //! that, Contacts and Send Friend Request each additionally require a
-//! published `shieldedAddress` document (Profile and Payments don't).
+//! published `shieldedAddress` document (Profile and Shielded TXs don't).
 //! OrchardPay-bound ENCRYPTION/DECRYPTION keys are generated automatically
 //! as part of publishing that address
 //! (`backend_task::orchardpay::keys::ensure_own_orchardpay_keys`).
@@ -27,7 +27,9 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dpns::strip_dash_suffix;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::orchardpay::{OrchardPayContactState, ShieldedActivityRow};
+use crate::model::orchardpay::{
+    OrchardPayContactState, ShieldedActivityRow, SpentEntry, group_shielded_activity,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -99,6 +101,33 @@ fn format_duration_ago(duration: std::time::Duration) -> String {
     }
 }
 
+/// Renders one shielded-activity row as a labeled card: the kind/amount
+/// header, memo, and confirmation status. Shared between the Unspent Notes
+/// list and both sides of a Spent Notes pairing.
+fn render_shielded_note_card(ui: &mut Ui, row: &ShieldedActivityRow, dark_mode: bool) {
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(row.kind.label()).strong());
+            ui.label(format_credits_as_dash(row.amount_credits));
+        });
+        ui.label(
+            RichText::new(&row.memo_label)
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        let status_label = match (row.pending, row.block_height) {
+            (true, _) => "Pending".to_string(),
+            (false, Some(height)) => format!("Verified as of block {height}"),
+            (false, None) => "Verified".to_string(),
+        };
+        ui.label(
+            RichText::new(status_label)
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+    });
+}
+
 /// What, if anything, stands between the active identity and being able to
 /// use OrchardPay at all. Checked in this order because each step depends
 /// on the previous one (a DPNS name check is meaningless with no identity;
@@ -140,7 +169,7 @@ pub struct OrchardPayScreen {
     recent_activity: Option<Vec<RecentContactActivity>>,
     recent_activity_dispatched: bool,
     /// `None` = not fetched yet this visit (renders "Loading…"). Reset on
-    /// `refresh()` and by the Payments tab's "Refresh" button. Diagnostic
+    /// `refresh()` and by the Shielded TXs tab's "Refresh" button. Diagnostic
     /// view of the wallet's shielded transaction history — see
     /// `wallet_backend::shielded::shielded_activity`.
     shielded_activity: Option<Vec<ShieldedActivityRow>>,
@@ -671,33 +700,70 @@ impl OrchardPayScreen {
             return action;
         }
 
+        let view = group_shielded_activity(rows);
+
         ScrollArea::vertical()
             .id_salt("orchardpay_payments_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for row in &rows {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(row.kind_label).strong());
-                            ui.label(format_credits_as_dash(row.amount_credits));
-                        });
-                        ui.label(
-                            RichText::new(&row.memo_label)
-                                .size(11.0)
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        let status_label = match (row.pending, row.block_height) {
-                            (true, _) => "Pending".to_string(),
-                            (false, Some(height)) => format!("Verified as of block {height}"),
-                            (false, None) => "Verified".to_string(),
-                        };
-                        ui.label(
-                            RichText::new(status_label)
-                                .size(11.0)
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                    });
-                    ui.add_space(6.0);
+                ui.heading("Unspent Notes");
+                ui.label(
+                    RichText::new(format!(
+                        "{} note{} · {} total",
+                        view.unspent_count,
+                        if view.unspent_count == 1 { "" } else { "s" },
+                        format_credits_as_dash(view.unspent_total_credits)
+                    ))
+                    .size(11.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                if view.unspent.is_empty() {
+                    ui.label(
+                        RichText::new("No unspent notes.")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                } else {
+                    for row in &view.unspent {
+                        render_shielded_note_card(ui, row, dark_mode);
+                        ui.add_space(6.0);
+                    }
+                }
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.heading("Spent Notes");
+                ui.label(
+                    RichText::new(
+                        "Where a same-amount send matches a spent note, they're shown side by \
+                         side as a best-effort pairing — not a guaranteed link between the two.",
+                    )
+                    .size(11.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(6.0);
+                if view.spent.is_empty() {
+                    ui.label(
+                        RichText::new("No spent notes yet.")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                } else {
+                    for entry in &view.spent {
+                        match entry {
+                            SpentEntry::Pair { spent, sent } => {
+                                ui.columns(2, |columns| {
+                                    render_shielded_note_card(&mut columns[0], spent, dark_mode);
+                                    render_shielded_note_card(&mut columns[1], sent, dark_mode);
+                                });
+                            }
+                            SpentEntry::SpentOnly(row) | SpentEntry::SentOnly(row) => {
+                                render_shielded_note_card(ui, row, dark_mode);
+                            }
+                        }
+                        ui.add_space(6.0);
+                    }
                 }
             });
 
@@ -1011,7 +1077,7 @@ impl ScreenLike for OrchardPayScreen {
         if readiness == LocalReadiness::ContractConfigured {
             // Kick off (once) the shielded-address check the Contacts/Send
             // Friend Request tabs need — cheap and harmless to run even
-            // while viewing Profile/Payments. Already skipped (dispatched
+            // while viewing Profile/Shielded TXs. Already skipped (dispatched
             // guard pre-set) when `new()`/`refresh()` seeded a confirmed
             // `Some(true)` from the local cache.
             if self.has_shielded_address.is_none()
@@ -1043,7 +1109,7 @@ impl ScreenLike for OrchardPayScreen {
                     AppAction::Custom(TAB_MOST_RECENT.to_string()),
                 ),
                 SubscreenNavItem::new(
-                    "Payments",
+                    "Shielded TXs",
                     self.orchardpay_subscreen == OrchardPaySubscreen::Payments,
                     AppAction::Custom(TAB_PAYMENTS.to_string()),
                 ),
