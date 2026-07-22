@@ -29,6 +29,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{
     BannerHandle, Component, ComponentResponse, MessageBanner, OptionBannerExt,
 };
+use crate::ui::dashpay::format_relative_time;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
 use crate::ui::theme::DashColors;
@@ -39,6 +40,17 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui::{RichText, Ui};
 use std::sync::{Arc, RwLock};
+
+/// Leading space before one of my own message bubbles — roughly a
+/// 7-character indent at the default 14px body text size, so incoming and
+/// outgoing messages read as visually distinct columns.
+const MY_MESSAGE_INDENT: f32 = 28.0;
+
+/// Cap on a message bubble's width, so a short message doesn't stretch
+/// into a nearly-empty row just to make room for the right-aligned
+/// timestamp, and a long one wraps instead of running off the screen.
+/// Clamped against the available width so it still fits a narrow window.
+const MESSAGE_BUBBLE_MAX_WIDTH: f32 = 480.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeKind {
@@ -316,100 +328,140 @@ impl MessageThreadScreen {
             .last_shielded_sync_completed_at()
             .is_some();
 
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(sender_label).strong());
-                if message.updated_at.is_some() && message.updated_at != message.created_at {
-                    ui.label(
-                        RichText::new("(edited)").color(DashColors::text_secondary(dark_mode)),
+        ui.horizontal(|ui| {
+            if message.from_me {
+                // Approximates a 7-character indent at the default body
+                // text size, so the back-and-forth is easier to follow at
+                // a glance — my own messages read as a visually distinct
+                // "column" from the counterparty's.
+                ui.add_space(MY_MESSAGE_INDENT);
+            }
+            ui.group(|ui| {
+                // Bounds the bubble's width so it shrink-wraps to its
+                // content instead of stretching to fill the row just to
+                // make room for the right-aligned timestamp below, and so
+                // a long message wraps instead of running off the screen.
+                ui.set_max_width(ui.available_width().min(MESSAGE_BUBBLE_MAX_WIDTH));
+                // A `Frame`-based container (which `ui.group` is) inherits
+                // its parent's layout direction when none is given — and
+                // the surrounding indent wrapper above is a `horizontal`,
+                // so without this the whole bubble (header row, body,
+                // PAID label, buttons — everything) would flow left-to-
+                // right instead of stacking, landing to the right of the
+                // timestamp instead of below it.
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::Sides::new().show(
+                        ui,
+                        |ui| {
+                            ui.label(RichText::new(sender_label).strong());
+                            if message.updated_at.is_some()
+                                && message.updated_at != message.created_at
+                            {
+                                ui.label(
+                                    RichText::new("(edited)")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+                        },
+                        |ui| {
+                            if let Some(timestamp) =
+                                message.created_at.and_then(format_relative_time)
+                            {
+                                ui.label(
+                                    RichText::new(timestamp)
+                                        .size(11.0)
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+                        },
                     );
-                }
-            });
 
-            match &message.content {
-                MessageContent::Message { data } => {
-                    ui.label(data);
-                }
-                MessageContent::Payment { amount, memo } => {
-                    let display_amount = message.verified_amount.unwrap_or(*amount);
-                    ui.label(
-                        RichText::new(format!(
-                            "Payment: {}",
-                            format_credits_as_dash(display_amount)
-                        ))
-                        .strong(),
-                    );
-                    if let Some(verified) = message.verified_amount
-                        && verified != *amount
-                    {
-                        ui.label(
-                            RichText::new(format!(
-                                "This message claims {}, but the actual transfer was {}.",
-                                format_credits_as_dash(*amount),
-                                format_credits_as_dash(verified)
-                            ))
-                            .color(DashColors::warning_color(dark_mode)),
-                        );
-                    }
-                    if let Some(memo) = memo {
-                        ui.label(memo);
-                    }
-                }
-                MessageContent::PaymentRequest { amount, memo } => {
-                    ui.label(
-                        RichText::new(format!(
-                            "Payment request: {}",
-                            format_credits_as_dash(*amount)
-                        ))
-                        .strong(),
-                    );
-                    if let Some(memo) = memo {
-                        ui.label(memo);
-                    }
-                    match message.verified_amount {
-                        Some(paid_amount) if paid_amount == *amount => {
-                            ui.label(
-                                RichText::new(format!(
-                                    "PAID — {}",
-                                    format_credits_as_dash(paid_amount)
-                                ))
-                                .strong()
-                                .color(DashColors::success_color(dark_mode)),
-                            );
+                    match &message.content {
+                        MessageContent::Message { data } => {
+                            ui.label(data);
                         }
-                        Some(paid_amount) => {
+                        MessageContent::Payment { amount, memo } => {
+                            let display_amount = message.verified_amount.unwrap_or(*amount);
                             ui.label(
                                 RichText::new(format!(
-                                    "PAID — but the amount received was {} (requested {})",
-                                    format_credits_as_dash(paid_amount),
+                                    "Payment: {}",
+                                    format_credits_as_dash(display_amount)
+                                ))
+                                .strong(),
+                            );
+                            if let Some(verified) = message.verified_amount
+                                && verified != *amount
+                            {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "This message claims {}, but the actual transfer was {}.",
+                                        format_credits_as_dash(*amount),
+                                        format_credits_as_dash(verified)
+                                    ))
+                                    .color(DashColors::warning_color(dark_mode)),
+                                );
+                            }
+                            if let Some(memo) = memo {
+                                ui.label(memo);
+                            }
+                        }
+                        MessageContent::PaymentRequest { amount, memo } => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Payment request: {}",
                                     format_credits_as_dash(*amount)
                                 ))
-                                .strong()
-                                .color(DashColors::warning_color(dark_mode)),
+                                .strong(),
                             );
-                        }
-                        None if !shielded_state_ready => {
-                            ui.label(
-                                RichText::new("Checking payment status…")
-                                    .italics()
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                        }
-                        None if message.from_me => {
-                            ui.label(
-                                RichText::new("Awaiting payment")
-                                    .italics()
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                        }
-                        None => {
-                            if ui.button("Pay").clicked() {
-                                reply_target = Some((message.document_id, *amount));
+                            if let Some(memo) = memo {
+                                ui.label(memo);
+                            }
+                            match message.verified_amount {
+                                Some(paid_amount) if paid_amount == *amount => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "PAID — {}",
+                                            format_credits_as_dash(paid_amount)
+                                        ))
+                                        .strong()
+                                        .color(DashColors::success_color(dark_mode)),
+                                    );
+                                }
+                                Some(paid_amount) => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "PAID — but the amount received was {} (requested {})",
+                                            format_credits_as_dash(paid_amount),
+                                            format_credits_as_dash(*amount)
+                                        ))
+                                        .strong()
+                                        .color(DashColors::warning_color(dark_mode)),
+                                    );
+                                }
+                                None if !shielded_state_ready => {
+                                    ui.label(
+                                        RichText::new("Checking payment status…")
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                                None if message.from_me => {
+                                    ui.label(
+                                        RichText::new("Awaiting payment")
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                                None => {
+                                    if ui.button("Pay").clicked() {
+                                        reply_target = Some((message.document_id, *amount));
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            }
+                });
+            });
         });
         ui.add_space(6.0);
         reply_target
