@@ -5,6 +5,7 @@
 //! "Message content schema for the three in-scope kinds".
 
 use crate::app::AppAction;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::encryption::MessageContent;
 use crate::backend_task::orchardpay::messages::ThreadMessage;
@@ -12,8 +13,13 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::dpns::strip_dash_suffix;
-use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::orchardpay::OrchardPayContactState;
+use crate::model::fee_estimation::{
+    format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
+};
+use crate::model::orchardpay::{
+    CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, is_credit_balance_blocked,
+    is_credit_balance_low,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -32,7 +38,7 @@ use crate::ui::components::{
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -95,6 +101,12 @@ pub struct MessageThreadScreen {
     /// Contacts/Most Recent already show, read locally with no network
     /// call. `None` falls back to "Them" / the raw identity ID.
     counterparty_name: Option<String>,
+    /// Set on construction and after a credit-spending action completes —
+    /// drained by `ui()` into a `RefreshIdentity` dispatch. Identity credit
+    /// balance has no live push like the shielded balance does, so this is
+    /// what keeps the top-panel readout and the low-credit action gates
+    /// reasonably current.
+    pending_identity_refresh: bool,
 }
 
 impl MessageThreadScreen {
@@ -148,6 +160,7 @@ impl MessageThreadScreen {
             refresh_banner: None,
             my_name,
             counterparty_name,
+            pending_identity_refresh: true,
         }
     }
 
@@ -179,18 +192,30 @@ impl MessageThreadScreen {
             .and_then(|w| w.read().ok().map(|w| w.seed_hash()))
     }
 
-    /// "Shielded balance: X DASH", rendered on the far right of the shared
-    /// top panel — the balance a `Payment`/`PaymentRequest` composed here
-    /// would draw from. Reads `AppContext::shielded_balance_credits`, an
-    /// in-memory snapshot the shielded sync event bridge keeps current — no
-    /// network call or task dispatch needed. `None` if no wallet is selected.
-    fn shielded_balance_label(&self) -> Option<String> {
+    /// "Identity Balance: X DASH · Low Credits   Shielded balance: Y DASH", rendered
+    /// on the far right of the shared top panel. The credit half reads
+    /// straight off `self.identity` (no live push exists for it, unlike
+    /// shielded balance — see `pending_identity_refresh`). The shielded half
+    /// is the balance a `Payment`/`PaymentRequest` composed here would draw
+    /// from — reads `AppContext::shielded_balance_credits`, an in-memory
+    /// snapshot the shielded sync event bridge keeps current, no network
+    /// call or task dispatch needed. `None` only if no wallet is selected.
+    fn balance_summary_label(&self) -> Option<String> {
         let seed_hash = self.seed_hash()?;
-        let balance = self.app_context.shielded_balance_credits(&seed_hash);
-        Some(format!(
-            "Shielded balance: {}",
-            format_credits_as_dash(balance)
-        ))
+        let shielded = self.app_context.shielded_balance_credits(&seed_hash);
+        let credits = self.identity.identity.balance();
+        let mut label = format!(
+            "Identity Balance: {}",
+            format_credits_as_dash_significant(credits, 4)
+        );
+        if is_credit_balance_low(credits) {
+            label.push_str("  ·  Low Credits");
+        }
+        label.push_str(&format!(
+            "                        Shielded balance: {}",
+            format_credits_as_dash_significant(shielded, 4)
+        ));
+        Some(label)
     }
 
     fn dispatch_load(&mut self) -> AppAction {
@@ -327,6 +352,7 @@ impl MessageThreadScreen {
             .connection_status()
             .last_shielded_sync_completed_at()
             .is_some();
+        let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
 
         ui.horizontal(|ui| {
             if message.from_me {
@@ -453,7 +479,11 @@ impl MessageThreadScreen {
                                     );
                                 }
                                 None => {
-                                    if ui.button("Pay").clicked() {
+                                    if ui
+                                        .add_enabled(!credit_blocked, egui::Button::new("Pay"))
+                                        .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                                        .clicked()
+                                    {
                                         reply_target = Some((message.document_id, *amount));
                                     }
                                 }
@@ -502,9 +532,38 @@ impl MessageThreadScreen {
                 ui.text_edit_multiline(&mut self.compose_text);
             }
             ComposeKind::Payment | ComposeKind::PaymentRequest => {
+                // A `Payment` spends from the shielded balance, so cap the
+                // input at what's actually available after the shielded
+                // transfer's own fee — `PaymentRequest` isn't a spend (it's
+                // just an ask), so it carries no cap. The widget persists
+                // across `compose_kind` switches within one compose
+                // session, so this must run every frame rather than only at
+                // creation, or a cap set while composing a Payment would
+                // wrongly bleed into a PaymentRequest (or vice versa).
+                let available = (self.compose_kind == ComposeKind::Payment)
+                    .then(|| self.seed_hash())
+                    .flatten()
+                    .map(|seed_hash| {
+                        let balance = self.app_context.shielded_balance_credits(&seed_hash);
+                        let fee = shielded_fee_for_actions(2, self.app_context.platform_version())
+                            .unwrap_or(0);
+                        balance.saturating_sub(fee)
+                    });
+
                 let widget = self.compose_amount_input.get_or_insert_with(|| {
                     AmountInput::new(Amount::new_dash(0.0)).with_label("Amount (DASH):")
                 });
+                match self.compose_kind {
+                    ComposeKind::Payment => {
+                        widget.set_max_amount(available);
+                        widget
+                            .set_max_exceeded_hint(Some("Insufficient Shielded Funds".to_string()));
+                    }
+                    _ => {
+                        widget.set_max_amount(None);
+                        widget.set_max_exceeded_hint(None);
+                    }
+                }
                 let response = widget.show(ui);
                 response.inner.update(&mut self.compose_amount);
                 ui.horizontal(|ui| {
@@ -515,8 +574,10 @@ impl MessageThreadScreen {
         }
         ui.add_space(6.0);
 
+        let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
         if ui
-            .add_enabled(!self.sending, egui::Button::new("Send"))
+            .add_enabled(!self.sending && !credit_blocked, egui::Button::new("Send"))
+            .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
             .clicked()
         {
             action |= self.send_clicked();
@@ -560,11 +621,13 @@ impl ScreenLike for MessageThreadScreen {
                 self.sending = false;
                 self.clear_composer();
                 self.pending_reload = true;
+                self.pending_identity_refresh = true;
             }
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.sending = false;
                 self.clear_composer();
                 self.pending_reload = true;
+                self.pending_identity_refresh = true;
             }
             _ => {}
         }
@@ -635,9 +698,16 @@ impl ScreenLike for MessageThreadScreen {
                 breadcrumb_action
             },
             vec![],
-            self.shielded_balance_label(),
+            self.balance_summary_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+
+        if self.pending_identity_refresh {
+            self.pending_identity_refresh = false;
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshIdentity(self.identity.clone()),
+            ));
+        }
 
         // Mirrors orchardpay_screen.rs's own subscreen nav so it stays
         // visible while viewing a conversation instead of disappearing.

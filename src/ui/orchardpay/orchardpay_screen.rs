@@ -20,15 +20,17 @@
 //! (`backend_task::orchardpay::keys::ensure_own_orchardpay_keys`).
 
 use crate::app::AppAction;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult;
 use crate::backend_task::orchardpay::messages::RecentContactActivity;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dpns::strip_dash_suffix;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{format_credits_as_dash, format_credits_as_dash_significant};
 use crate::model::orchardpay::{
-    OrchardPayContactState, ShieldedActivityRow, SpentEntry, group_shielded_activity,
+    CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, ShieldedActivityRow, SpentEntry,
+    group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -49,7 +51,7 @@ use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -174,6 +176,12 @@ pub struct OrchardPayScreen {
     /// `wallet_backend::shielded::shielded_activity`.
     shielded_activity: Option<Vec<ShieldedActivityRow>>,
     shielded_activity_dispatched: bool,
+    /// Set on construction, on `refresh()` (tab (re)entry), and after a
+    /// credit-spending action completes — drained by `ui()` into a
+    /// `RefreshIdentity` dispatch. Identity credit balance has no live push
+    /// like the shielded balance does, so this is what keeps the top-panel
+    /// readout and the low-credit action gates reasonably current.
+    pending_identity_refresh: bool,
 }
 
 impl OrchardPayScreen {
@@ -203,6 +211,7 @@ impl OrchardPayScreen {
             recent_activity_dispatched: false,
             shielded_activity: None,
             shielded_activity_dispatched: false,
+            pending_identity_refresh: true,
         }
     }
 
@@ -287,20 +296,36 @@ impl OrchardPayScreen {
         LocalReadiness::ContractConfigured
     }
 
-    /// "Shielded balance: X DASH", rendered on the far right of the shared top
-    /// panel so a user composing a Payment can see what they have to work
-    /// with without leaving OrchardPay. Reads
+    /// "Identity Balance: X DASH · Low Credits   Shielded balance: Y DASH", rendered
+    /// on the far right of the shared top panel so a user composing a
+    /// Payment can see what they have to work with without leaving
+    /// OrchardPay. The credit half reads straight off the resolved
+    /// `QualifiedIdentity` (no live push exists for it, unlike shielded
+    /// balance — see `pending_identity_refresh`) and is omitted if no
+    /// identity is resolved. The shielded half reads
     /// `AppContext::shielded_balance_credits` — an in-memory snapshot kept
     /// current by the shielded sync event bridge, no network call or task
-    /// dispatch needed. `None` if no wallet is selected yet.
-    fn shielded_balance_label(&self) -> Option<String> {
+    /// dispatch needed. `None` only if no wallet is selected yet.
+    fn balance_summary_label(&self) -> Option<String> {
         let wallet = self.selected_wallet.as_ref()?;
         let seed_hash = wallet.read().ok()?.seed_hash();
-        let balance = self.app_context.shielded_balance_credits(&seed_hash);
-        Some(format!(
+        let shielded = self.app_context.shielded_balance_credits(&seed_hash);
+        let mut label = String::new();
+        if let Some(credits) = self.identity.as_ref().map(|i| i.identity.balance()) {
+            label.push_str(&format!(
+                "Identity Balance: {}",
+                format_credits_as_dash_significant(credits, 4)
+            ));
+            if is_credit_balance_low(credits) {
+                label.push_str("  ·  Low Credits");
+            }
+            label.push_str("                        ");
+        }
+        label.push_str(&format!(
             "Shielded balance: {}",
-            format_credits_as_dash(balance)
-        ))
+            format_credits_as_dash_significant(shielded, 4)
+        ));
+        Some(label)
     }
 
     fn render_needs_identity(&self, ui: &mut Ui) -> AppAction {
@@ -396,6 +421,7 @@ impl OrchardPayScreen {
         let contacts = backend
             .orchardpay_list_contacts(&owner_id)
             .unwrap_or_default();
+        let credit_blocked = is_credit_balance_blocked(identity.identity.balance());
 
         ui.horizontal(|ui| {
             ui.label(
@@ -497,7 +523,11 @@ impl OrchardPayScreen {
                                 RichText::new("Wants to connect with you")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
-                            if ui.button("Accept").clicked() {
+                            if ui
+                                .add_enabled(!credit_blocked, egui::Button::new("Accept"))
+                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                                .clicked()
+                            {
                                 action |= self.accept_clicked(counterparty);
                             }
                         });
@@ -862,6 +892,11 @@ impl OrchardPayScreen {
 
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
+        let credit_blocked = self
+            .identity
+            .as_ref()
+            .map(|i| is_credit_balance_blocked(i.identity.balance()))
+            .unwrap_or(true);
 
         ui.heading("Send Friend Request");
         ui.add_space(6.0);
@@ -913,7 +948,11 @@ impl OrchardPayScreen {
                             );
                         }
                         None if result.contactable => {
-                            if ui.button("Add Contact").clicked() {
+                            if ui
+                                .add_enabled(!credit_blocked, egui::Button::new("Add Contact"))
+                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                                .clicked()
+                            {
                                 action |= self
                                     .initiate_clicked(result.identity_id, result.username.clone());
                             }
@@ -1020,6 +1059,7 @@ impl ScreenLike for OrchardPayScreen {
         self.recent_activity_dispatched = false;
         self.shielded_activity = None;
         self.shielded_activity_dispatched = false;
+        self.pending_identity_refresh = true;
         self.profile_screen.refresh();
     }
 
@@ -1058,6 +1098,12 @@ impl ScreenLike for OrchardPayScreen {
             BackendTaskSuccessResult::OrchardPayShieldedActivity(rows) => {
                 self.shielded_activity = Some(rows.clone());
             }
+            // A contact request (initiate/accept) publish — both spend
+            // identity credits, so the top-panel readout and the
+            // low-credit action gates need a fresh balance.
+            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.pending_identity_refresh = true;
+            }
             _ => {}
         }
         if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
@@ -1073,9 +1119,18 @@ impl ScreenLike for OrchardPayScreen {
             &self.app_context,
             subdued_everyday_spec("OrchardPay", RootScreenType::RootScreenOrchardPay),
             vec![],
-            self.shielded_balance_label(),
+            self.balance_summary_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+
+        if self.pending_identity_refresh
+            && let Some(identity) = self.identity.clone()
+        {
+            self.pending_identity_refresh = false;
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RefreshIdentity(identity),
+            ));
+        }
 
         if readiness == LocalReadiness::ContractConfigured {
             // Kick off (once) the shielded-address check the Contacts/Send

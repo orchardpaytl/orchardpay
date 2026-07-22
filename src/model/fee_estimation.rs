@@ -744,6 +744,36 @@ pub fn format_credits_as_dash(credits: u64) -> String {
     Amount::dash_from_credits(credits).to_string()
 }
 
+/// Round `value` to `sig_figs` significant decimal digits. `0.0` and
+/// non-finite inputs pass through unchanged — a display amount is never
+/// negative/NaN/infinite in practice, but this keeps the function total.
+fn round_to_significant_figures(value: f64, sig_figs: i32) -> f64 {
+    if value == 0.0 || !value.is_finite() {
+        return value;
+    }
+    let magnitude = value.abs().log10().floor() as i32;
+    let factor = 10f64.powi(sig_figs - 1 - magnitude);
+    (value * factor).round() / factor
+}
+
+/// Format credits as DASH rounded to `sig_figs` significant figures — for
+/// compact display contexts (e.g. a balance readout in the top panel) where
+/// [`format_credits_as_dash`]'s full 11-decimal-place precision is too long
+/// to be legible at a glance. Decimal places shown are derived from the
+/// *rounded* value's own magnitude (not the input's), so a value that rounds
+/// up into the next order of magnitude (e.g. 9.9995 → 10.00) still displays
+/// exactly `sig_figs` digits instead of one too many.
+pub fn format_credits_as_dash_significant(credits: u64, sig_figs: u32) -> String {
+    let rounded =
+        round_to_significant_figures(Amount::dash_from_credits(credits).to_f64(), sig_figs as i32);
+    let decimal_places = if rounded == 0.0 {
+        0
+    } else {
+        (sig_figs as i32 - 1 - rounded.abs().log10().floor() as i32).max(0)
+    };
+    format!("{:.*} DASH", decimal_places as usize, rounded)
+}
+
 /// Format an amount in duffs as DASH for display.
 pub fn format_duffs_as_dash(duffs: u64) -> String {
     Amount::dash_from_duffs(duffs).to_string()
@@ -1100,6 +1130,50 @@ mod tests {
     fn test_credit_transfer_estimate() {
         let estimator = PlatformFeeEstimator::new();
         assert_eq!(estimator.estimate_credit_transfer(), 100_000);
+    }
+
+    #[test]
+    fn significant_figures_rounds_small_balance_without_padding_to_full_precision() {
+        // 0.005 DASH — format_credits_as_dash would show 11 decimal places.
+        assert_eq!(
+            format_credits_as_dash_significant(500_000_000, 4),
+            "0.005000 DASH"
+        );
+    }
+
+    #[test]
+    fn significant_figures_rounds_ordinary_balance() {
+        // 5.4321... DASH rounds to 4 significant figures: 5.432.
+        assert_eq!(
+            format_credits_as_dash_significant(543_210_000_000, 4),
+            "5.432 DASH"
+        );
+    }
+
+    #[test]
+    fn significant_figures_rounds_up_into_next_magnitude() {
+        // 9.9995 DASH rounds up to 10.00 — one *more* digit of magnitude
+        // than the input, so decimal places must drop from 3 to 2 to keep
+        // exactly 4 significant figures.
+        assert_eq!(
+            format_credits_as_dash_significant(999_950_000_000, 4),
+            "10.00 DASH"
+        );
+    }
+
+    #[test]
+    fn significant_figures_of_zero_is_zero() {
+        assert_eq!(format_credits_as_dash_significant(0, 4), "0 DASH");
+    }
+
+    #[test]
+    fn significant_figures_of_large_balance_has_no_decimal_places() {
+        // 1234.5678... DASH rounds to 4 significant figures: 1235, an
+        // integer — decimal places must clamp to zero, not go negative.
+        assert_eq!(
+            format_credits_as_dash_significant(123_456_780_000_000, 4),
+            "1235 DASH"
+        );
     }
 
     #[test]

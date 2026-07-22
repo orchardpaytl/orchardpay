@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::orchardpay::{CREDIT_BLOCKED_TOOLTIP, is_credit_balance_blocked};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -14,7 +15,7 @@ use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -227,11 +228,16 @@ impl ScreenLike for ShieldedAddressSetupScreen {
             }
             ui.add_space(15.0);
 
-            let button_enabled = self.selected_key.is_some() && address_preview.is_some();
-            if ui
-                .add_enabled(button_enabled, egui::Button::new("Publish"))
-                .clicked()
-            {
+            let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
+            let button_enabled =
+                self.selected_key.is_some() && address_preview.is_some() && !credit_blocked;
+            let response = ui.add_enabled(button_enabled, egui::Button::new("Publish"));
+            let response = if credit_blocked {
+                response.disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+            } else {
+                response
+            };
+            if response.clicked() {
                 inner_action |= self.publish_clicked(ctx);
             }
 

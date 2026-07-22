@@ -243,6 +243,82 @@ pub fn group_shielded_activity(rows: Vec<ShieldedActivityRow>) -> ShieldedActivi
     }
 }
 
+/// Below this identity credit balance, OrchardPay screens show an
+/// informational "Low Credits" warning next to the balance readout.
+/// Actions are still allowed at this level. 0.005 DASH.
+pub const LOW_CREDIT_WARNING_THRESHOLD_CREDITS: u64 = 500_000_000;
+
+/// Below this identity credit balance, OrchardPay blocks any further
+/// credit-spending action (contact requests, messages, payment requests,
+/// payments, publishing a shielded address) rather than let the user hit an
+/// opaque insufficient-balance error from the network. 0.002 DASH.
+pub const CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS: u64 = 200_000_000;
+
+/// Whether an identity's credit balance is low enough to warrant a
+/// "Low Credits" warning (informational only — see
+/// [`is_credit_balance_blocked`] for the hard action-block).
+pub fn is_credit_balance_low(credits: u64) -> bool {
+    credits < LOW_CREDIT_WARNING_THRESHOLD_CREDITS
+}
+
+/// Whether an identity's credit balance is low enough that OrchardPay
+/// should block further credit-spending actions.
+pub fn is_credit_balance_blocked(credits: u64) -> bool {
+    credits < CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS
+}
+
+/// Shared tooltip text for a credit-spending action disabled by
+/// [`is_credit_balance_blocked`]. A single source of truth so the wording
+/// stays identical across every OrchardPay screen that gates on it.
+pub const CREDIT_BLOCKED_TOOLTIP: &str =
+    "Identity credit balance is too low for this action. Add credits to your identity to continue.";
+
+#[cfg(test)]
+mod credit_balance_threshold_tests {
+    use super::*;
+
+    #[test]
+    fn low_warning_triggers_strictly_below_threshold() {
+        assert!(is_credit_balance_low(
+            LOW_CREDIT_WARNING_THRESHOLD_CREDITS - 1
+        ));
+        assert!(!is_credit_balance_low(LOW_CREDIT_WARNING_THRESHOLD_CREDITS));
+        assert!(!is_credit_balance_low(
+            LOW_CREDIT_WARNING_THRESHOLD_CREDITS + 1
+        ));
+    }
+
+    #[test]
+    fn action_block_triggers_strictly_below_threshold() {
+        assert!(is_credit_balance_blocked(
+            CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS - 1
+        ));
+        assert!(!is_credit_balance_blocked(
+            CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS
+        ));
+        assert!(!is_credit_balance_blocked(
+            CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS + 1
+        ));
+    }
+
+    #[test]
+    fn zero_balance_is_low_and_blocked() {
+        assert!(is_credit_balance_low(0));
+        assert!(is_credit_balance_blocked(0));
+    }
+
+    #[test]
+    fn a_blocked_balance_is_also_low() {
+        // The block threshold sitting below the warning threshold is a
+        // compile-time constant, not something worth asserting on its own —
+        // this instead checks the behavior that actually matters: nothing
+        // can be blocked without also showing the low-credits warning.
+        let just_below_block = CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS - 1;
+        assert!(is_credit_balance_blocked(just_below_block));
+        assert!(is_credit_balance_low(just_below_block));
+    }
+}
+
 #[cfg(test)]
 mod shielded_activity_tests {
     use super::*;

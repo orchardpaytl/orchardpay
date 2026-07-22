@@ -955,6 +955,16 @@ As a user, I want a payment request to show as PAID once it's been fulfilled, so
 - Before this wallet's shielded state has finished loading (no sync pass has completed yet this session), a `PaymentRequest` bubble shows "Checking payment status…" instead of either a "Pay" button or an "Awaiting payment" label — an unconfirmed local state is never presented as "definitely not paid yet", and the payer specifically cannot fulfill a request until that check is possible. Once confirmed unpaid, the requester's own copy shows "Awaiting payment" so their side of the conversation is never silent either.
 - On both sides, a "PAID" status is never staler than what the Shielded TXs tab already shows for the same note: each side's own status cache (populated by the memo-detection scan/optimistic send-time write) is backed by a fallback that reconstructs the same answer directly from this wallet's already-synced notes, so a `PaymentRequest` doesn't linger as "Awaiting payment" or "Pay" after the paying transaction is already visible elsewhere in the app.
 
+### ORP-013: Be warned and protected before running out of credits or shielded funds [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want OrchardPay to show me my identity's credit balance and warn me before it runs too low, so that I don't get stuck mid-conversation with an opaque network error or accidentally try to pay more than I actually have.
+
+- OrchardPay's top panel shows the active identity's credit balance in DASH, next to the existing shielded balance readout.
+- Below 0.005 DASH of credits, the readout adds a "Low Credits" warning; this is informational only and doesn't block anything yet.
+- Below 0.002 DASH of credits, every credit-spending action in OrchardPay (sending or accepting a contact request, sending a message, sending a payment or payment request, publishing a shielded address) is disabled with a tooltip explaining why, instead of letting the user hit an opaque insufficient-balance error from the network.
+- Sending a shielded `Payment` (including paying a `PaymentRequest`) is capped at the wallet's actual available shielded balance, minus the transfer's own network fee; entering more shows "Insufficient Shielded Funds" instead of allowing the send.
+
 ---
 
 ## Token Operations (TOK)
