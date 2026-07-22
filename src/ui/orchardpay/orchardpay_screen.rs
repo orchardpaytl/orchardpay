@@ -52,7 +52,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use egui::{RichText, Ui};
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -670,33 +670,35 @@ impl OrchardPayScreen {
             return action;
         }
 
-        for row in &rows {
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(row.kind_label).strong());
-                    ui.label(format_credits_as_dash(row.amount_credits));
-                });
-                ui.label(
-                    RichText::new(&row.memo_label)
-                        .size(11.0)
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-                let status_label = match (row.pending, row.block_height) {
-                    (true, _) => "Pending".to_string(),
-                    (false, Some(height)) => format!("Confirmed at block {height}"),
-                    (false, None) => "Confirmed".to_string(),
-                };
-                let when = format_relative_time(row.created_at_ms)
-                    .map(|s| format!(" · {s}"))
-                    .unwrap_or_default();
-                ui.label(
-                    RichText::new(format!("{status_label}{when}"))
-                        .size(11.0)
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
+        ScrollArea::vertical()
+            .id_salt("orchardpay_payments_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for row in &rows {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(row.kind_label).strong());
+                            ui.label(format_credits_as_dash(row.amount_credits));
+                        });
+                        ui.label(
+                            RichText::new(&row.memo_label)
+                                .size(11.0)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                        let status_label = match (row.pending, row.block_height) {
+                            (true, _) => "Pending".to_string(),
+                            (false, Some(height)) => format!("Verified as of block {height}"),
+                            (false, None) => "Verified".to_string(),
+                        };
+                        ui.label(
+                            RichText::new(status_label)
+                                .size(11.0)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                    ui.add_space(6.0);
+                }
             });
-            ui.add_space(6.0);
-        }
 
         action
     }

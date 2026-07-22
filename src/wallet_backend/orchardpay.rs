@@ -32,6 +32,14 @@ use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
 
+/// Fixed MMR chunk size shielded note stream positions align to —
+/// `rs-drive`'s `SHIELDED_NOTES_CHUNK_POWER = 11`, i.e. `1 << 11`. A stable,
+/// versioned Platform protocol constant (not something DET can reach via a
+/// public SDK path — `dash_sdk` doesn't re-export it), used by
+/// `WalletBackend::orchardpay_recover_received_memos` to compute which
+/// aligned chunk a given note position falls in.
+const SHIELDED_NOTES_CHUNK_ALIGNMENT: u64 = 2048;
+
 /// One recognized signal found by the incoming-memo scan — either half of
 /// the `contactAnchor` handshake, or a [`MEMO_TAG_PAYMENT`]-tagged real
 /// value transfer (an unprompted `Payment` document, or a bare fulfillment
@@ -487,6 +495,87 @@ impl WalletBackend {
                 Ok((found, next_start_index))
             })
             .await
+    }
+
+    /// Best-effort recovery of the memo for each of `positions` — note
+    /// positions already known from `WalletBackend::shielded_activity`'s
+    /// `get_all_notes()` read — via a full decrypt of just the aligned
+    /// chunk(s) that contain them. The routine wallet sync only ever
+    /// extracts the memo-blind *compact* note (for efficiency — see
+    /// `try_decrypt_note` vs `try_decrypt_note_with_memo`), so a received
+    /// note's memo is never persisted anywhere; this re-derives it on
+    /// demand, purely for the Payments tab's display, the same
+    /// `try_decrypt_note_with_memo` full decrypt
+    /// `orchardpay_scan_incoming_memos` already uses.
+    ///
+    /// Targeted, not a rescan: only the MMR chunk(s) actually containing a
+    /// requested position are fetched (one request per distinct chunk,
+    /// deduplicated), not the whole history. Chunk alignment
+    /// ([`SHIELDED_NOTES_CHUNK_ALIGNMENT`]) is a fixed, versioned Platform
+    /// protocol constant, not something derivable at runtime through a
+    /// public SDK path.
+    ///
+    /// Never fails — a locked wallet, a network hiccup, or a stale position
+    /// just yields fewer (or zero) recovered memos, logged at `debug`. This
+    /// only enriches an already-complete note list; losing the enrichment
+    /// must never break the Payments tab.
+    pub(crate) async fn orchardpay_recover_received_memos(
+        &self,
+        sdk: &Sdk,
+        seed_hash: &WalletSeedHash,
+        positions: &std::collections::BTreeSet<u64>,
+    ) -> std::collections::BTreeMap<u64, [u8; 36]> {
+        if positions.is_empty() {
+            return std::collections::BTreeMap::new();
+        }
+        let scope = Self::hd_scope(seed_hash);
+        let network = self.inner.network;
+        let result = self
+            .inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let keys = OrchardKeySet::from_seed(seed, network, 0).map_err(|e| {
+                    TaskError::WalletBackend {
+                        source: Arc::new(e),
+                    }
+                })?;
+                let ivk = keys.prepared_ivk();
+
+                let aligned_starts: std::collections::BTreeSet<u64> = positions
+                    .iter()
+                    .map(|p| (p / SHIELDED_NOTES_CHUNK_ALIGNMENT) * SHIELDED_NOTES_CHUNK_ALIGNMENT)
+                    .collect();
+
+                let mut memos = std::collections::BTreeMap::new();
+                for start in aligned_starts {
+                    let mut stream =
+                        std::pin::pin!(sync_shielded_notes_stream(sdk, &ivk, start, None));
+                    let Some(Ok(batch)) = stream.next().await else {
+                        continue;
+                    };
+                    for (offset, note) in batch.notes.iter().enumerate() {
+                        let note_index = batch.start_index + offset as u64;
+                        if !positions.contains(&note_index) {
+                            continue;
+                        }
+                        if let Some((_, _, memo)) = try_decrypt_note_with_memo(&ivk, note) {
+                            memos.insert(note_index, memo);
+                        }
+                    }
+                }
+                Ok::<_, TaskError>(memos)
+            })
+            .await;
+
+        result.unwrap_or_else(|e| {
+            tracing::debug!(
+                error = ?e,
+                "OrchardPay: could not recover received-note memos for Payments display"
+            );
+            std::collections::BTreeMap::new()
+        })
     }
 
     /// Resolve the wallet's seed through the secret chokepoint and derive

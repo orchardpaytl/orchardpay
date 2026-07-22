@@ -69,32 +69,36 @@ pub enum OrchardPayContactState {
 }
 
 /// One row in the OrchardPay Payments tab's shielded transaction history —
-/// a DET-native display projection of
-/// `platform_wallet::wallet::shielded::ShieldedActivityEntry` (mirrors
-/// `RecentContactActivity`'s "own type crossing the seam" pattern, keeping
-/// the upstream type out of `ui/`). Built by
-/// `backend_task::orchardpay::shielded_activity_row_from_entry`, which is
-/// where the raw memo bytes get matched against `MEMO_TAG_ANCHOR` /
-/// `MEMO_TAG_PAYMENT` — this struct only ever holds the already-decoded
-/// result, so it has no dependency on `backend_task`.
+/// a DET-native projection built directly from
+/// `platform_wallet::wallet::shielded`'s raw per-note lists
+/// (`ShieldedStore::get_all_notes` / `get_outgoing_notes`), one row per
+/// note with no batch-based clustering — see
+/// `wallet_backend::shielded::shielded_activity`'s doc comment for why
+/// clustering (`derive_activity_from_scan_data`) was deliberately not used.
+/// That's also where the raw memo bytes get matched against
+/// `MEMO_TAG_ANCHOR` / `MEMO_TAG_PAYMENT` — this struct only ever holds the
+/// already-decoded result, so it has no dependency on `backend_task`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShieldedActivityRow {
-    /// Human-readable kind + direction, e.g. "Sent", "Received", "Shield",
-    /// "Unshield", "Withdrawal", "Identity Create", "Internal Spend".
+    /// Human-readable kind + direction, e.g. "Sent", "Received", "Received
+    /// (spent)".
     pub kind_label: &'static str,
-    /// Amount in credits (the operation principal, excluding change) —
-    /// format with `model::fee_estimation::format_credits_as_dash`.
+    /// Amount in credits — format with
+    /// `model::fee_estimation::format_credits_as_dash`.
     pub amount_credits: u64,
-    /// Already-decoded memo: "Contact request signal", "OrchardPay
-    /// payment", a truncated hex fallback for an unrecognized non-empty
-    /// memo, or "No memo".
+    /// Already-decoded memo for a Sent row ("Contact request signal",
+    /// "OrchardPay payment", a truncated hex fallback for an unrecognized
+    /// non-empty memo, or "No memo"). Received rows have no memo available
+    /// from this data source at all — see the struct-level doc comment —
+    /// so this reads "Memo not available for received notes" instead of
+    /// implying there wasn't one.
     pub memo_label: String,
-    /// Block height the operation confirmed at; `None` while pending or
-    /// not yet backfilled.
+    /// Block height the operation confirmed at. Always `Some` for a row
+    /// built from these lists — both only ever contain confirmed,
+    /// on-chain-verified entries. The sole chronological signal available
+    /// (no per-note wall-clock timestamp exists at this layer).
     pub block_height: Option<u64>,
-    /// Whether this row is still unconfirmed.
+    /// Whether this row is still unconfirmed. Always `false` for a row
+    /// built from these lists.
     pub pending: bool,
-    /// `SystemTime` (ms since epoch) at record time — format with
-    /// `ui::dashpay::format_relative_time`.
-    pub created_at_ms: u64,
 }
