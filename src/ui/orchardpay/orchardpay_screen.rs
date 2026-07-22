@@ -408,24 +408,19 @@ impl OrchardPayScreen {
         });
         ui.add_space(4.0);
 
-        // Diagnostics: helps tell "a contact request hasn't been processed
-        // yet" apart from "the shielded transfer/memo carrying it was never
-        // even detected". Last-sync tells you whether the background scan
-        // has run recently; the memo count tells you whether it's actually
-        // finding contactAnchor signals in your shielded transactions at
-        // all, independent of whether any handshake went on to succeed.
+        // Diagnostic: tells a stalled contact-request handshake apart from a
+        // wallet that simply hasn't synced recently. Per-note memo detail
+        // (including whether contactAnchor/payment memos are being found at
+        // all) now lives in the Shielded TXs tab instead of a count here.
         let connection_status = self.app_context.connection_status();
         let last_sync_label = match connection_status.last_shielded_sync_completed_at() {
             Some(at) => format_duration_ago(at.elapsed()),
             None => "not yet this session".to_string(),
         };
         ui.label(
-            RichText::new(format!(
-                "Last shielded sync: {last_sync_label} · Contact memos found: {}",
-                connection_status.orchardpay_anchor_memos_found()
-            ))
-            .size(11.0)
-            .color(DashColors::text_secondary(dark_mode)),
+            RichText::new(format!("Last shielded sync: {last_sync_label}"))
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
         );
         ui.add_space(8.0);
 

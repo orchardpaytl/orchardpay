@@ -53,16 +53,9 @@ pub async fn scan_for_incoming_anchors(
     // everything before it is safe to consider permanently scanned.
     let mut retry_from: Option<u64> = None;
     let mut anything_changed = false;
-    // Raw detection count at the shielded-note decryption layer — incremented
-    // as soon as a `contactAnchor`-tagged memo is found, before any per-
-    // identity handshake processing. Diagnostic: proves memo detection
-    // itself is working even when a contact-establishment attempt never
-    // reaches "Connected". See `ConnectionStatus::orchardpay_anchor_memos_found`.
-    let mut anchor_memos_found_this_pass: u64 = 0;
     for (note_index, signal) in found {
         match signal {
             IncomingMemoSignal::Anchor(anchor_document_id) => {
-                anchor_memos_found_this_pass += 1;
                 let mut applied = false;
                 let mut had_error = false;
                 for identity in &qualified_identities {
@@ -115,12 +108,6 @@ pub async fn scan_for_incoming_anchors(
                 }
             }
         }
-    }
-
-    if anchor_memos_found_this_pass > 0 {
-        app_context
-            .connection_status()
-            .add_orchardpay_anchor_memos_found(anchor_memos_found_this_pass);
     }
 
     backend.orchardpay_set_memo_scan_cursor(&seed_hash, retry_from.unwrap_or(next_start_index))?;
