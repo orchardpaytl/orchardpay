@@ -10,11 +10,13 @@ use crate::backend_task::orchardpay::encryption::MessageContent;
 use crate::backend_task::orchardpay::messages::ThreadMessage;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::dpns::strip_dash_suffix;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::orchardpay::OrchardPayContactState;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
@@ -24,7 +26,9 @@ use crate::ui::components::top_panel::add_top_panel_with_breadcrumb_and_label;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::components::{
+    BannerHandle, Component, ComponentResponse, MessageBanner, OptionBannerExt,
+};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
 use crate::ui::theme::DashColors;
@@ -57,7 +61,12 @@ pub struct MessageThreadScreen {
     pending_reload: bool,
     compose_kind: ComposeKind,
     compose_text: String,
-    compose_amount: String,
+    /// Amount for the Payment/Payment Request composer, entered in DASH
+    /// (the widget converts to/from credits internally via
+    /// `Amount::dash_from_credits`/`Amount::value`). `None` while empty or
+    /// invalid.
+    compose_amount: Option<Amount>,
+    compose_amount_input: Option<AmountInput>,
     compose_memo: String,
     sending: bool,
     /// Set when the user clicked "Pay" on a specific incoming
@@ -119,7 +128,8 @@ impl MessageThreadScreen {
             pending_reload: false,
             compose_kind: ComposeKind::Message,
             compose_text: String::new(),
-            compose_amount: String::new(),
+            compose_amount: None,
+            compose_amount_input: None,
             compose_memo: String::new(),
             sending: false,
             fulfilling_request: None,
@@ -188,7 +198,11 @@ impl MessageThreadScreen {
 
     fn clear_composer(&mut self) {
         self.compose_text.clear();
-        self.compose_amount.clear();
+        self.compose_amount = None;
+        // Dropped rather than reset in place: a fresh widget starts with an
+        // empty field (AmountInput::new's zero-amount special case),
+        // matching the prior `String::clear()` behavior.
+        self.compose_amount_input = None;
         self.compose_memo.clear();
         self.fulfilling_request = None;
     }
@@ -196,7 +210,10 @@ impl MessageThreadScreen {
     fn reply_to_request_clicked(&mut self, document_id: Identifier, amount: u64) {
         self.compose_kind = ComposeKind::Payment;
         self.fulfilling_request = Some((document_id, amount));
-        self.compose_amount = amount.to_string();
+        let dash_amount = Amount::dash_from_credits(amount);
+        self.compose_amount = Some(dash_amount.clone());
+        self.compose_amount_input =
+            Some(AmountInput::new(dash_amount).with_label("Amount (DASH):"));
     }
 
     fn send_clicked(&mut self) -> AppAction {
@@ -227,10 +244,10 @@ impl MessageThreadScreen {
                 }
             }
             ComposeKind::PaymentRequest => {
-                let Ok(amount) = self.compose_amount.trim().parse::<u64>() else {
+                let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "Enter a whole number of credits to request.",
+                        "Enter an amount in DASH to request.",
                         MessageType::Error,
                     );
                     return AppAction::None;
@@ -245,10 +262,10 @@ impl MessageThreadScreen {
                 }
             }
             ComposeKind::Payment => {
-                let Ok(amount) = self.compose_amount.trim().parse::<u64>() else {
+                let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "Enter a whole number of credits to send.",
+                        "Enter an amount in DASH to send.",
                         MessageType::Error,
                     );
                     return AppAction::None;
@@ -303,14 +320,20 @@ impl MessageThreadScreen {
                 MessageContent::Payment { amount, memo } => {
                     let display_amount = message.verified_amount.unwrap_or(*amount);
                     ui.label(
-                        RichText::new(format!("Payment: {display_amount} credits")).strong(),
+                        RichText::new(format!(
+                            "Payment: {}",
+                            format_credits_as_dash(display_amount)
+                        ))
+                        .strong(),
                     );
                     if let Some(verified) = message.verified_amount
                         && verified != *amount
                     {
                         ui.label(
                             RichText::new(format!(
-                                "This message claims {amount} credits, but the actual transfer was {verified}."
+                                "This message claims {}, but the actual transfer was {}.",
+                                format_credits_as_dash(*amount),
+                                format_credits_as_dash(verified)
                             ))
                             .color(DashColors::warning_color(dark_mode)),
                         );
@@ -320,7 +343,13 @@ impl MessageThreadScreen {
                     }
                 }
                 MessageContent::PaymentRequest { amount, memo } => {
-                    ui.label(RichText::new(format!("Payment request: {amount} credits")).strong());
+                    ui.label(
+                        RichText::new(format!(
+                            "Payment request: {}",
+                            format_credits_as_dash(*amount)
+                        ))
+                        .strong(),
+                    );
                     if let Some(memo) = memo {
                         ui.label(memo);
                     }
@@ -342,11 +371,13 @@ impl MessageThreadScreen {
         if let Some((_, requested_amount)) = self.fulfilling_request {
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Replying to a request for {requested_amount} credits."
+                    "Replying to a request for {}.",
+                    format_credits_as_dash(requested_amount)
                 ));
                 if ui.button("Cancel").clicked() {
                     self.fulfilling_request = None;
-                    self.compose_amount.clear();
+                    self.compose_amount = None;
+                    self.compose_amount_input = None;
                 }
             });
         }
@@ -367,10 +398,11 @@ impl MessageThreadScreen {
                 ui.text_edit_multiline(&mut self.compose_text);
             }
             ComposeKind::Payment | ComposeKind::PaymentRequest => {
-                ui.horizontal(|ui| {
-                    ui.label("Amount (credits):");
-                    ui.text_edit_singleline(&mut self.compose_amount);
+                let widget = self.compose_amount_input.get_or_insert_with(|| {
+                    AmountInput::new(Amount::new_dash(0.0)).with_label("Amount (DASH):")
                 });
+                let response = widget.show(ui);
+                response.inner.update(&mut self.compose_amount);
                 ui.horizontal(|ui| {
                     ui.label("Note (optional):");
                     ui.text_edit_singleline(&mut self.compose_memo);
