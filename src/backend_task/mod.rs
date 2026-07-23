@@ -580,6 +580,11 @@ pub enum BackendTaskSuccessResult {
     OrchardPayThreadLoaded {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         messages: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
+        /// Saved `PaymentRequestReceipt`s whose original `PaymentRequest`
+        /// no longer matches them (deleted, changed kind, or tampered
+        /// amount/memo). See `messages::load_thread`'s anomaly-detection
+        /// pass and `messages::ReceiptAlert`.
+        receipt_alerts: Vec<crate::backend_task::orchardpay::messages::ReceiptAlert>,
     },
     /// Result of `OrchardPayTask::SendPayment` — a real shielded transfer to
     /// `counterparty_identity_id` completed (either an unprompted `Payment`

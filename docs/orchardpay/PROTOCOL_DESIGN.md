@@ -840,6 +840,71 @@ don't re-trigger the gate, since the store is by then reasonably caught up
 and treated the same way the rest of the app treats incremental shielded
 updates.
 
+### `PaymentRequestReceipt`: a payer's own durable record (decided and implemented 2026-07-23)
+
+Editing/deletion above is deliberately unrestricted at the Platform layer —
+the tension it names is real: a requester can rewrite or delete their own
+`PaymentRequest` after it's been paid, and the app has no way to prevent
+that (Platform's ownership model is the only enforcement mechanism there
+is). The motivating scenario isn't even necessarily malicious: a requester
+doing a mass deletion of old OrchardPay messages to recoup the credits
+Platform refunds on document deletion would just as easily wipe out the
+payer's only record of what they paid and why.
+
+`PaymentRequestReceipt` is a fourth `MessageContent` kind, offered to the
+payer as an opt-in "Save Receipt" checkbox in the Pay confirmation modal
+(unchecked by default). If checked, before the real shielded transfer is
+sent, the payer broadcasts a receipt document carrying the `PaymentRequest`'s
+own `original_document_id`, `amount`, `memo`, and `original_created_at` —
+required, not best-effort: if the receipt fails to broadcast, the payment
+itself is aborted rather than sent with no record.
+
+```rust
+PaymentRequestReceipt {
+    original_document_id: [u8; 32],
+    amount: u64,
+    memo: Option<String>,
+    /// Captured at pay-time purely for display ordering — once the
+    /// original document is deleted, its own `$createdAt` goes with it,
+    /// so without this copy a surfaced alert would have nowhere reliable
+    /// to sit in the conversation's timeline.
+    original_created_at: Option<u64>,
+},
+```
+
+Two design points worth calling out explicitly:
+
+- **Same `refId` as everything else, not a document-ID-keyed tag.** The
+  receipt is broadcast under the payer's own normal `refId` — the same one
+  used for every other message/payment they send in this conversation —
+  so it rides along in `load_thread`'s existing two queries with no second
+  Platform fetch and no local marker storage. Both parties can technically
+  decrypt it (same ECDH scheme as `Message`/`Payment`/`PaymentRequest`,
+  not the wallet-local `anchorData` key) — that's accepted, since the
+  receipt is never rendered as a normal thread bubble regardless of who
+  can read it.
+- **Hidden unless it needs to be seen.** `load_thread` partitions
+  `PaymentRequestReceipt` entries out of the normal message list, then for
+  each checks whether the `PaymentRequest` it names still exists, is still
+  that kind, and still has the same amount/memo (ignoring a legitimate
+  `cancel_payment_request` cancellation, which is a separate, already-
+  handled state, not tampering). Only a real mismatch — deleted, changed
+  kind, or a same-kind amount/memo rewrite — surfaces the receipt, as a
+  warning panel placed at `original_created_at` in the timeline, never as
+  a bubble.
+
+Not a cryptographic non-repudiation proof — it's the payer's own claim, not
+signed by the requester over the original terms — and it's explicitly out
+of scope for a payer sabotaging their own evidence (deleting their own
+receipt later, from another device or session). It exists to make Platform's
+ownership-only enforcement model *visible* to the one party who'd otherwise
+have no way to notice, not to make tampering impossible.
+
+Named `PaymentRequestReceipt` rather than reusing the bare `Receipt` name
+mentioned above as still-undesigned future work — that placeholder is an
+unrelated, mutual purchase-receipt concept (both parties' own record of a
+completed transaction), not this payer-only tamper/deletion-evidence record.
+
 ## Dropped: `protocolVersion`
 
 The v0 draft carried a plaintext `protocolVersion` field on all three

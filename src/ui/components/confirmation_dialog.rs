@@ -1,6 +1,6 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::components::styled::styled_text_edit_singleline;
+use crate::ui::components::styled::{StyledCheckbox, styled_text_edit_singleline};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
@@ -67,6 +67,8 @@ pub struct ConfirmationDialog {
     blocks_input: bool,
     is_open: bool,
     opening_guard: ModalOpeningGuard,
+    checkbox_label: Option<WidgetText>,
+    checkbox_checked: bool,
 }
 
 impl Component for ConfirmationDialog {
@@ -114,6 +116,8 @@ impl ConfirmationDialog {
             blocks_input: false,
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
+            checkbox_label: None,
+            checkbox_checked: false,
         }
     }
 
@@ -156,6 +160,21 @@ impl ConfirmationDialog {
     pub fn open(mut self, open: bool) -> Self {
         self.is_open = open;
         self
+    }
+
+    /// Add an opt-in checkbox between the message and the buttons, defaulted
+    /// to `default_checked`. Purely additive — callers that never call this
+    /// see no change in rendering or behavior.
+    pub fn with_checkbox(mut self, label: impl Into<WidgetText>, default_checked: bool) -> Self {
+        self.checkbox_label = Some(label.into());
+        self.checkbox_checked = default_checked;
+        self
+    }
+
+    /// The checkbox's current state — `false` if `with_checkbox` was never
+    /// called. Read this once the dialog reports `Confirmed`.
+    pub fn checkbox_checked(&self) -> bool {
+        self.checkbox_checked
     }
 
     fn confirmation_text_matches(&self) -> bool {
@@ -206,6 +225,12 @@ impl ConfirmationDialog {
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add_space(20.0);
+
+                if let Some(label) = self.checkbox_label.clone() {
+                    StyledCheckbox::new(&mut self.checkbox_checked, label.text().to_string())
+                        .show(ui);
+                    ui.add_space(12.0);
+                }
 
                 if let Some(prompt) = self.confirmation_prompt.clone() {
                     ui.label(
@@ -315,6 +340,27 @@ impl ConfirmationDialog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkbox_is_absent_unless_requested() {
+        let dialog = ConfirmationDialog::new("Test Title", "Test Message");
+        assert!(dialog.checkbox_label.is_none());
+        assert!(!dialog.checkbox_checked());
+    }
+
+    #[test]
+    fn with_checkbox_sets_label_and_default() {
+        let dialog = ConfirmationDialog::new("Pay Request?", "Pay 1 DASH?")
+            .with_checkbox("Save Receipt", false);
+
+        assert!(
+            dialog
+                .checkbox_label
+                .clone()
+                .is_some_and(|t| t.text() == "Save Receipt")
+        );
+        assert!(!dialog.checkbox_checked());
+    }
 
     #[test]
     fn test_confirmation_dialog_creation() {

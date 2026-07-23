@@ -978,6 +978,15 @@ As a user, I want OrchardPay to show me my identity's credit balance and warn me
 - Below 0.002 DASH of credits, every credit-spending action in OrchardPay (sending or accepting a contact request, sending a message, sending a payment or payment request, publishing a shielded address) is disabled with a tooltip explaining why, instead of letting the user hit an opaque insufficient-balance error from the network.
 - Sending a shielded `Payment` (including paying a `PaymentRequest`) is capped at the wallet's actual available shielded balance, minus the transfer's own network fee; entering more shows "Insufficient Shielded Funds" instead of allowing the send.
 
+### ORP-014: Save a receipt when paying a request, in case it's later deleted or changed [Implemented]
+**Persona:** Alex, Priya
+
+As a user paying a payment request, I want the option to save my own record of what was requested, so that I still have proof of it even if the requester later deletes or rewrites their request.
+
+- The Pay confirmation modal for a `PaymentRequest` includes an unchecked-by-default "Save Receipt" checkbox.
+- When checked, before the real shielded payment is sent, the payer's wallet also broadcasts a receipt capturing the request's amount, memo, and original timestamp — required, not best-effort: if the receipt can't be saved, the payment itself is not sent either.
+- A saved receipt is never shown as a message in the conversation. It only surfaces — as a clearly marked warning, placed where the original request used to be in the timeline — if that request is later found to be deleted, changed into a different kind of message, or (still nominally a request) has a different amount or memo than what was originally paid. A legitimate cancellation of the request (via "Cancel Request") is not treated as tampering and never triggers this.
+
 ---
 
 ## Token Operations (TOK)

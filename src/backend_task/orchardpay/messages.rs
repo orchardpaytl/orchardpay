@@ -90,6 +90,45 @@ pub struct ThreadMessage {
     pub verified_amount: Option<u64>,
 }
 
+/// Why a [`ReceiptAlert`] was raised — mirrors the three ways a
+/// `PaymentRequest` the payer already has a `PaymentRequestReceipt` for can
+/// no longer be trusted at face value. See [`load_thread`]'s "detect
+/// receipt anomalies" pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptAlertReason {
+    /// No document with the receipt's `original_document_id` was found in
+    /// the thread at all — deleted, or never existed on this fetch.
+    OriginalDeleted,
+    /// A document with that ID exists, but its decrypted content is no
+    /// longer `MessageContent::PaymentRequest`.
+    OriginalChangedKind,
+    /// Still a `PaymentRequest`, not legitimately cancelled, but its
+    /// `amount`/`memo` no longer match what the receipt recorded.
+    OriginalAmountOrMemoMismatch,
+}
+
+/// A payer's saved `PaymentRequestReceipt` whose original `PaymentRequest`
+/// no longer matches it — surfaced by [`load_thread`] as a warning, never
+/// rendered as a normal thread bubble. Built entirely from data already
+/// decrypted while reconstructing the thread; no second Platform fetch.
+#[derive(Debug, Clone)]
+pub struct ReceiptAlert {
+    pub original_document_id: Identifier,
+    pub amount: u64,
+    pub memo: Option<String>,
+    pub original_created_at: Option<u64>,
+    pub reason: ReceiptAlertReason,
+}
+
+/// [`load_thread`]'s result: the real thread (never includes
+/// `PaymentRequestReceipt` entries — those are never shown as bubbles) plus
+/// any receipts whose original request no longer checks out.
+#[derive(Debug, Clone)]
+pub struct LoadedThread {
+    pub messages: Vec<ThreadMessage>,
+    pub receipt_alerts: Vec<ReceiptAlert>,
+}
+
 /// Build a synthetic `IdentityPublicKey` wrapping raw ECDH public key bytes
 /// cached on [`OrchardPayContactState::Established`]. Only
 /// `.key_type()`/`.data()` are ever read from this by
@@ -715,6 +754,9 @@ pub async fn send_payment(
     amount: u64,
     memo: Option<String>,
     fulfilling_request_document_id: Option<Identifier>,
+    save_receipt: bool,
+    original_request_memo: Option<String>,
+    original_request_created_at: Option<u64>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
@@ -736,7 +778,47 @@ pub async fn send_payment(
             .ok_or(OrchardPayError::CounterpartyKeyMissing)?;
 
     let memo_target_document_id = match fulfilling_request_document_id {
-        Some(request_document_id) => request_document_id,
+        Some(request_document_id) => {
+            if save_receipt {
+                // Required, not best-effort: broadcast the receipt *before*
+                // the real transfer, and propagate any failure via `?` so
+                // `shielded_transfer` below is never reached — a payer who
+                // asked for a receipt must never have funds sent with no
+                // record, per the feature's design.
+                let shared_secret = outbound_shared_secret(
+                    app_context,
+                    &qualified_identity,
+                    orchardpay_contract.id(),
+                    &dec_pk,
+                    seed_hash,
+                )
+                .await?;
+                let receipt_bytes = MessageContent::PaymentRequestReceipt {
+                    original_document_id: request_document_id.to_buffer(),
+                    amount,
+                    memo: original_request_memo.clone(),
+                    original_created_at: original_request_created_at,
+                }
+                .encrypt(&shared_secret)
+                .map_err(OrchardPayError::Crypto)?;
+
+                broadcast_encrypted_message(
+                    app_context,
+                    sdk,
+                    &orchardpay_contract,
+                    owner_id,
+                    qualified_identity.clone(),
+                    identity_key,
+                    my_reference_id,
+                    receipt_bytes,
+                )
+                .await
+                .map_err(|source| TaskError::OrchardPayReceiptSaveFailed {
+                    source: Box::new(source),
+                })?;
+            }
+            request_document_id
+        }
         None => {
             let shared_secret = outbound_shared_secret(
                 app_context,
@@ -1059,6 +1141,9 @@ fn decode_thread_message(
             .or_else(|| outgoing_payments.get(&document.id()).copied())
             .or_else(|| incoming_payments.get(&document.id()).copied()),
         MessageContent::Message { .. } => None,
+        // A receipt is never itself "paid" — it's a payer's private record
+        // of a request they already paid, not a payable thing on its own.
+        MessageContent::PaymentRequestReceipt { .. } => None,
     };
 
     Some(ThreadMessage {
@@ -1082,7 +1167,7 @@ pub async fn load_thread(
     qualified_identity: &QualifiedIdentity,
     counterparty_identity_id: Identifier,
     seed_hash: WalletSeedHash,
-) -> Result<Vec<ThreadMessage>, TaskError> {
+) -> Result<LoadedThread, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
@@ -1146,9 +1231,71 @@ pub async fn load_thread(
             thread.push(message);
         }
     }
-    thread.sort_by_key(|message| message.created_at.unwrap_or(0));
+    // Receipts ride along in the same `mine`/`theirs` fetches (tagged with
+    // the same `refId` as everything else) but are never shown as normal
+    // bubbles — split them out, then use each to check whether the
+    // `PaymentRequest` it refers to still matches what was paid.
+    let (receipts, mut messages): (Vec<ThreadMessage>, Vec<ThreadMessage>) =
+        thread.into_iter().partition(|message| {
+            matches!(
+                message.content,
+                MessageContent::PaymentRequestReceipt { .. }
+            )
+        });
+    messages.sort_by_key(|message| message.created_at.unwrap_or(0));
 
-    Ok(thread)
+    let mut receipt_alerts = Vec::new();
+    for receipt in &receipts {
+        let MessageContent::PaymentRequestReceipt {
+            original_document_id,
+            amount: receipt_amount,
+            memo: receipt_memo,
+            original_created_at,
+        } = &receipt.content
+        else {
+            continue;
+        };
+        let original_document_id = Identifier::from(*original_document_id);
+
+        let reason = match messages
+            .iter()
+            .find(|message| message.document_id == original_document_id)
+        {
+            None => Some(ReceiptAlertReason::OriginalDeleted),
+            Some(original) => match &original.content {
+                MessageContent::PaymentRequest { amount, memo } => {
+                    // Legitimate cancellation (`cancel_payment_request`'s
+                    // "CANCELED: " prefix) is signaled the same way the
+                    // bubble itself already detects it — not an anomaly.
+                    let is_cancelled =
+                        original.updated_at.is_some() && original.updated_at != original.created_at;
+                    if is_cancelled {
+                        None
+                    } else if amount != receipt_amount || memo != receipt_memo {
+                        Some(ReceiptAlertReason::OriginalAmountOrMemoMismatch)
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(ReceiptAlertReason::OriginalChangedKind),
+            },
+        };
+
+        if let Some(reason) = reason {
+            receipt_alerts.push(ReceiptAlert {
+                original_document_id,
+                amount: *receipt_amount,
+                memo: receipt_memo.clone(),
+                original_created_at: *original_created_at,
+                reason,
+            });
+        }
+    }
+
+    Ok(LoadedThread {
+        messages,
+        receipt_alerts,
+    })
 }
 
 /// Called by the incoming-memo scan when it detects a

@@ -131,6 +131,14 @@ pub enum OrchardPayTask {
         amount: u64,
         memo: Option<String>,
         fulfilling_request_document_id: Option<dash_sdk::platform::Identifier>,
+        /// Whether to save a `PaymentRequestReceipt` for the request being
+        /// fulfilled — ignored (treated as `false`) for an unprompted
+        /// payment. See `messages::send_payment`.
+        save_receipt: bool,
+        /// The `PaymentRequest`'s own memo/`$createdAt` at pay-time, only
+        /// meaningful when `save_receipt` is true.
+        original_request_memo: Option<String>,
+        original_request_created_at: Option<u64>,
     },
     /// Edit a `Message` I sent. See `messages::edit_message`.
     EditMessage {
@@ -325,6 +333,9 @@ impl AppContext {
                 amount,
                 memo,
                 fulfilling_request_document_id,
+                save_receipt,
+                original_request_memo,
+                original_request_created_at,
             } => {
                 messages::send_payment(
                     self,
@@ -336,6 +347,9 @@ impl AppContext {
                     amount,
                     memo,
                     fulfilling_request_document_id,
+                    save_receipt,
+                    original_request_memo,
+                    original_request_created_at,
                 )
                 .await
             }
@@ -420,7 +434,10 @@ impl AppContext {
                 counterparty_identity_id,
                 seed_hash,
             } => {
-                let messages = messages::load_thread(
+                let messages::LoadedThread {
+                    messages,
+                    receipt_alerts,
+                } = messages::load_thread(
                     self,
                     sdk,
                     &qualified_identity,
@@ -431,6 +448,7 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
                     counterparty_identity_id,
                     messages,
+                    receipt_alerts,
                 })
             }
             OrchardPayTask::RecoverContacts {

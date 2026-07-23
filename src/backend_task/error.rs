@@ -1262,6 +1262,16 @@ pub enum TaskError {
     #[error("This message can no longer be deleted.")]
     OrchardPayDeleteTargetMismatch,
 
+    /// The payer checked "Save Receipt" but the receipt document failed to
+    /// broadcast — the payment itself is aborted rather than sent with no
+    /// record, since the whole point of the receipt is to exist before the
+    /// funds move.
+    #[error("Your payment could not be sent because its receipt could not be saved. Please try again.")]
+    OrchardPayReceiptSaveFailed {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A searchable contract keyword fell outside the shared character range.
     #[error("A contract keyword has an invalid length. Use 3 to 50 characters and try again.")]
     InvalidContractKeywordLength {

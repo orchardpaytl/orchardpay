@@ -8,7 +8,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::encryption::MessageContent;
-use crate::backend_task::orchardpay::messages::ThreadMessage;
+use crate::backend_task::orchardpay::messages::{ReceiptAlert, ReceiptAlertReason, ThreadMessage};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -40,7 +40,7 @@ use crate::ui::components::{
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -81,6 +81,10 @@ pub struct MessageThreadScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
     messages: Vec<ThreadMessage>,
+    /// Saved `PaymentRequestReceipt`s whose original `PaymentRequest` no
+    /// longer matches them — see `messages::load_thread`'s anomaly-
+    /// detection pass. Rendered as warning panels, never as bubbles.
+    receipt_alerts: Vec<ReceiptAlert>,
     load_dispatched: bool,
     loading: bool,
     pending_reload: bool,
@@ -135,12 +139,15 @@ pub struct MessageThreadScreen {
     pending_document_mutation_id: Option<Identifier>,
 }
 
-/// A built `AppAction` sitting behind a confirmation dialog — the dialog
+/// A pending action sitting behind a confirmation dialog — the dialog
 /// carries the user-facing "what is about to happen" description; the
-/// action itself is only returned to the caller once the user confirms.
+/// action itself is only built once the user confirms, from the dialog's
+/// final state (in particular its checkbox, for the Pay flow's "Save
+/// Receipt" — the only current user of that). `open_confirmation`'s static
+/// callers just ignore the `bool` argument.
 struct PendingConfirmation {
     dialog: ConfirmationDialog,
-    action: Box<AppAction>,
+    action: Box<dyn FnOnce(bool) -> AppAction>,
 }
 
 /// One bubble-triggered signal, returned by `render_message_bubble` since a
@@ -151,6 +158,8 @@ enum BubbleAction {
     Pay {
         document_id: Identifier,
         amount: u64,
+        memo: Option<String>,
+        created_at: Option<u64>,
     },
     /// Toggle whether this bubble's Edit/Add-Memo button is shown.
     ToggleExpanded { document_id: Identifier },
@@ -221,6 +230,7 @@ impl MessageThreadScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
             messages: Vec::new(),
+            receipt_alerts: Vec::new(),
             load_dispatched: false,
             loading: false,
             pending_reload: false,
@@ -346,7 +356,7 @@ impl MessageThreadScreen {
             dialog: ConfirmationDialog::new(title, message)
                 .danger_mode(danger_mode)
                 .blocks_input(true),
-            action: Box::new(action),
+            action: Box::new(move |_checkbox_state| action),
         });
     }
 
@@ -365,8 +375,9 @@ impl MessageThreadScreen {
                 let Some(pending) = self.pending_confirmation.take() else {
                     return AppAction::None;
                 };
+                let checkbox_state = pending.dialog.checkbox_checked();
                 self.sending = true;
-                *pending.action
+                (pending.action)(checkbox_state)
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.pending_confirmation = None;
@@ -382,34 +393,53 @@ impl MessageThreadScreen {
     }
 
     /// Builds the `SendPayment` action for fulfilling `document_id` (a
-    /// specific incoming `PaymentRequest`'s own amount) and opens the
-    /// confirmation modal directly — clicking "Pay" on a request bubble
-    /// goes straight to a modal, it no longer routes through the composer
-    /// at all.
-    fn open_pay_confirmation(&mut self, document_id: Identifier, amount: u64) {
+    /// specific incoming `PaymentRequest`'s own amount/memo/created_at) and
+    /// opens the confirmation modal directly — clicking "Pay" on a request
+    /// bubble goes straight to a modal, it no longer routes through the
+    /// composer at all. Includes a "Save Receipt" checkbox (unchecked by
+    /// default); since `save_receipt` is only known once the user confirms,
+    /// the `SendPayment` task is built lazily from the dialog's final
+    /// checkbox state rather than up front.
+    fn open_pay_confirmation(
+        &mut self,
+        document_id: Identifier,
+        amount: u64,
+        memo: Option<String>,
+        created_at: Option<u64>,
+    ) {
         let (Some(identity_key), Some(seed_hash)) = (self.selected_key.clone(), self.seed_hash())
         else {
             return;
         };
-        let task = OrchardPayTask::SendPayment {
-            qualified_identity: self.identity.clone(),
-            identity_key,
-            counterparty_identity_id: self.counterparty_identity_id,
-            seed_hash,
-            amount,
-            memo: None,
-            fulfilling_request_document_id: Some(document_id),
-        };
+        let qualified_identity = self.identity.clone();
+        let counterparty_identity_id = self.counterparty_identity_id;
         let name = self.counterparty_display_name();
-        self.open_confirmation(
-            "Pay Request?",
-            format!(
-                "Pay {} to {name} for this payment request?",
-                format_credits_as_dash(amount)
-            ),
-            AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
-            true,
+        let message = format!(
+            "Pay {} to {name} for this payment request?",
+            format_credits_as_dash(amount)
         );
+
+        self.pending_confirmation = Some(PendingConfirmation {
+            dialog: ConfirmationDialog::new("Pay Request?", message)
+                .danger_mode(true)
+                .blocks_input(true)
+                .with_checkbox("Save Receipt", false),
+            action: Box::new(move |save_receipt| {
+                let task = OrchardPayTask::SendPayment {
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    seed_hash,
+                    amount,
+                    memo: None,
+                    fulfilling_request_document_id: Some(document_id),
+                    save_receipt,
+                    original_request_memo: memo,
+                    original_request_created_at: created_at,
+                };
+                AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
+            }),
+        });
     }
 
     /// Builds the `CancelPaymentRequest` action for `document_id` and opens
@@ -621,6 +651,9 @@ impl MessageThreadScreen {
                     amount,
                     memo,
                     fulfilling_request_document_id: None,
+                    save_receipt: false,
+                    original_request_memo: None,
+                    original_request_created_at: None,
                 };
                 (
                     task,
@@ -953,6 +986,8 @@ impl MessageThreadScreen {
                                                 bubble_action = Some(BubbleAction::Pay {
                                                     document_id: message.document_id,
                                                     amount: *amount,
+                                                    memo: memo.clone(),
+                                                    created_at: message.created_at,
                                                 });
                                             }
                                         },
@@ -960,12 +995,69 @@ impl MessageThreadScreen {
                                 }
                             }
                         }
+                        // Unreachable in practice: `load_thread` splits
+                        // every `PaymentRequestReceipt` out of `messages`
+                        // before this screen ever sees it — see
+                        // `TimelineItem`/`render_receipt_alert`. Handled
+                        // here only because `MessageContent` is matched
+                        // exhaustively.
+                        MessageContent::PaymentRequestReceipt { .. } => {}
                     }
                 });
             });
         });
         ui.add_space(6.0);
         bubble_action
+    }
+
+    /// Renders one [`ReceiptAlert`] as a warning-styled panel — never a
+    /// normal bubble. A receipt only ever surfaces once its original
+    /// `PaymentRequest` no longer checks out (deleted, changed kind, or a
+    /// tampered amount/memo); this is a system notice, not a chat message,
+    /// so it isn't indented like one of "my" or "their" bubbles.
+    fn render_receipt_alert(&self, ui: &mut Ui, alert: &ReceiptAlert) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let color = DashColors::warning_color(dark_mode);
+        let reason = match alert.reason {
+            ReceiptAlertReason::OriginalDeleted => "This payment request has been deleted.",
+            ReceiptAlertReason::OriginalChangedKind => {
+                "This payment request has changed into a different kind of message."
+            }
+            ReceiptAlertReason::OriginalAmountOrMemoMismatch => {
+                "This payment request's amount or note no longer matches what you paid."
+            }
+        };
+
+        egui::Frame::new()
+            .fill(color.gamma_multiply(0.08))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .stroke(egui::Stroke::new(1.0, color))
+            .corner_radius(Shape::RADIUS_MD)
+            .show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(MESSAGE_BUBBLE_MAX_WIDTH));
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.label(RichText::new("Saved Receipt").strong().color(color));
+                    ui.label(reason);
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("You paid {}", format_credits_as_dash(alert.amount)))
+                            .strong(),
+                    );
+                    if let Some(memo) = &alert.memo {
+                        ui.label(memo);
+                    }
+                    if let Some(timestamp) =
+                        alert.original_created_at.and_then(format_relative_time)
+                    {
+                        ui.label(
+                            RichText::new(format!("Originally requested {timestamp}"))
+                                .size(11.0)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    }
+                });
+            });
+        ui.add_space(6.0);
     }
 
     fn render_composer(&mut self, ui: &mut Ui) -> AppAction {
@@ -1096,8 +1188,10 @@ impl ScreenLike for MessageThreadScreen {
             BackendTaskSuccessResult::OrchardPayThreadLoaded {
                 counterparty_identity_id,
                 messages,
+                receipt_alerts,
             } if counterparty_identity_id == self.counterparty_identity_id => {
                 self.messages = messages;
+                self.receipt_alerts = receipt_alerts;
                 self.loading = false;
             }
             BackendTaskSuccessResult::OrchardPayPaymentSent { .. } => {
@@ -1310,20 +1404,54 @@ impl ScreenLike for MessageThreadScreen {
                 ui.label("Loading conversation…");
             }
 
+            // Receipt alerts merge into the same chronological position as
+            // everything else (sorted by `original_created_at`, captured at
+            // pay-time for exactly this purpose — see
+            // `MessageContent::PaymentRequestReceipt`), rather than a
+            // separate fixed list, so a surfaced alert reads as "this is
+            // where that request used to be."
+            enum TimelineItem {
+                Message(ThreadMessage),
+                ReceiptAlert(ReceiptAlert),
+            }
+            let mut timeline: Vec<TimelineItem> = self
+                .messages
+                .iter()
+                .cloned()
+                .map(TimelineItem::Message)
+                .chain(
+                    self.receipt_alerts
+                        .iter()
+                        .cloned()
+                        .map(TimelineItem::ReceiptAlert),
+                )
+                .collect();
+            timeline.sort_by_key(|item| match item {
+                TimelineItem::Message(message) => message.created_at.unwrap_or(0),
+                TimelineItem::ReceiptAlert(alert) => alert.original_created_at.unwrap_or(0),
+            });
+
             let mut bubble_action: Option<BubbleAction> = None;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() * 0.6)
                 // Opens on the most recent messages (the bottom, since
-                // `self.messages` is chronological oldest-first) and follows
-                // new messages/payments/requests as they're appended —
-                // unless the user has manually scrolled up to read history,
-                // in which case egui's own stuck-to-end tracking backs off
-                // and leaves them where they are.
+                // `timeline` is chronological oldest-first) and follows new
+                // messages/payments/requests as they're appended — unless
+                // the user has manually scrolled up to read history, in
+                // which case egui's own stuck-to-end tracking backs off and
+                // leaves them where they are.
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
-                    for message in self.messages.clone() {
-                        if let Some(action) = self.render_message_bubble(ui, &message) {
-                            bubble_action = Some(action);
+                    for item in timeline {
+                        match item {
+                            TimelineItem::Message(message) => {
+                                if let Some(action) = self.render_message_bubble(ui, &message) {
+                                    bubble_action = Some(action);
+                                }
+                            }
+                            TimelineItem::ReceiptAlert(alert) => {
+                                self.render_receipt_alert(ui, &alert);
+                            }
                         }
                     }
                 });
@@ -1332,8 +1460,10 @@ impl ScreenLike for MessageThreadScreen {
                 Some(BubbleAction::Pay {
                     document_id,
                     amount,
+                    memo,
+                    created_at,
                 }) => {
-                    self.open_pay_confirmation(document_id, amount);
+                    self.open_pay_confirmation(document_id, amount, memo, created_at);
                 }
                 Some(BubbleAction::ToggleExpanded { document_id }) => {
                     self.expanded_message = if self.expanded_message == Some(document_id) {

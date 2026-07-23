@@ -211,6 +211,33 @@ pub enum MessageContent {
     /// fulfilling transfer's on-chain memo references this document's own
     /// ID directly.
     PaymentRequest { amount: u64, memo: Option<String> },
+    /// The payer's own durable record of a `PaymentRequest` they paid,
+    /// saved only when the payer opted in via the Pay confirmation
+    /// modal's "Save Receipt" checkbox. Broadcast under the *payer's own*
+    /// `refId` — the same one used for every other message/payment they
+    /// send in this conversation — so it rides along in the normal thread
+    /// query with no separate lookup. Never itself rendered as a thread
+    /// bubble; `messages::load_thread` uses it only to detect and surface
+    /// an alert if `original_document_id`'s `PaymentRequest` later goes
+    /// missing, changes kind, or has its amount/memo silently rewritten.
+    /// Named distinctly from the still-undesigned `Receipt` variant
+    /// mentioned in `docs/orchardpay/PROTOCOL_DESIGN.md` (an unrelated,
+    /// mutual purchase-receipt concept).
+    PaymentRequestReceipt {
+        /// The `PaymentRequest` document's own ID — the correlation key
+        /// back to what this receipt is about.
+        original_document_id: [u8; 32],
+        amount: u64,
+        memo: Option<String>,
+        /// The original `PaymentRequest`'s own `$createdAt`, captured at
+        /// pay-time. Not needed to locate the real payment (that's already
+        /// independently locatable from `original_document_id` via
+        /// `orchardpay_outgoing_payments_by_document`/`MEMO_TAG_PAYMENT`)
+        /// — this is purely so a surfaced alert can still be placed at the
+        /// right point in the conversation's timeline even after the
+        /// original document (and its own `$createdAt`) is gone.
+        original_created_at: Option<u64>,
+    },
 }
 
 impl MessageContent {
@@ -348,6 +375,22 @@ mod tests {
         let content = MessageContent::PaymentRequest {
             amount: 250_000,
             memo: None,
+        };
+
+        let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted = MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+
+        assert_eq!(content, decrypted);
+    }
+
+    #[test]
+    fn message_content_payment_request_receipt_round_trips() {
+        let shared_key = [16u8; 32];
+        let content = MessageContent::PaymentRequestReceipt {
+            original_document_id: [7u8; 32],
+            amount: 250_000,
+            memo: Some("for dinner".to_string()),
+            original_created_at: Some(1_700_000_000_000),
         };
 
         let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
