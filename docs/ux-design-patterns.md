@@ -96,6 +96,15 @@ Reference: `ConfirmationDialog` in `src/ui/components/confirmation_dialog.rs`.
 - Escape = cancel. X button = cancel.
 - **Destructive actions**: `danger_mode(true)` -- red confirm button. Use specific verb labels ("Delete wallet" not "OK").
 - For critical/irreversible: require type-to-confirm
+- **Confirm-before-send pattern**: any action that reaches another party (a
+  message, a payment, a contact request) should build the real `AppAction`
+  at click time, stash it in a screen-local `PendingConfirmation { dialog, action: Box<AppAction> }`,
+  and only return it from a per-frame `render_pending_confirmation()` on
+  `ConfirmationStatus::Confirmed` -- never dispatch directly from the
+  triggering click. Reference implementation and full guardrail policy
+  (including credit/shielded-balance sufficiency checks that should
+  accompany it): `docs/orchardpay/PROTOCOL_DESIGN.md` § "User safety
+  guardrails".
 
 ## 5. Forms and Inputs
 

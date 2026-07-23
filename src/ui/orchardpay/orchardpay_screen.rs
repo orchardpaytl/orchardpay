@@ -34,7 +34,7 @@ use crate::model::orchardpay::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
@@ -46,6 +46,7 @@ use crate::ui::components::top_panel::{
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{Component, MessageBanner};
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
@@ -182,6 +183,19 @@ pub struct OrchardPayScreen {
     /// like the shielded balance does, so this is what keeps the top-panel
     /// readout and the low-credit action gates reasonably current.
     pending_identity_refresh: bool,
+    /// The one confirmation modal that can be up at a time — shared by
+    /// Accept and Add Contact (both build the real `AppAction` up front,
+    /// then stash it here instead of dispatching immediately; only
+    /// `render_pending_confirmation`'s `Confirmed` arm actually returns it).
+    pending_confirmation: Option<PendingConfirmation>,
+}
+
+/// A built `AppAction` sitting behind a confirmation dialog — the dialog
+/// carries the user-facing "what is about to happen" description; the
+/// action itself is only returned to the caller once the user confirms.
+struct PendingConfirmation {
+    dialog: ConfirmationDialog,
+    action: Box<AppAction>,
 }
 
 impl OrchardPayScreen {
@@ -212,6 +226,7 @@ impl OrchardPayScreen {
             shielded_activity: None,
             shielded_activity_dispatched: false,
             pending_identity_refresh: true,
+            pending_confirmation: None,
         }
     }
 
@@ -528,7 +543,20 @@ impl OrchardPayScreen {
                                 .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
                                 .clicked()
                             {
-                                action |= self.accept_clicked(counterparty);
+                                let display_name = name
+                                    .as_deref()
+                                    .map(strip_dash_suffix)
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| counterparty.to_string(Encoding::Base58));
+                                let confirm_action = self.accept_clicked(counterparty);
+                                self.open_confirmation(
+                                    "Accept Contact Request",
+                                    format!(
+                                        "Accept the contact request from {display_name}?"
+                                    ),
+                                    confirm_action,
+                                    false,
+                                );
                             }
                         });
                     }
@@ -953,8 +981,14 @@ impl OrchardPayScreen {
                                 .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
                                 .clicked()
                             {
-                                action |= self
+                                let confirm_action = self
                                     .initiate_clicked(result.identity_id, result.username.clone());
+                                self.open_confirmation(
+                                    "Send Contact Request",
+                                    format!("Send a contact request to {}?", result.username),
+                                    confirm_action,
+                                    false,
+                                );
                             }
                         }
                         None => {
@@ -1036,6 +1070,54 @@ impl OrchardPayScreen {
                 seed_hash,
             },
         )))
+    }
+
+    /// Stash `action` behind a confirmation modal instead of dispatching it
+    /// immediately — the misclick guard every OrchardPay action that reaches
+    /// another party goes through. A no-op if `action` is `AppAction::None`
+    /// (the trigger's own precondition, e.g. no identity/key/wallet
+    /// resolved, already failed — nothing to confirm).
+    fn open_confirmation(
+        &mut self,
+        title: &str,
+        message: String,
+        action: AppAction,
+        danger_mode: bool,
+    ) {
+        if matches!(action, AppAction::None) {
+            return;
+        }
+        self.pending_confirmation = Some(PendingConfirmation {
+            dialog: ConfirmationDialog::new(title, message)
+                .danger_mode(danger_mode)
+                .blocks_input(true),
+            action: Box::new(action),
+        });
+    }
+
+    /// Drives the one pending confirmation modal, if any. Returns the real
+    /// action only once the user confirms; a cancel (button, Escape, or the
+    /// window's close button — see `ConfirmationDialog`) just clears state
+    /// and dispatches nothing.
+    fn render_pending_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        let response = self
+            .pending_confirmation
+            .as_mut()
+            .and_then(|pending| pending.dialog.show(ui).inner.dialog_response);
+
+        match response {
+            Some(ConfirmationStatus::Confirmed) => {
+                let Some(pending) = self.pending_confirmation.take() else {
+                    return AppAction::None;
+                };
+                *pending.action
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.pending_confirmation = None;
+                AppAction::None
+            }
+            None => AppAction::None,
+        }
     }
 }
 
@@ -1122,6 +1204,7 @@ impl ScreenLike for OrchardPayScreen {
             self.balance_summary_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+        action |= self.render_pending_confirmation(ui);
 
         if self.pending_identity_refresh
             && let Some(identity) = self.identity.clone()
@@ -1284,5 +1367,238 @@ impl ScreenLike for OrchardPayScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dashcore_rpc::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+        IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+    };
+    use dash_sdk::dpp::identity::{Identity, KeyID};
+    use dash_sdk::dpp::version::PlatformVersion;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    /// Same offline-`AppContext` recipe as `send_screen.rs`'s own `mod tests`
+    /// — no network, no tokio runtime, just enough of `AppContext` for a
+    /// screen to construct and render.
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        use crate::app_dir::ensure_env_file;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    /// A `QualifiedIdentity` with one on-chain AUTHENTICATION key and a
+    /// credit balance safely above both low-credit thresholds, so
+    /// "Add Contact" isn't gated by `is_credit_balance_blocked`.
+    fn build_identity(app_context: &Arc<AppContext>) -> QualifiedIdentity {
+        let mut auth_key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+        auth_key.set_id(1);
+        auth_key.set_purpose(Purpose::AUTHENTICATION);
+        auth_key.set_security_level(SecurityLevel::CRITICAL);
+
+        let public_keys: BTreeMap<KeyID, IdentityPublicKey> =
+            [(auth_key.id(), auth_key)].into_iter().collect();
+        let mut identity = Identity::new_with_id_and_keys(
+            Identifier::random(),
+            public_keys,
+            PlatformVersion::latest(),
+        )
+        .expect("identity");
+        identity.set_balance(1_000_000_000_000); // 10 DASH, well above both thresholds
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: app_context.network(),
+        }
+    }
+
+    /// Builds an `OrchardPayScreen` with a resolved identity/key/wallet and
+    /// one contactable search result — everything `render_add_contact`
+    /// needs, without going through the full readiness-gated `ui()` (that
+    /// gate isn't the subject of this test; see `render_add_contact`/
+    /// `render_pending_confirmation` called directly in `mount_add_contact`).
+    fn add_contact_screen() -> (OrchardPayScreen, tempfile::TempDir, Identifier) {
+        let (app_context, temp_dir) = offline_ctx();
+        let identity = build_identity(&app_context);
+
+        let mut screen = OrchardPayScreen::new(&app_context, OrchardPaySubscreen::AddContact);
+        screen.has_shielded_address = Some(true);
+        screen.selected_key = Some(
+            identity
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    [SecurityLevel::CRITICAL].into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned()
+                .expect("auth key"),
+        );
+        screen.identity = Some(identity);
+
+        let wallet = Wallet::new_from_seed(
+            [1u8; 64],
+            Network::Testnet,
+            Some("Test wallet".to_string()),
+            None,
+        )
+        .expect("wallet from seed");
+        screen.selected_wallet = Some(Arc::new(RwLock::new(wallet)));
+
+        let counterparty_id = Identifier::random();
+        screen.search_results = vec![OrchardPayContactSearchResult {
+            identity_id: counterparty_id,
+            username: "alice.dash".to_string(),
+            contactable: true,
+            existing_relationship: None,
+        }];
+
+        (screen, temp_dir, counterparty_id)
+    }
+
+    /// Simulates a real click (press + release at the widget's center) in a
+    /// single frame — needed for the *triggering* click that opens the
+    /// confirmation, since `Harness::run()` hasn't settled a frame for
+    /// `.click_accesskit()` to target yet. Mirrors `send_screen.rs`'s own
+    /// `click_in_one_frame` helper.
+    fn click_in_one_frame(harness: &mut Harness<'_, OrchardPayScreen>, label: &str) {
+        let pos = harness.get_by_label(label).rect().center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        harness.step();
+    }
+
+    fn mount_add_contact(
+        screen: OrchardPayScreen,
+        captured_action: Rc<RefCell<AppAction>>,
+    ) -> Harness<'static, OrchardPayScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut OrchardPayScreen| {
+                    let mut action = screen.render_add_contact(ui);
+                    action |= screen.render_pending_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn add_contact_click_opens_confirmation_without_dispatching() {
+        let (screen, _temp_dir, _counterparty_id) = add_contact_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_add_contact(screen, observed_action.clone());
+
+        click_in_one_frame(&mut harness, "Add Contact");
+
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "the original Add Contact click must not dispatch a backend task"
+        );
+        assert!(
+            harness.query_by_label("Send Contact Request").is_some(),
+            "confirmation modal must show the action's title"
+        );
+
+        harness.get_by_label("Confirm").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().pending_confirmation.is_none(),
+            "the confirmation dialog must close after confirmation"
+        );
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::BackendTask(_)),
+            "confirming must dispatch the real backend task"
+        );
+    }
+
+    #[test]
+    fn add_contact_cancel_does_not_dispatch() {
+        let (screen, _temp_dir, _counterparty_id) = add_contact_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_add_contact(screen, observed_action.clone());
+
+        click_in_one_frame(&mut harness, "Add Contact");
+        assert!(harness.query_by_label("Send Contact Request").is_some());
+
+        harness.get_by_label("Cancel").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().pending_confirmation.is_none(),
+            "canceling must close the confirmation dialog"
+        );
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "canceling must never dispatch a backend task"
+        );
     }
 }

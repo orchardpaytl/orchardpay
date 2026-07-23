@@ -23,6 +23,7 @@ use crate::model::orchardpay::{
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
@@ -87,10 +88,6 @@ pub struct MessageThreadScreen {
     compose_amount_input: Option<AmountInput>,
     compose_memo: String,
     sending: bool,
-    /// Set when the user clicked "Pay" on a specific incoming
-    /// `PaymentRequest` bubble: (that document's own ID, its requested
-    /// amount — used only to pre-fill the composer, not to lock it).
-    fulfilling_request: Option<(Identifier, u64)>,
     refresh_banner: Option<BannerHandle>,
     /// The active identity's own primary DPNS name, for the "You" message
     /// label. `None` falls back to "You" — shouldn't normally happen since
@@ -107,6 +104,20 @@ pub struct MessageThreadScreen {
     /// what keeps the top-panel readout and the low-credit action gates
     /// reasonably current.
     pending_identity_refresh: bool,
+    /// The one confirmation modal that can be up at a time — shared by the
+    /// composer's Send (Message/Payment Request/Payment) and a bubble's
+    /// direct Pay. Each trigger builds the real `AppAction` up front, then
+    /// stashes it here instead of dispatching immediately; only
+    /// `render_pending_confirmation`'s `Confirmed` arm actually returns it.
+    pending_confirmation: Option<PendingConfirmation>,
+}
+
+/// A built `AppAction` sitting behind a confirmation dialog — the dialog
+/// carries the user-facing "what is about to happen" description; the
+/// action itself is only returned to the caller once the user confirms.
+struct PendingConfirmation {
+    dialog: ConfirmationDialog,
+    action: Box<AppAction>,
 }
 
 impl MessageThreadScreen {
@@ -156,11 +167,11 @@ impl MessageThreadScreen {
             compose_amount_input: None,
             compose_memo: String::new(),
             sending: false,
-            fulfilling_request: None,
             refresh_banner: None,
             my_name,
             counterparty_name,
             pending_identity_refresh: true,
+            pending_confirmation: None,
         }
     }
 
@@ -241,16 +252,93 @@ impl MessageThreadScreen {
         // matching the prior `String::clear()` behavior.
         self.compose_amount_input = None;
         self.compose_memo.clear();
-        self.fulfilling_request = None;
     }
 
-    fn reply_to_request_clicked(&mut self, document_id: Identifier, amount: u64) {
-        self.compose_kind = ComposeKind::Payment;
-        self.fulfilling_request = Some((document_id, amount));
-        let dash_amount = Amount::dash_from_credits(amount);
-        self.compose_amount = Some(dash_amount.clone());
-        self.compose_amount_input =
-            Some(AmountInput::new(dash_amount).with_label("Amount (DASH):"));
+    /// The counterparty's display name for confirmation-modal copy — same
+    /// fallback the conversation heading itself uses.
+    fn counterparty_display_name(&self) -> String {
+        self.counterparty_name
+            .clone()
+            .unwrap_or_else(|| self.counterparty_identity_id.to_string(Encoding::Base58))
+    }
+
+    /// Stash `action` behind a confirmation modal instead of dispatching it
+    /// immediately — the misclick guard every OrchardPay action that reaches
+    /// another party goes through. A no-op if `action` is `AppAction::None`
+    /// (the trigger's own precondition already failed — nothing to confirm).
+    fn open_confirmation(
+        &mut self,
+        title: &str,
+        message: String,
+        action: AppAction,
+        danger_mode: bool,
+    ) {
+        if matches!(action, AppAction::None) {
+            return;
+        }
+        self.pending_confirmation = Some(PendingConfirmation {
+            dialog: ConfirmationDialog::new(title, message)
+                .danger_mode(danger_mode)
+                .blocks_input(true),
+            action: Box::new(action),
+        });
+    }
+
+    /// Drives the one pending confirmation modal, if any. Returns the real
+    /// action only once the user confirms; a cancel (button, Escape, or the
+    /// window's close button — see `ConfirmationDialog`) just clears state
+    /// and dispatches nothing.
+    fn render_pending_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        let response = self
+            .pending_confirmation
+            .as_mut()
+            .and_then(|pending| pending.dialog.show(ui).inner.dialog_response);
+
+        match response {
+            Some(ConfirmationStatus::Confirmed) => {
+                let Some(pending) = self.pending_confirmation.take() else {
+                    return AppAction::None;
+                };
+                self.sending = true;
+                *pending.action
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.pending_confirmation = None;
+                AppAction::None
+            }
+            None => AppAction::None,
+        }
+    }
+
+    /// Builds the `SendPayment` action for fulfilling `document_id` (a
+    /// specific incoming `PaymentRequest`'s own amount) and opens the
+    /// confirmation modal directly — clicking "Pay" on a request bubble
+    /// goes straight to a modal, it no longer routes through the composer
+    /// at all.
+    fn open_pay_confirmation(&mut self, document_id: Identifier, amount: u64) {
+        let (Some(identity_key), Some(seed_hash)) = (self.selected_key.clone(), self.seed_hash())
+        else {
+            return;
+        };
+        let task = OrchardPayTask::SendPayment {
+            qualified_identity: self.identity.clone(),
+            identity_key,
+            counterparty_identity_id: self.counterparty_identity_id,
+            seed_hash,
+            amount,
+            memo: None,
+            fulfilling_request_document_id: Some(document_id),
+        };
+        let name = self.counterparty_display_name();
+        self.open_confirmation(
+            "Pay Request?",
+            format!(
+                "Pay {} to {name} for this payment request?",
+                format_credits_as_dash(amount)
+            ),
+            AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
+            true,
+        );
     }
 
     fn send_clicked(&mut self) -> AppAction {
@@ -265,20 +353,27 @@ impl MessageThreadScreen {
         } else {
             Some(self.compose_memo.trim().to_string())
         };
+        let name = self.counterparty_display_name();
 
-        let task = match self.compose_kind {
+        let (task, title, message, danger_mode) = match self.compose_kind {
             ComposeKind::Message => {
                 let text = self.compose_text.trim().to_string();
                 if text.is_empty() {
                     return AppAction::None;
                 }
-                OrchardPayTask::SendMessage {
+                let task = OrchardPayTask::SendMessage {
                     qualified_identity: self.identity.clone(),
                     identity_key,
                     counterparty_identity_id: self.counterparty_identity_id,
-                    text,
+                    text: text.clone(),
                     seed_hash,
-                }
+                };
+                (
+                    task,
+                    "Send Message?",
+                    format!("Send this message to {name}?\n\n\"{text}\""),
+                    false,
+                )
             }
             ComposeKind::PaymentRequest => {
                 let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
@@ -289,14 +384,20 @@ impl MessageThreadScreen {
                     );
                     return AppAction::None;
                 };
-                OrchardPayTask::SendPaymentRequest {
+                let task = OrchardPayTask::SendPaymentRequest {
                     qualified_identity: self.identity.clone(),
                     identity_key,
                     counterparty_identity_id: self.counterparty_identity_id,
                     amount,
                     memo,
                     seed_hash,
-                }
+                };
+                (
+                    task,
+                    "Send Payment Request?",
+                    format!("Request {} from {name}?", format_credits_as_dash(amount)),
+                    false,
+                )
             }
             ComposeKind::Payment => {
                 let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
@@ -307,25 +408,36 @@ impl MessageThreadScreen {
                     );
                     return AppAction::None;
                 };
-                OrchardPayTask::SendPayment {
+                let task = OrchardPayTask::SendPayment {
                     qualified_identity: self.identity.clone(),
                     identity_key,
                     counterparty_identity_id: self.counterparty_identity_id,
                     seed_hash,
                     amount,
                     memo,
-                    fulfilling_request_document_id: self.fulfilling_request.map(|(id, _)| id),
-                }
+                    fulfilling_request_document_id: None,
+                };
+                (
+                    task,
+                    "Send Payment?",
+                    format!("Send {} to {name}?", format_credits_as_dash(amount)),
+                    true,
+                )
             }
         };
 
-        self.sending = true;
-        AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
+        self.open_confirmation(
+            title,
+            message,
+            AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
+            danger_mode,
+        );
+        AppAction::None
     }
 
     /// Renders one message bubble. Returns `Some((document_id, amount))`
     /// when the user clicked "Pay" on an incoming `PaymentRequest` bubble —
-    /// the caller applies that to `self.fulfilling_request` outside this
+    /// the caller applies that to `self.open_pay_confirmation` outside this
     /// method, since a `ui.group` closure can't hold a `&mut self` borrow.
     fn render_message_bubble(
         &self,
@@ -501,20 +613,6 @@ impl MessageThreadScreen {
         let mut action = AppAction::None;
         ui.separator();
         ui.add_space(6.0);
-
-        if let Some((_, requested_amount)) = self.fulfilling_request {
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Replying to a request for {}.",
-                    format_credits_as_dash(requested_amount)
-                ));
-                if ui.button("Cancel").clicked() {
-                    self.fulfilling_request = None;
-                    self.compose_amount = None;
-                    self.compose_amount_input = None;
-                }
-            });
-        }
 
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.compose_kind, ComposeKind::Message, "Message");
@@ -701,6 +799,7 @@ impl ScreenLike for MessageThreadScreen {
             self.balance_summary_label(),
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
+        action |= self.render_pending_confirmation(ui);
 
         if self.pending_identity_refresh {
             self.pending_identity_refresh = false;
@@ -819,7 +918,7 @@ impl ScreenLike for MessageThreadScreen {
                 });
 
             if let Some((document_id, amount)) = reply_target {
-                self.reply_to_request_clicked(document_id, amount);
+                self.open_pay_confirmation(document_id, amount);
             }
 
             inner_action |= self.render_composer(ui);
@@ -834,5 +933,224 @@ impl ScreenLike for MessageThreadScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dashcore_rpc::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+        IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+    };
+    use dash_sdk::dpp::identity::{Identity, KeyID};
+    use dash_sdk::dpp::version::PlatformVersion;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    /// Same offline-`AppContext` recipe as `send_screen.rs`'s own `mod tests`
+    /// — no network, no tokio runtime, just enough of `AppContext` for a
+    /// screen to construct and render.
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        use crate::app_dir::ensure_env_file;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    /// A `QualifiedIdentity` with one on-chain AUTHENTICATION key (so
+    /// `MessageThreadScreen::new` resolves a `selected_key`) and a credit
+    /// balance safely above both low-credit thresholds, so the composer's
+    /// Send button isn't gated by `is_credit_balance_blocked`.
+    fn build_identity(app_context: &Arc<AppContext>) -> QualifiedIdentity {
+        let mut auth_key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+        auth_key.set_id(1);
+        auth_key.set_purpose(Purpose::AUTHENTICATION);
+        auth_key.set_security_level(SecurityLevel::CRITICAL);
+
+        let public_keys: BTreeMap<KeyID, IdentityPublicKey> =
+            [(auth_key.id(), auth_key)].into_iter().collect();
+        let mut identity = Identity::new_with_id_and_keys(
+            Identifier::random(),
+            public_keys,
+            PlatformVersion::latest(),
+        )
+        .expect("identity");
+        identity.set_balance(1_000_000_000_000); // 10 DASH, well above both thresholds
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: app_context.network(),
+        }
+    }
+
+    /// Builds a `MessageThreadScreen` ready to compose/send: a resolved
+    /// identity/key (well above the credit thresholds) and a directly
+    /// assigned test wallet — bypassing `get_selected_wallet`'s real
+    /// identity-to-wallet resolution, which isn't the subject of this test.
+    fn message_thread_screen() -> (MessageThreadScreen, tempfile::TempDir) {
+        let (app_context, temp_dir) = offline_ctx();
+        let identity = build_identity(&app_context);
+        let mut screen = MessageThreadScreen::new(identity, Identifier::random(), &app_context);
+
+        let wallet = Wallet::new_from_seed(
+            [1u8; 64],
+            Network::Testnet,
+            Some("Test wallet".to_string()),
+            None,
+        )
+        .expect("wallet from seed");
+        screen.selected_wallet = Some(Arc::new(RwLock::new(wallet)));
+
+        (screen, temp_dir)
+    }
+
+    /// Simulates a real click (press + release at the widget's center) in a
+    /// single frame — needed for the *triggering* click that opens the
+    /// confirmation, since `Harness::run()` hasn't settled a frame for
+    /// `.click_accesskit()` to target yet. Mirrors `send_screen.rs`'s own
+    /// `click_in_one_frame` helper.
+    fn click_in_one_frame(harness: &mut Harness<'_, MessageThreadScreen>, label: &str) {
+        let pos = harness.get_by_label(label).rect().center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        harness.step();
+    }
+
+    fn mount_composer(
+        screen: MessageThreadScreen,
+        captured_action: Rc<RefCell<AppAction>>,
+    ) -> Harness<'static, MessageThreadScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut MessageThreadScreen| {
+                    let mut action = screen.render_composer(ui);
+                    action |= screen.render_pending_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn send_message_click_opens_confirmation_without_dispatching() {
+        let (mut screen, _temp_dir) = message_thread_screen();
+        screen.compose_text = "Hello there".to_string();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_composer(screen, observed_action.clone());
+
+        click_in_one_frame(&mut harness, "Send");
+
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "the original Send click must not dispatch a backend task"
+        );
+        assert!(
+            harness.query_by_label("Send Message?").is_some(),
+            "confirmation modal must show the action's title"
+        );
+
+        harness.get_by_label("Confirm").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().pending_confirmation.is_none(),
+            "the confirmation dialog must close after confirmation"
+        );
+        assert!(
+            harness.state().sending,
+            "confirming must mark the screen as sending"
+        );
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::BackendTask(_)),
+            "confirming must dispatch the real backend task"
+        );
+    }
+
+    #[test]
+    fn send_message_cancel_does_not_dispatch() {
+        let (mut screen, _temp_dir) = message_thread_screen();
+        screen.compose_text = "Hello there".to_string();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_composer(screen, observed_action.clone());
+
+        click_in_one_frame(&mut harness, "Send");
+        assert!(harness.query_by_label("Send Message?").is_some());
+
+        harness.get_by_label("Cancel").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().pending_confirmation.is_none(),
+            "canceling must close the confirmation dialog"
+        );
+        assert!(
+            !harness.state().sending,
+            "canceling must never mark the screen as sending"
+        );
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "canceling must never dispatch a backend task"
+        );
     }
 }

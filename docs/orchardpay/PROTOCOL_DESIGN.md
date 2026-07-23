@@ -923,6 +923,90 @@ three in-scope kinds" above for both paths. `Message`/`PaymentRequest` stay
 pure Platform documents with no value movement — sending "just a message" or
 "just a request" stays possible and cheap, distinct from sending a payment.
 
+## User safety guardrails (design policy, decided 2026-07-22)
+
+Two misclick/overdraft protections were added across every OrchardPay screen
+that reaches another identity or spends value. **Any new OrchardPay action —
+a new document type, a new button, a new automated flow — that costs
+identity credits, spends shielded funds, or reaches another party's identity
+must implement the applicable guardrail(s) below as part of its design, not
+as an afterthought.**
+
+### 1. Credit and shielded-balance sufficiency
+
+- **Identity credits**: `model/orchardpay.rs` defines
+  `LOW_CREDIT_WARNING_THRESHOLD_CREDITS` (0.005 DASH — informational "Low
+  Credits" label only) and `CREDIT_ACTION_BLOCK_THRESHOLD_CREDITS` (0.002
+  DASH — hard block) plus the pure predicates `is_credit_balance_low`/
+  `is_credit_balance_blocked` and the shared tooltip constant
+  `CREDIT_BLOCKED_TOOLTIP`. Any button that dispatches a credit-costing
+  action (a document publish/replace/delete, a state transition) must be
+  wrapped `ui.add_enabled(!is_credit_balance_blocked(identity.balance()), ...)
+  .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)` — see the Accept/Add Contact/
+  Send/Pay/Publish button sites in `orchardpay_screen.rs`,
+  `message_thread_screen.rs`, `shielded_address_screen.rs` for the reference
+  pattern. Identity balance has no live push (unlike shielded balance), so a
+  screen holding one for longer than a single click needs a
+  `pending_identity_refresh: bool` field dispatching
+  `IdentityTask::RefreshIdentity` on screen entry and after every
+  credit-spending action succeeds (see either screen's `ui()`/
+  `display_task_result()`).
+- **Shielded funds**: any action that spends from the shielded pool (a real
+  value transfer, not just a document) must cap the amount the user can
+  enter at `AppContext::shielded_balance_credits(seed_hash)` minus the
+  transfer's own fee (`model::fee_estimation::shielded_fee_for_actions`),
+  surfaced via `AmountInput::set_max_amount`/`set_max_exceeded_hint` with
+  the message "Insufficient Shielded Funds" — see the `Payment` branch of
+  `message_thread_screen.rs`'s composer. An action with a fixed, known
+  amount (not user-entered) must still perform the equivalent pre-flight
+  comparison before building the dispatch action.
+
+### 2. Confirm-before-send modal
+
+Every action that reaches another party — publishes a document another
+identity will see, or moves value to them — must go through a second,
+explicit confirmation step before it actually dispatches, so a misclick
+never sends something for real. The pattern (mirrored from
+`send_screen.rs`'s pre-existing "confirm before sending funds" flow, and
+implemented for contact requests/messages/payments in `orchardpay_screen.rs`
+and `message_thread_screen.rs`):
+
+```rust
+struct PendingConfirmation {
+    dialog: ConfirmationDialog,
+    action: Box<AppAction>,
+}
+```
+
+- The triggering click **builds the real `AppAction` exactly as it would to
+  dispatch directly**, then calls a screen-local `open_confirmation(title,
+  message, action, danger_mode)` that stashes it instead of returning it —
+  the click itself always returns/does `AppAction::None` at this point.
+- A `render_pending_confirmation(&mut self, ui) -> AppAction`, called once
+  per frame from `ui()`, is the *only* place that returns the real action —
+  and only on `ConfirmationStatus::Confirmed`. `Canceled` clears state and
+  dispatches nothing.
+- **Modal copy states exactly what will happen and to whom** — the
+  recipient's resolved display name (falling back to the base58 identity ID
+  when no name is known), the amount for a payment/request, and — for a
+  `Message` — the literal text being sent, quoted verbatim, so the user is
+  confirming the actual content, not just "send a message?".
+- `danger_mode(true)` only for actions that move real DASH (a `Payment`,
+  including fulfilling a `PaymentRequest`); everything else (contact
+  requests, messages, payment requests, publishing a shielded address) uses
+  the default non-danger styling — they cost credits but don't move funds.
+- **Never call `.cancel_text(None)` on one of these dialogs.** Every
+  instance must keep the default Cancel button so the user can always back
+  out gracefully; `ConfirmationDialog` also treats Escape and the window's
+  close button as Cancel unconditionally (regardless of `danger_mode`) — see
+  `ux-design-patterns.md` §4 for the underlying `ConfirmationDialog`
+  contract this all builds on.
+- One `pending_confirmation: Option<PendingConfirmation>` field per screen is
+  enough even when a screen has multiple trigger sites (e.g. Accept and Add
+  Contact share one in `orchardpay_screen.rs`) — only one modal can
+  meaningfully be open at a time, and `blocks_input(true)` already prevents
+  a second trigger from firing while one is pending.
+
 ## Status of implementation (Milestone tracker — see the OrchardPay plan)
 
 - **Done**: contract schema (this document, `src/backend_task/orchardpay/
