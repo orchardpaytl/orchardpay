@@ -18,6 +18,7 @@ pub mod modal_chrome;
 pub mod onboarding_progress;
 pub mod passphrase_modal;
 pub mod password_input;
+pub mod pill;
 pub mod progress_overlay;
 pub mod secret_prompt_host;
 pub mod selection_dialog;
