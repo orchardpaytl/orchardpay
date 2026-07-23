@@ -29,7 +29,9 @@ use crate::backend_task::{
     BackendTaskSuccessResult, NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout,
 };
 use crate::context::AppContext;
-use crate::model::orchardpay::OrchardPayContactState;
+use crate::model::orchardpay::{
+    OrchardPayContactState, validate_message_text, validate_payment_memo,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -272,6 +274,9 @@ pub async fn send_message(
     text: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    validate_message_text(&text)
+        .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
+
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
@@ -320,6 +325,11 @@ pub async fn send_payment_request(
     memo: Option<String>,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    if let Some(memo) = &memo {
+        validate_payment_memo(memo)
+            .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
+    }
+
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
@@ -373,6 +383,11 @@ pub async fn send_payment(
     memo: Option<String>,
     fulfilling_request_document_id: Option<Identifier>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    if let Some(memo) = &memo {
+        validate_payment_memo(memo)
+            .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
+    }
+
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;

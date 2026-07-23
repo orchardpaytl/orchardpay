@@ -273,6 +273,70 @@ pub fn is_credit_balance_blocked(credits: u64) -> bool {
 pub const CREDIT_BLOCKED_TOOLTIP: &str =
     "Identity credit balance is too low for this action. Add credits to your identity to continue.";
 
+/// Character ceiling for a `Message`'s text. Verified against the
+/// `encryptedMessage` contract's `msgData` 5120-byte ceiling
+/// (`contract_schema.json`): after bincode framing and the AES-256-GCM
+/// nonce/tag (~50-60 bytes total), 1000 characters is at most 4000 bytes
+/// even in UTF-8's worst case (4 bytes/char, e.g. emoji or CJK) — safely
+/// under budget for every script.
+pub const MAX_MESSAGE_CHARS: usize = 1000;
+
+/// Character ceiling for a `Payment`/`PaymentRequest`'s optional memo. Same
+/// byte-budget reasoning as [`MAX_MESSAGE_CHARS`].
+pub const MAX_PAYMENT_MEMO_CHARS: usize = 1000;
+
+/// Validates a `Message`'s text before it's sent. A message can't be empty
+/// (`min: 1`) — this subsumes the composer's old `.trim().is_empty()` check.
+pub fn validate_message_text(text: &str) -> Result<(), crate::model::validation::TextLengthError> {
+    crate::model::validation::validate_char_count(text, 1, MAX_MESSAGE_CHARS)
+}
+
+/// Validates a `Payment`/`PaymentRequest`'s optional memo before it's sent.
+/// A memo may be empty (`min: 0`) — mirrors `model/dashpay.rs`'s
+/// `validate_payment_memo`, kept as OrchardPay's own copy since DashPay is
+/// legacy (`docs/ORCHARDPAY_MIGRATION.md`) and OrchardPay shouldn't depend
+/// on it.
+pub fn validate_payment_memo(memo: &str) -> Result<(), crate::model::validation::TextLengthError> {
+    crate::model::validation::validate_char_count(memo, 0, MAX_PAYMENT_MEMO_CHARS)
+}
+
+#[cfg(test)]
+mod message_validation_tests {
+    use super::*;
+
+    #[test]
+    fn message_text_rejects_empty() {
+        assert!(validate_message_text("").is_err());
+    }
+
+    #[test]
+    fn message_text_accepts_up_to_the_limit_regardless_of_byte_width() {
+        // "é" is 2 bytes in UTF-8 — confirms the check counts characters,
+        // not bytes.
+        assert!(validate_message_text(&"é".repeat(MAX_MESSAGE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn message_text_rejects_one_over_the_limit() {
+        assert!(validate_message_text(&"m".repeat(MAX_MESSAGE_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn payment_memo_accepts_empty() {
+        assert!(validate_payment_memo("").is_ok());
+    }
+
+    #[test]
+    fn payment_memo_accepts_up_to_the_limit_regardless_of_byte_width() {
+        assert!(validate_payment_memo(&"é".repeat(MAX_PAYMENT_MEMO_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn payment_memo_rejects_one_over_the_limit() {
+        assert!(validate_payment_memo(&"m".repeat(MAX_PAYMENT_MEMO_CHARS + 1)).is_err());
+    }
+}
+
 #[cfg(test)]
 mod credit_balance_threshold_tests {
     use super::*;

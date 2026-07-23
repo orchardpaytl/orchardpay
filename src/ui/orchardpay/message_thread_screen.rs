@@ -18,7 +18,7 @@ use crate::model::fee_estimation::{
 };
 use crate::model::orchardpay::{
     CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, is_credit_balance_blocked,
-    is_credit_balance_low,
+    is_credit_balance_low, validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -363,7 +363,13 @@ impl MessageThreadScreen {
         let (task, title, message, danger_mode) = match self.compose_kind {
             ComposeKind::Message => {
                 let text = self.compose_text.trim().to_string();
-                if text.is_empty() {
+                if let Err(error) = validate_message_text(&text) {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The message is too long. Use 1000 characters or fewer and try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(error);
                     return AppAction::None;
                 }
                 let task = OrchardPayTask::SendMessage {
@@ -381,6 +387,15 @@ impl MessageThreadScreen {
                 )
             }
             ComposeKind::PaymentRequest => {
+                if let Some(error) = memo.as_deref().and_then(|m| validate_payment_memo(m).err()) {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The payment memo is too long. Use 1000 characters or fewer and try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(error);
+                    return AppAction::None;
+                }
                 let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -405,6 +420,15 @@ impl MessageThreadScreen {
                 )
             }
             ComposeKind::Payment => {
+                if let Some(error) = memo.as_deref().and_then(|m| validate_payment_memo(m).err()) {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The payment memo is too long. Use 1000 characters or fewer and try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(error);
+                    return AppAction::None;
+                }
                 let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

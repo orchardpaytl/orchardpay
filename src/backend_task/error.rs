@@ -1228,6 +1228,21 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
+    /// An OrchardPay message exceeded the shared character limit.
+    #[error("The message is too long. Use 1000 characters or fewer and try again.")]
+    OrchardPayMessageTooLong {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
+    /// An OrchardPay payment/payment-request memo exceeded the shared
+    /// character limit.
+    #[error("The payment memo is too long. Use 1000 characters or fewer and try again.")]
+    OrchardPayMemoTooLong {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
     /// A searchable contract keyword fell outside the shared character range.
     #[error("A contract keyword has an invalid length. Use 3 to 50 characters and try again.")]
     InvalidContractKeywordLength {
