@@ -1,5 +1,11 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 #[cfg(feature = "testing")]
+use dash_sdk::dashcore_rpc::dashcore::Network;
+#[cfg(feature = "testing")]
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+#[cfg(feature = "testing")]
 use orchardpay::app::AppAction;
 #[cfg(feature = "testing")]
 use orchardpay::backend_task::BackendTask;
@@ -11,12 +17,6 @@ use orchardpay::model::wallet::Wallet;
 use orchardpay::model::wallet::birth_height::WalletOrigin;
 use orchardpay::ui::ScreenLike;
 use orchardpay::ui::wallets::wallets_screen::WalletsBalancesScreen;
-#[cfg(feature = "testing")]
-use dash_sdk::dashcore_rpc::dashcore::Network;
-#[cfg(feature = "testing")]
-use dash_sdk::dpp::address_funds::PlatformAddress;
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 #[cfg(feature = "testing")]
 use std::cell::Cell;
 #[cfg(feature = "testing")]

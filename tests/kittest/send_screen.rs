@@ -1,14 +1,4 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use dash_evo_tool::app::AppAction;
-use dash_evo_tool::backend_task::BackendTask;
-use dash_evo_tool::backend_task::shielded::ShieldedTask;
-use dash_evo_tool::backend_task::wallet::WalletTask;
-use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
-use dash_evo_tool::model::amount::Amount;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
@@ -19,6 +9,16 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::app::AppAction;
+use orchardpay::backend_task::BackendTask;
+use orchardpay::backend_task::shielded::ShieldedTask;
+use orchardpay::backend_task::wallet::WalletTask;
+use orchardpay::model::address::{ValidatedAddress, encode_shielded_address};
+use orchardpay::model::amount::Amount;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::model::wallet::Wallet;
+use orchardpay::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -232,7 +232,7 @@ fn routes_shielded_pool_to_shielded_address() {
     let seed_hash = rand::random();
     let destination = shielded_address();
     let recipient_address_bytes =
-        dash_evo_tool::model::address::parse_shielded_recipient(&destination)
+        orchardpay::model::address::parse_shielded_recipient(&destination)
             .expect("valid shielded recipient");
     let action = assert_route(
         SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS),
@@ -244,6 +244,7 @@ fn routes_shielded_pool_to_shielded_address() {
         seed_hash: task_seed_hash,
         amount,
         recipient_address_bytes: task_recipient,
+        memo: _,
     })) = action
     else {
         panic!("expected shielded transfer task");
