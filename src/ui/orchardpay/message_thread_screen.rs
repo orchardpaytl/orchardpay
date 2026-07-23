@@ -48,16 +48,21 @@ use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui::{RichText, Ui};
 use std::sync::{Arc, RwLock};
 
-/// Leading space before one of my own message bubbles — roughly a
-/// 7-character indent at the default 14px body text size, so incoming and
+/// Leading space before one of my own message bubbles, so incoming and
 /// outgoing messages read as visually distinct columns.
-const MY_MESSAGE_INDENT: f32 = 28.0;
+const MY_MESSAGE_INDENT: f32 = 48.0;
 
 /// Cap on a message bubble's width, so a short message doesn't stretch
 /// into a nearly-empty row just to make room for the right-aligned
 /// timestamp, and a long one wraps instead of running off the screen.
 /// Clamped against the available width so it still fits a narrow window.
-const MESSAGE_BUBBLE_MAX_WIDTH: f32 = 480.0;
+///
+/// `egui::Sides` (the header row's name/timestamp layout) always extends
+/// the timestamp out to whatever width it's given, regardless of how short
+/// the actual message is — so this constant is also what determines how
+/// far the timestamp sits from the name. Kept narrower than a chat bubble
+/// might otherwise want for exactly that reason.
+const MESSAGE_BUBBLE_MAX_WIDTH: f32 = 340.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeKind {
@@ -203,7 +208,7 @@ impl MessageThreadScreen {
             .and_then(|w| w.read().ok().map(|w| w.seed_hash()))
     }
 
-    /// "Identity Balance: X DASH · Low Credits   Shielded balance: Y DASH", rendered
+    /// "Identity Balance: X DASH · Low Credits   Shielded Balance: Y DASH", rendered
     /// on the far right of the shared top panel. The credit half reads
     /// straight off `self.identity` (no live push exists for it, unlike
     /// shielded balance — see `pending_identity_refresh`). The shielded half
@@ -223,7 +228,7 @@ impl MessageThreadScreen {
             label.push_str("  ·  Low Credits");
         }
         label.push_str(&format!(
-            "                        Shielded balance: {}",
+            "                        Shielded Balance: {}",
             format_credits_as_dash_significant(shielded, 4)
         ));
         Some(label)
@@ -520,37 +525,66 @@ impl MessageThreadScreen {
                         }
                         MessageContent::Payment { amount, memo } => {
                             let display_amount = message.verified_amount.unwrap_or(*amount);
-                            ui.label(
-                                RichText::new(format!(
-                                    "Payment: {}",
-                                    format_credits_as_dash(display_amount)
-                                ))
-                                .strong(),
-                            );
-                            if let Some(verified) = message.verified_amount
-                                && verified != *amount
-                            {
+                            ui.vertical_centered(|ui| {
                                 ui.label(
                                     RichText::new(format!(
-                                        "This message claims {}, but the actual transfer was {}.",
-                                        format_credits_as_dash(*amount),
-                                        format_credits_as_dash(verified)
+                                        "Payment: {}",
+                                        format_credits_as_dash(display_amount)
                                     ))
-                                    .color(DashColors::warning_color(dark_mode)),
+                                    .strong(),
                                 );
-                            }
+                            });
                             if let Some(memo) = memo {
                                 ui.label(memo);
                             }
+                            match message.verified_amount {
+                                Some(verified) if verified == *amount => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Verified — {}",
+                                            format_credits_as_dash(verified)
+                                        ))
+                                        .strong()
+                                        .color(DashColors::success_color(dark_mode)),
+                                    );
+                                }
+                                Some(verified) => {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Verified — but the amount received was {} (message said {})",
+                                            format_credits_as_dash(verified),
+                                            format_credits_as_dash(*amount)
+                                        ))
+                                        .strong()
+                                        .color(DashColors::warning_color(dark_mode)),
+                                    );
+                                }
+                                None if !shielded_state_ready => {
+                                    ui.label(
+                                        RichText::new("Checking payment status…")
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new("Awaiting Shielded Sync Completion")
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                            }
                         }
                         MessageContent::PaymentRequest { amount, memo } => {
-                            ui.label(
-                                RichText::new(format!(
-                                    "Payment request: {}",
-                                    format_credits_as_dash(*amount)
-                                ))
-                                .strong(),
-                            );
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Payment Request: {}",
+                                        format_credits_as_dash(*amount)
+                                    ))
+                                    .strong(),
+                                );
+                            });
                             if let Some(memo) = memo {
                                 ui.label(memo);
                             }
@@ -591,13 +625,22 @@ impl MessageThreadScreen {
                                     );
                                 }
                                 None => {
-                                    if ui
-                                        .add_enabled(!credit_blocked, egui::Button::new("Pay"))
-                                        .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-                                        .clicked()
-                                    {
-                                        reply_target = Some((message.document_id, *amount));
-                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    !credit_blocked,
+                                                    egui::Button::new("Pay"),
+                                                )
+                                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                                                .clicked()
+                                            {
+                                                reply_target =
+                                                    Some((message.document_id, *amount));
+                                            }
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -614,72 +657,98 @@ impl MessageThreadScreen {
         ui.separator();
         ui.add_space(6.0);
 
+        // Indented and width-capped the same as one of "my" message bubbles
+        // (`MY_MESSAGE_INDENT`/`MESSAGE_BUBBLE_MAX_WIDTH`) — composing is
+        // always "my" side of the conversation, so the whole block (kind
+        // selector, input, Send button) lines up under that same column
+        // instead of spreading across the full panel width.
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.compose_kind, ComposeKind::Message, "Message");
-            ui.selectable_value(&mut self.compose_kind, ComposeKind::Payment, "Payment");
-            ui.selectable_value(
-                &mut self.compose_kind,
-                ComposeKind::PaymentRequest,
-                "Payment Request",
-            );
-        });
-        ui.add_space(4.0);
+            ui.add_space(MY_MESSAGE_INDENT);
+            ui.vertical(|ui| {
+                ui.set_max_width(ui.available_width().min(MESSAGE_BUBBLE_MAX_WIDTH));
 
-        match self.compose_kind {
-            ComposeKind::Message => {
-                ui.text_edit_multiline(&mut self.compose_text);
-            }
-            ComposeKind::Payment | ComposeKind::PaymentRequest => {
-                // A `Payment` spends from the shielded balance, so cap the
-                // input at what's actually available after the shielded
-                // transfer's own fee — `PaymentRequest` isn't a spend (it's
-                // just an ask), so it carries no cap. The widget persists
-                // across `compose_kind` switches within one compose
-                // session, so this must run every frame rather than only at
-                // creation, or a cap set while composing a Payment would
-                // wrongly bleed into a PaymentRequest (or vice versa).
-                let available = (self.compose_kind == ComposeKind::Payment)
-                    .then(|| self.seed_hash())
-                    .flatten()
-                    .map(|seed_hash| {
-                        let balance = self.app_context.shielded_balance_credits(&seed_hash);
-                        let fee = shielded_fee_for_actions(2, self.app_context.platform_version())
-                            .unwrap_or(0);
-                        balance.saturating_sub(fee)
-                    });
-
-                let widget = self.compose_amount_input.get_or_insert_with(|| {
-                    AmountInput::new(Amount::new_dash(0.0)).with_label("Amount (DASH):")
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.compose_kind, ComposeKind::Message, "Message");
+                    ui.selectable_value(&mut self.compose_kind, ComposeKind::Payment, "Payment");
+                    ui.selectable_value(
+                        &mut self.compose_kind,
+                        ComposeKind::PaymentRequest,
+                        "Payment Request",
+                    );
                 });
+                ui.add_space(4.0);
+
                 match self.compose_kind {
-                    ComposeKind::Payment => {
-                        widget.set_max_amount(available);
-                        widget
-                            .set_max_exceeded_hint(Some("Insufficient Shielded Funds".to_string()));
+                    ComposeKind::Message => {
+                        // Fills the capped column width above instead of
+                        // egui's default fixed `text_edit_width` (280px) —
+                        // otherwise the box would render narrower than the
+                        // column the Send button below it aligns to.
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.compose_text)
+                                .desired_width(f32::INFINITY),
+                        );
                     }
-                    _ => {
-                        widget.set_max_amount(None);
-                        widget.set_max_exceeded_hint(None);
+                    ComposeKind::Payment | ComposeKind::PaymentRequest => {
+                        // A `Payment` spends from the shielded balance, so cap
+                        // the input at what's actually available after the
+                        // shielded transfer's own fee — `PaymentRequest` isn't
+                        // a spend (it's just an ask), so it carries no cap.
+                        // The widget persists across `compose_kind` switches
+                        // within one compose session, so this must run every
+                        // frame rather than only at creation, or a cap set
+                        // while composing a Payment would wrongly bleed into
+                        // a PaymentRequest (or vice versa).
+                        let available = (self.compose_kind == ComposeKind::Payment)
+                            .then(|| self.seed_hash())
+                            .flatten()
+                            .map(|seed_hash| {
+                                let balance = self.app_context.shielded_balance_credits(&seed_hash);
+                                let fee = shielded_fee_for_actions(
+                                    2,
+                                    self.app_context.platform_version(),
+                                )
+                                .unwrap_or(0);
+                                balance.saturating_sub(fee)
+                            });
+
+                        let widget = self.compose_amount_input.get_or_insert_with(|| {
+                            AmountInput::new(Amount::new_dash(0.0)).with_label("Amount (DASH):")
+                        });
+                        match self.compose_kind {
+                            ComposeKind::Payment => {
+                                widget.set_max_amount(available);
+                                widget.set_max_exceeded_hint(Some(
+                                    "Insufficient Shielded Funds".to_string(),
+                                ));
+                            }
+                            _ => {
+                                widget.set_max_amount(None);
+                                widget.set_max_exceeded_hint(None);
+                            }
+                        }
+                        let response = widget.show(ui);
+                        response.inner.update(&mut self.compose_amount);
+                        ui.horizontal(|ui| {
+                            ui.label("Note (optional):");
+                            ui.text_edit_singleline(&mut self.compose_memo);
+                        });
                     }
                 }
-                let response = widget.show(ui);
-                response.inner.update(&mut self.compose_amount);
-                ui.horizontal(|ui| {
-                    ui.label("Note (optional):");
-                    ui.text_edit_singleline(&mut self.compose_memo);
-                });
-            }
-        }
-        ui.add_space(6.0);
+                ui.add_space(6.0);
 
-        let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
-        if ui
-            .add_enabled(!self.sending && !credit_blocked, egui::Button::new("Send"))
-            .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-            .clicked()
-        {
-            action |= self.send_clicked();
-        }
+                let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(!self.sending && !credit_blocked, egui::Button::new("Send"))
+                        .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                        .clicked()
+                    {
+                        action |= self.send_clicked();
+                    }
+                });
+            });
+        });
 
         action
     }

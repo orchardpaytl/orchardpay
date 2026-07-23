@@ -311,7 +311,7 @@ impl OrchardPayScreen {
         LocalReadiness::ContractConfigured
     }
 
-    /// "Identity Balance: X DASH · Low Credits   Shielded balance: Y DASH", rendered
+    /// "Identity Balance: X DASH · Low Credits   Shielded Balance: Y DASH", rendered
     /// on the far right of the shared top panel so a user composing a
     /// Payment can see what they have to work with without leaving
     /// OrchardPay. The credit half reads straight off the resolved
@@ -337,7 +337,7 @@ impl OrchardPayScreen {
             label.push_str("                        ");
         }
         label.push_str(&format!(
-            "Shielded balance: {}",
+            "Shielded Balance: {}",
             format_credits_as_dash_significant(shielded, 4)
         ));
         Some(label)

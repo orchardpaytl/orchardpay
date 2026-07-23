@@ -669,21 +669,21 @@ fn decode_thread_message(
     let content = MessageContent::decrypt(shared_secret, msg_bytes).ok()?;
 
     let verified_amount = match &content {
-        MessageContent::Payment { .. } => backend
-            .orchardpay_get_verified_payment_amount(seed_hash, &document.id())
-            .ok()
-            .flatten(),
         // The k/v cache is the fast path, written by the incoming-memo
-        // scan (requester received a fulfillment) or `send_payment`'s own
-        // optimistic post-send record (payer sent one) — but both of
-        // those can lag or be lost: the scan runs on its own resumable
-        // cursor independent of the wallet's normal sync, and the payer's
-        // local write doesn't survive a reinstall. `outgoing_payments`/
-        // `incoming_payments` reconstruct the same fact straight from this
-        // wallet's already-synced notes, so a `PaymentRequest`'s status
-        // here is never less current than what the Shielded TXs tab
-        // already shows for the same note.
-        MessageContent::PaymentRequest { .. } => backend
+        // scan (the other side received a fulfillment/payment) or
+        // `send_payment`'s own optimistic post-send record (only written
+        // when fulfilling a request — a freeform `Payment` never gets that
+        // write) — but both of those can lag or be lost: the scan runs on
+        // its own resumable cursor independent of the wallet's normal
+        // sync, and the payer's local write doesn't survive a reinstall.
+        // `outgoing_payments`/`incoming_payments` reconstruct the same fact
+        // straight from this wallet's already-synced notes — keyed by
+        // whatever document ID the transfer's memo names, which for a
+        // freeform `Payment` is its own document ID (see `send_payment`'s
+        // `memo_target_document_id`), not just a fulfilled request's — so
+        // a `Payment`/`PaymentRequest`'s status here is never less current
+        // than what the Shielded TXs tab already shows for the same note.
+        MessageContent::Payment { .. } | MessageContent::PaymentRequest { .. } => backend
             .orchardpay_get_verified_payment_amount(seed_hash, &document.id())
             .ok()
             .flatten()
