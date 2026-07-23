@@ -468,8 +468,13 @@ mod tests {
     }
 
     /// The first launch after upgrading (before this import existed) wrote a
-    /// `default()` blob over the user's preferences. The import must repair
-    /// that, not treat the default blob as a user choice worth keeping.
+    /// `default()`-shaped blob over the user's preferences. The import must
+    /// repair that, not treat the default blob as a user choice worth
+    /// keeping. `legacy_db` always seeds a `testnet` legacy row, so the
+    /// blob here is seeded with `Mainnet` explicitly (rather than relying on
+    /// `AppSettings::default()`, which is itself `Testnet`) — otherwise pre-
+    /// and post-import values would coincidentally match and the test
+    /// wouldn't actually prove an overwrite happened.
     #[test]
     fn import_overwrites_the_default_blob_a_prior_launch_wrote() {
         let dir = tempfile::tempdir().unwrap();
@@ -479,9 +484,12 @@ mod tests {
             .put(
                 DetScope::Global,
                 AppSettings::KV_KEY,
-                &AppSettings::default(),
+                &AppSettings {
+                    network: Network::Mainnet,
+                    ..AppSettings::default()
+                },
             )
-            .expect("seed default blob");
+            .expect("seed default-shaped blob");
         assert_eq!(stored(&app_kv).unwrap().network, Network::Mainnet);
 
         import_legacy_settings(&app_kv, &db).expect("import");
@@ -489,7 +497,7 @@ mod tests {
         assert_eq!(
             stored(&app_kv).unwrap().network,
             Network::Testnet,
-            "the reset-to-mainnet blob must be repaired from the legacy row",
+            "the stale default-shaped blob must be repaired from the legacy row",
         );
     }
 
@@ -541,7 +549,13 @@ mod tests {
         ));
         assert_eq!(stored(&app_kv).unwrap().network, Network::Testnet);
 
-        let chosen = AppSettings::default();
+        // Distinct from the legacy row's `testnet` network, so the final
+        // assertion actually proves the retry left it alone rather than
+        // coincidentally re-writing the same value.
+        let chosen = AppSettings {
+            network: Network::Mainnet,
+            ..AppSettings::default()
+        };
         app_kv
             .put(DetScope::Global, AppSettings::KV_KEY, &chosen)
             .expect("user restores the pre-import settings");
@@ -563,11 +577,18 @@ mod tests {
         let db = legacy_db(dir.path());
         let store = Arc::new(FailKeyOnceKv::default());
         let app_kv = DetKv::from_store(store.clone());
+        // Distinct from the legacy row's `testnet` network, so the
+        // post-failure assertion below actually proves the write failed
+        // (blob untouched) rather than coincidentally matching what a
+        // successful import would have written anyway.
         app_kv
             .put(
                 DetScope::Global,
                 AppSettings::KV_KEY,
-                &AppSettings::default(),
+                &AppSettings {
+                    network: Network::Mainnet,
+                    ..AppSettings::default()
+                },
             )
             .expect("seed stale default blob");
         store.fail_next_put(AppSettings::KV_KEY);

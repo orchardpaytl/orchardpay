@@ -246,7 +246,7 @@ impl AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            network: Network::Mainnet,
+            network: Network::Testnet,
             root_screen_type: RootScreenType::RootScreenDashpay,
             dash_qt_path: detect_dash_qt_path(),
             overwrite_dash_conf: true,
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn default_matches_expected_fresh_install_values() {
         let s = AppSettings::default();
-        assert_eq!(s.network, Network::Mainnet);
+        assert_eq!(s.network, Network::Testnet);
         assert!(matches!(s.theme_mode, ThemeMode::System));
         // No explicit role on a fresh install; the concrete role is seeded
         // from `.env` at the load site (`AppContext::get_app_settings`).
