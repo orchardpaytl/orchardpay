@@ -695,23 +695,6 @@ impl MessageThreadScreen {
                         ui,
                         |ui| {
                             ui.label(RichText::new(sender_label).strong());
-                            // Suppressed for `PaymentRequest`: its own
-                            // amount/memo are never editable through any
-                            // other path, so an updatedAt/createdAt
-                            // mismatch on this kind always means
-                            // "cancelled" — the dedicated "Request
-                            // Cancelled" status line below already
-                            // communicates that; showing both here too
-                            // would be redundant.
-                            if message.updated_at.is_some()
-                                && message.updated_at != message.created_at
-                                && !matches!(message.content, MessageContent::PaymentRequest { .. })
-                            {
-                                ui.label(
-                                    RichText::new("(edited)")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                            }
                         },
                         |ui| {
                             if let Some(timestamp) =
@@ -726,14 +709,46 @@ impl MessageThreadScreen {
                         },
                     );
 
+                    // Suppressed for `PaymentRequest`: its own amount/memo
+                    // are never editable through any other path, so an
+                    // updatedAt/createdAt mismatch on this kind always
+                    // means "cancelled" — the dedicated "Request Cancelled"
+                    // status line already communicates that; showing this
+                    // tag too would be redundant. Rendered per-kind, right
+                    // below that kind's own text, rather than once here —
+                    // "the text" is a different element per kind.
+                    let is_edited = message.updated_at.is_some()
+                        && message.updated_at != message.created_at
+                        && !matches!(message.content, MessageContent::PaymentRequest { .. });
+                    let show_edited_tag = |ui: &mut Ui| {
+                        if is_edited {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new("(edited)")
+                                            .strong()
+                                            .color(DashColors::success_color(dark_mode)),
+                                    );
+                                },
+                            );
+                        }
+                    };
+
                     match &message.content {
                         MessageContent::Message { data } => {
-                            let response = ui.add(egui::Label::new(data).sense(egui::Sense::click()));
-                            if message.from_me && response.clicked() {
-                                bubble_action = Some(BubbleAction::ToggleExpanded {
-                                    document_id: message.document_id,
-                                });
+                            if message.from_me {
+                                let response = ui
+                                    .add(egui::Label::new(data).sense(egui::Sense::click()));
+                                if response.clicked() {
+                                    bubble_action = Some(BubbleAction::ToggleExpanded {
+                                        document_id: message.document_id,
+                                    });
+                                }
+                            } else {
+                                ui.label(data);
                             }
+                            show_edited_tag(ui);
                             if message.from_me && is_expanded {
                                 let (delete_clicked, edit_clicked) = egui::Sides::new().show(
                                     ui,
@@ -765,13 +780,18 @@ impl MessageThreadScreen {
                             });
                             match memo {
                                 Some(memo_text) => {
-                                    let response = ui.add(
-                                        egui::Label::new(memo_text).sense(egui::Sense::click()),
-                                    );
-                                    if message.from_me && response.clicked() {
-                                        bubble_action = Some(BubbleAction::ToggleExpanded {
-                                            document_id: message.document_id,
-                                        });
+                                    if message.from_me {
+                                        let response = ui.add(
+                                            egui::Label::new(memo_text)
+                                                .sense(egui::Sense::click()),
+                                        );
+                                        if response.clicked() {
+                                            bubble_action = Some(BubbleAction::ToggleExpanded {
+                                                document_id: message.document_id,
+                                            });
+                                        }
+                                    } else {
+                                        ui.label(memo_text);
                                     }
                                     if message.from_me && is_expanded {
                                         ui.with_layout(
@@ -804,6 +824,7 @@ impl MessageThreadScreen {
                                 }
                                 None => {}
                             }
+                            show_edited_tag(ui);
                             match message.verified_amount {
                                 Some(verified) if verified == *amount => {
                                     ui.label(
