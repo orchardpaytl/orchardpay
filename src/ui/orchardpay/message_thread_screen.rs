@@ -909,6 +909,13 @@ impl ScreenLike for MessageThreadScreen {
             let mut reply_target: Option<(Identifier, u64)> = None;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() * 0.6)
+                // Opens on the most recent messages (the bottom, since
+                // `self.messages` is chronological oldest-first) and follows
+                // new messages/payments/requests as they're appended —
+                // unless the user has manually scrolled up to read history,
+                // in which case egui's own stuck-to-end tracking backs off
+                // and leaves them where they are.
+                .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for message in self.messages.clone() {
                         if let Some(target) = self.render_message_bubble(ui, &message) {
