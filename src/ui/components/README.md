@@ -51,6 +51,7 @@ directory.
 |-----------|------|------------|-------------|
 | `ConfirmationDialog` | `confirmation_dialog.rs` | `ConfirmationStatus` | Modal confirm/cancel with danger mode |
 | `SelectionDialog` | `selection_dialog.rs` | `SelectionStatus` | Modal with ComboBox selection |
+| `TextEditDialog` | `text_edit_dialog.rs` | `TextEditStatus` | Modal free-text edit against a shared `model` character-length validator, with a live counter and a Save button disabled while invalid |
 | `InfoPopup` | `info_popup.rs` | N/A | Info popup with optional markdown |
 | `WalletUnlockPopup` | `wallet_unlock_popup.rs` | `WalletUnlockResult` | Password-based wallet unlock (renders via shared `passphrase_modal`) |
 | `passphrase_modal()` | `passphrase_modal.rs` | `PassphraseModalOutcome` | Shared passphrase-entry chrome: overlay, centered window, `PasswordInput`, error line, optional extra body (e.g. remember checkbox). Cancellable prompts map Cancel/Esc/X/click-outside to Cancel; blocking prompts expose only their configured actions. |

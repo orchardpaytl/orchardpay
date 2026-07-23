@@ -132,6 +132,43 @@ pub enum OrchardPayTask {
         memo: Option<String>,
         fulfilling_request_document_id: Option<dash_sdk::platform::Identifier>,
     },
+    /// Edit a `Message` I sent. See `messages::edit_message`.
+    EditMessage {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        document_id: dash_sdk::platform::Identifier,
+        new_text: String,
+        seed_hash: WalletSeedHash,
+    },
+    /// Edit a `Payment`'s memo (never its amount). See
+    /// `messages::edit_payment_memo`.
+    EditPaymentMemo {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        document_id: dash_sdk::platform::Identifier,
+        new_memo: Option<String>,
+        seed_hash: WalletSeedHash,
+    },
+    /// Cancel a `PaymentRequest` I created — never deletes it, only while
+    /// unpaid. See `messages::cancel_payment_request`.
+    CancelPaymentRequest {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        document_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+    },
+    /// Delete a `Message` I sent — a true document delete, only ever
+    /// offered for this content kind. See `messages::delete_message`.
+    DeleteMessage {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        document_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+    },
     /// Load the full two-way `encryptedMessage` thread with an established
     /// contact. See `messages::load_thread`.
     LoadThread {
@@ -299,6 +336,82 @@ impl AppContext {
                     amount,
                     memo,
                     fulfilling_request_document_id,
+                )
+                .await
+            }
+            OrchardPayTask::EditMessage {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                document_id,
+                new_text,
+                seed_hash,
+            } => {
+                messages::edit_message(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    document_id,
+                    new_text,
+                    seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::EditPaymentMemo {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                document_id,
+                new_memo,
+                seed_hash,
+            } => {
+                messages::edit_payment_memo(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    document_id,
+                    new_memo,
+                    seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::CancelPaymentRequest {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                document_id,
+                seed_hash,
+            } => {
+                messages::cancel_payment_request(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    document_id,
+                    seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::DeleteMessage {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+                document_id,
+                seed_hash,
+            } => {
+                messages::delete_message(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
+                    document_id,
+                    seed_hash,
                 )
                 .await
             }

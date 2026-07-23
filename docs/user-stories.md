@@ -938,13 +938,15 @@ As a user, I want to set a display name, bio, and avatar visible to my OrchardPa
 
 - Reuses the existing DashPay profile editor (display name, bio, avatar) — profile identity info is shared across both features, only the contact/messaging model differs.
 
-### ORP-010: Edit or delete a sent message [Gap]
+### ORP-010: Edit or delete a sent message, edit a payment's memo, or cancel a payment request [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to edit or delete a message I sent so that I can correct mistakes or remove something I didn't mean to send.
+As a user, I want to correct or remove a message I sent, add or fix a payment's note, or call off a payment request I no longer want fulfilled, so that mistakes don't have to stay in the conversation permanently.
 
-- The `encryptedMessage` schema already supports mutation and deletion, and the thread view already renders an "(edited)" indicator when a message's update time differs from its creation time.
-- No compose-side edit or delete action exists yet in the UI — messages can only be sent, not modified afterward from this app.
+- Clicking a `Message` bubble's text (mine only) reveals both a "Delete" and an "Edit Message" button. "Edit Message" opens a modal with the current text, a live character counter, and a Save button disabled while over the 1000-character limit — saving replaces the document in place, and the thread already renders an "(edited)" tag whenever a message's update time differs from its creation time. "Delete" opens a confirming modal ("Delete Message?") and, on confirmation, permanently removes the document — a true delete, not a placeholder, so the message disappears from both parties' conversation entirely, with no "this message was deleted" trace left behind. Deletion is offered only for `Message` content, never for a `Payment` or `PaymentRequest`.
+- A `Payment`'s memo (mine only) is editable the same way as a message's text — click-to-reveal "Edit Memo" when a memo already exists, or an "Add Memo" button when it doesn't. The amount is never editable, since it's sourced from the shielded transfer itself, not the message.
+- A `PaymentRequest`'s amount and memo are never editable — only its own creator can cancel it, and only before it's been paid, via a "Cancel Request" button next to "Awaiting payment" that opens a confirming modal ("Cancel Request?"). Cancelling never deletes the document; it replaces the memo with a `"CANCELED: "`-prefixed version, which both sides render as "Request Cancelled" in place of the Pay button (payer) or "Awaiting payment" (requester) — no plaintext or schema change, since a `PaymentRequest`'s amount/memo are otherwise immutable, so the resulting update-time mismatch is itself the unambiguous cancelled signal.
+- Saving an edit dispatches immediately once valid — no second confirmation, since the edit modal's own Save button is the confirming action; deleting a message and cancelling a request both still show their own confirming (danger-mode) modal, since those are destructive/other-party-visible actions.
 
 ### ORP-011: Review my shielded notes as unspent and spent [Implemented]
 **Persona:** Alex, Priya, Jordan

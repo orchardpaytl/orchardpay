@@ -37,7 +37,9 @@ use crate::model::wallet::WalletSeedHash;
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0, DocumentV0Getters};
+use dash_sdk::dpp::document::{
+    Document as DppDocument, DocumentV0, DocumentV0Getters, DocumentV0Setters,
+};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -262,6 +264,337 @@ async fn broadcast_encrypted_message(
     };
     let result = app_context.run_document_task(task, sdk).await?;
     Ok((result, document_id))
+}
+
+/// Extract the raw encrypted `msgData` bytes from a fetched document.
+fn extract_msg_data(document: &Document) -> Result<Vec<u8>, TaskError> {
+    match document.properties().get(MSG_DATA_FIELD) {
+        Some(Value::Bytes(bytes)) => Ok(bytes.clone()),
+        _ => {
+            Err(OrchardPayError::Crypto(super::encryption::OrchardPayCryptoError::Malformed).into())
+        }
+    }
+}
+
+/// Fetch `document_id`, bump its revision, and decrypt its current content
+/// under `shared_secret` — the peek step every edit/cancel flow needs
+/// before deciding what to replace it with (preserving an immutable field,
+/// checking the existing content kind, or checking for a prior cancel).
+async fn fetch_and_decrypt_own_message(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    orchardpay_contract: &Arc<DataContract>,
+    document_id: Identifier,
+    shared_secret: &[u8; 32],
+) -> Result<(Document, MessageContent), TaskError> {
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(ENCRYPTED_MESSAGE_DOCUMENT_TYPE)
+        .expect(
+            "encryptedMessage document type is part of the checked-in OrchardPay contract schema",
+        );
+    let document = app_context
+        .fetch_document_for_mutation(
+            sdk,
+            orchardpay_contract.clone(),
+            &document_type,
+            document_id,
+        )
+        .await?;
+    let content = MessageContent::decrypt(shared_secret, &extract_msg_data(&document)?)
+        .map_err(OrchardPayError::Crypto)?;
+    Ok((document, content))
+}
+
+/// Re-encrypt `new_content` under `shared_secret` into `document` (already
+/// fetched + revision-bumped by [`fetch_and_decrypt_own_message`]) and
+/// submit the replace transition — the edit/cancel counterpart to
+/// [`broadcast_encrypted_message`]. Only ever called with a document this
+/// identity owns (the outbound key is the same one used to encrypt it at
+/// original send time), so no inbound-direction variant exists.
+#[allow(clippy::too_many_arguments)]
+async fn replace_encrypted_message(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    orchardpay_contract: &Arc<DataContract>,
+    mut document: Document,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    new_content: MessageContent,
+    shared_secret: &[u8; 32],
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(ENCRYPTED_MESSAGE_DOCUMENT_TYPE)
+        .expect(
+            "encryptedMessage document type is part of the checked-in OrchardPay contract schema",
+        );
+
+    let msg_bytes = new_content
+        .encrypt(shared_secret)
+        .map_err(OrchardPayError::Crypto)?;
+    document.set(MSG_DATA_FIELD, Value::Bytes(msg_bytes));
+
+    let task = DocumentTask::ReplaceDocument {
+        document,
+        document_type,
+        data_contract: orchardpay_contract.clone(),
+        qualified_identity,
+        identity_key,
+        token_payment_info: None,
+    };
+    app_context.run_document_task(task, sdk).await
+}
+
+/// Edit a `Message` I sent — replaces its text in place, preserving the
+/// document's own ID and thread position. Advances `$updatedAt`, which the
+/// thread view already renders as an "(edited)" tag.
+#[allow(clippy::too_many_arguments)]
+pub async fn edit_message(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    counterparty_identity_id: Identifier,
+    document_id: Identifier,
+    new_text: String,
+    seed_hash: WalletSeedHash,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    validate_message_text(&new_text)
+        .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
+
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let backend = app_context.wallet_backend()?;
+    let EstablishedRelationship {
+        counterparty_decryption_pubkey: dec_pk,
+        ..
+    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+
+    let (document, existing_content) = fetch_and_decrypt_own_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document_id,
+        &shared_secret,
+    )
+    .await?;
+    if !matches!(existing_content, MessageContent::Message { .. }) {
+        return Err(TaskError::OrchardPayEditTargetMismatch);
+    }
+
+    replace_encrypted_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document,
+        qualified_identity,
+        identity_key,
+        MessageContent::Message { data: new_text },
+        &shared_secret,
+    )
+    .await
+}
+
+/// Delete a `Message` I sent — a true Platform document delete (the schema
+/// is `canBeDeleted: true`), not a soft-delete/tombstone: once this
+/// succeeds, the document is gone and disappears from both parties' thread
+/// on their next reload, with no trace left behind. Only ever offered for
+/// `Message` content — `Payment`/`PaymentRequest` documents are never
+/// deleted, only cancelled (see `cancel_payment_request`).
+pub async fn delete_message(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    counterparty_identity_id: Identifier,
+    document_id: Identifier,
+    seed_hash: WalletSeedHash,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let backend = app_context.wallet_backend()?;
+    let EstablishedRelationship {
+        counterparty_decryption_pubkey: dec_pk,
+        ..
+    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+
+    let (_document, existing_content) = fetch_and_decrypt_own_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document_id,
+        &shared_secret,
+    )
+    .await?;
+    if !matches!(existing_content, MessageContent::Message { .. }) {
+        return Err(TaskError::OrchardPayDeleteTargetMismatch);
+    }
+
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(ENCRYPTED_MESSAGE_DOCUMENT_TYPE)
+        .expect(
+            "encryptedMessage document type is part of the checked-in OrchardPay contract schema",
+        );
+    let task = DocumentTask::DeleteDocument {
+        document_id,
+        document_type,
+        data_contract: orchardpay_contract.clone(),
+        qualified_identity,
+        identity_key,
+        token_payment_info: None,
+    };
+    app_context.run_document_task(task, sdk).await
+}
+
+/// Edit a `Payment`'s memo — the amount is never touched, since it's
+/// sourced from the shielded transfer, not the message; the original
+/// decrypted amount is always reused verbatim regardless of caller input
+/// (the task itself carries no `amount` field, so there's no path for a
+/// tampered amount to reach this function).
+#[allow(clippy::too_many_arguments)]
+pub async fn edit_payment_memo(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    counterparty_identity_id: Identifier,
+    document_id: Identifier,
+    new_memo: Option<String>,
+    seed_hash: WalletSeedHash,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    if let Some(memo) = &new_memo {
+        validate_payment_memo(memo)
+            .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
+    }
+
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let backend = app_context.wallet_backend()?;
+    let EstablishedRelationship {
+        counterparty_decryption_pubkey: dec_pk,
+        ..
+    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+
+    let (document, existing_content) = fetch_and_decrypt_own_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document_id,
+        &shared_secret,
+    )
+    .await?;
+    let MessageContent::Payment { amount, .. } = existing_content else {
+        return Err(TaskError::OrchardPayEditTargetMismatch);
+    };
+
+    replace_encrypted_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document,
+        qualified_identity,
+        identity_key,
+        MessageContent::Payment {
+            amount,
+            memo: new_memo,
+        },
+        &shared_secret,
+    )
+    .await
+}
+
+/// Cancel a `PaymentRequest` I created — never deletes it. Prepends
+/// `"CANCELED: "` to its memo (or sets it to `"CANCELED"` if it had none)
+/// and replaces the document, which advances `$updatedAt` past
+/// `$createdAt`. Since a `PaymentRequest`'s amount/memo are never editable
+/// through any other path, that mismatch is this content kind's
+/// unambiguous, un-spoofable "cancelled" signal — see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md` and the thread UI's status match.
+pub async fn cancel_payment_request(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    counterparty_identity_id: Identifier,
+    document_id: Identifier,
+    seed_hash: WalletSeedHash,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let backend = app_context.wallet_backend()?;
+    let EstablishedRelationship {
+        counterparty_decryption_pubkey: dec_pk,
+        ..
+    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+
+    let shared_secret = outbound_shared_secret(
+        app_context,
+        &qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+
+    let (document, existing_content) = fetch_and_decrypt_own_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document_id,
+        &shared_secret,
+    )
+    .await?;
+    if document.created_at() != document.updated_at() {
+        return Err(TaskError::OrchardPayRequestAlreadyCancelled);
+    }
+    let MessageContent::PaymentRequest { amount, memo } = existing_content else {
+        return Err(TaskError::OrchardPayEditTargetMismatch);
+    };
+    let cancelled_memo = match memo {
+        Some(memo) => format!("CANCELED: {memo}"),
+        None => "CANCELED".to_string(),
+    };
+
+    replace_encrypted_message(
+        app_context,
+        sdk,
+        &orchardpay_contract,
+        document,
+        qualified_identity,
+        identity_key,
+        MessageContent::PaymentRequest {
+            amount,
+            memo: Some(cancelled_memo),
+        },
+        &shared_secret,
+    )
+    .await
 }
 
 /// Send a plain-text `Message` to an established contact.

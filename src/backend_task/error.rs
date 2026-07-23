@@ -1243,6 +1243,25 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
+    /// An OrchardPay edit task targeted a document whose decrypted content
+    /// isn't the kind that edit action applies to (e.g. an edit-message
+    /// task pointed at a `Payment` document).
+    #[error("This message can no longer be edited.")]
+    OrchardPayEditTargetMismatch,
+
+    /// A `CancelPaymentRequest` task targeted a `PaymentRequest` document
+    /// whose `$updatedAt` already differs from `$createdAt` — the request
+    /// was already cancelled (that mismatch is otherwise unreachable for
+    /// this content kind, since its amount/memo are never edited).
+    #[error("This request has already been cancelled.")]
+    OrchardPayRequestAlreadyCancelled,
+
+    /// A `DeleteMessage` task targeted a document whose decrypted content
+    /// isn't a `Message` (e.g. a `Payment`/`PaymentRequest` document) —
+    /// deletion is only offered for plain messages.
+    #[error("This message can no longer be deleted.")]
+    OrchardPayDeleteTargetMismatch,
+
     /// A searchable contract keyword fell outside the shared character range.
     #[error("A contract keyword has an invalid length. Use 3 to 50 characters and try again.")]
     InvalidContractKeywordLength {

@@ -24,6 +24,7 @@ pub mod secret_prompt_host;
 pub mod selection_dialog;
 pub mod styled;
 pub mod subscreen_chooser_panel;
+pub mod text_edit_dialog;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;

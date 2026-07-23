@@ -94,7 +94,7 @@ pub enum DocumentTask {
 impl AppContext {
     /// Fetches a single document by id and bumps its revision, preparing it for
     /// a replace/transfer/purchase/set-price mutation.
-    async fn fetch_document_for_mutation(
+    pub(crate) async fn fetch_document_for_mutation(
         &self,
         sdk: &Sdk,
         data_contract: Arc<DataContract>,

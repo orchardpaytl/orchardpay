@@ -17,8 +17,8 @@ use crate::model::fee_estimation::{
     format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
 };
 use crate::model::orchardpay::{
-    CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, is_credit_balance_blocked,
-    is_credit_balance_low, validate_message_text, validate_payment_memo,
+    CREDIT_BLOCKED_TOOLTIP, MAX_MESSAGE_CHARS, MAX_PAYMENT_MEMO_CHARS, OrchardPayContactState,
+    is_credit_balance_blocked, is_credit_balance_low, validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -29,6 +29,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
 };
+use crate::ui::components::text_edit_dialog::{TextEditDialog, TextEditStatus};
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb_and_label;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
@@ -39,7 +40,7 @@ use crate::ui::components::{
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
-use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -110,11 +111,28 @@ pub struct MessageThreadScreen {
     /// reasonably current.
     pending_identity_refresh: bool,
     /// The one confirmation modal that can be up at a time — shared by the
-    /// composer's Send (Message/Payment Request/Payment) and a bubble's
-    /// direct Pay. Each trigger builds the real `AppAction` up front, then
-    /// stashes it here instead of dispatching immediately; only
-    /// `render_pending_confirmation`'s `Confirmed` arm actually returns it.
+    /// composer's Send (Message/Payment Request/Payment), a bubble's direct
+    /// Pay, and a bubble's Cancel Request. Each trigger builds the real
+    /// `AppAction` up front, then stashes it here instead of dispatching
+    /// immediately; only `render_pending_confirmation`'s `Confirmed` arm
+    /// actually returns it.
     pending_confirmation: Option<PendingConfirmation>,
+    /// The document ID of the bubble whose "Edit"/"Add Memo" button is
+    /// currently shown, toggled by clicking its text — ORP-010's edit
+    /// affordance. `None` means no bubble is expanded.
+    expanded_message: Option<Identifier>,
+    /// The one edit-in-progress modal, if any — ORP-010's Message/Payment-
+    /// memo edit flow. Unlike `pending_confirmation`, saving from here
+    /// dispatches directly (no second confirmation), per the design
+    /// decision that the modal's own Save button is the confirmation.
+    editing: Option<EditingState>,
+    /// The document ID of an in-flight `EditMessage`/`EditPaymentMemo`/
+    /// `CancelPaymentRequest`/`DeleteMessage` task, set right before
+    /// dispatch — lets `display_task_result`'s `ReplacedDocument`/
+    /// `DeletedDocument` arms confirm a result belongs to this screen's own
+    /// dispatch rather than an unrelated document mutation elsewhere in the
+    /// app.
+    pending_document_mutation_id: Option<Identifier>,
 }
 
 /// A built `AppAction` sitting behind a confirmation dialog — the dialog
@@ -123,6 +141,46 @@ pub struct MessageThreadScreen {
 struct PendingConfirmation {
     dialog: ConfirmationDialog,
     action: Box<AppAction>,
+}
+
+/// One bubble-triggered signal, returned by `render_message_bubble` since a
+/// `ui.group` closure can't hold a `&mut self` borrow — the caller in
+/// `ui()` applies the actual state change/dispatch outside the closure.
+enum BubbleAction {
+    /// Pay this incoming `PaymentRequest`.
+    Pay {
+        document_id: Identifier,
+        amount: u64,
+    },
+    /// Toggle whether this bubble's Edit/Add-Memo button is shown.
+    ToggleExpanded { document_id: Identifier },
+    /// Open the edit modal for a `Message` I sent.
+    EditMessage {
+        document_id: Identifier,
+        current_text: String,
+    },
+    /// Open the edit modal for a `Payment` I sent (memo only).
+    EditPaymentMemo {
+        document_id: Identifier,
+        current_memo: Option<String>,
+    },
+    /// Cancel a `PaymentRequest` I created.
+    CancelPaymentRequest { document_id: Identifier },
+    /// Delete a `Message` I sent.
+    DeleteMessage { document_id: Identifier },
+}
+
+/// The one edit-in-progress modal's state — which document, and the dialog
+/// widget itself (already carries the text being edited).
+enum EditingState {
+    Message {
+        document_id: Identifier,
+        dialog: TextEditDialog,
+    },
+    PaymentMemo {
+        document_id: Identifier,
+        dialog: TextEditDialog,
+    },
 }
 
 impl MessageThreadScreen {
@@ -177,6 +235,9 @@ impl MessageThreadScreen {
             counterparty_name,
             pending_identity_refresh: true,
             pending_confirmation: None,
+            expanded_message: None,
+            editing: None,
+            pending_document_mutation_id: None,
         }
     }
 
@@ -309,6 +370,11 @@ impl MessageThreadScreen {
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.pending_confirmation = None;
+                // Only ever set by `open_cancel_request_confirmation` ahead
+                // of this same dialog — clear it so a canceled Cancel
+                // Request doesn't leave a stale guard value waiting for a
+                // `ReplacedDocument` that will never arrive.
+                self.pending_document_mutation_id = None;
                 AppAction::None
             }
             None => AppAction::None,
@@ -344,6 +410,116 @@ impl MessageThreadScreen {
             AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
             true,
         );
+    }
+
+    /// Builds the `CancelPaymentRequest` action for `document_id` and opens
+    /// the confirmation modal — the user explicitly asked for a confirming
+    /// modal before a request I created is cancelled.
+    fn open_cancel_request_confirmation(&mut self, document_id: Identifier) {
+        let (Some(identity_key), Some(seed_hash)) = (self.selected_key.clone(), self.seed_hash())
+        else {
+            return;
+        };
+        let task = OrchardPayTask::CancelPaymentRequest {
+            qualified_identity: self.identity.clone(),
+            identity_key,
+            counterparty_identity_id: self.counterparty_identity_id,
+            document_id,
+            seed_hash,
+        };
+        self.pending_document_mutation_id = Some(document_id);
+        self.open_confirmation(
+            "Cancel Request?",
+            "The other party will no longer be able to pay this request.".to_string(),
+            AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
+            true,
+        );
+    }
+
+    /// Builds the `DeleteMessage` action for `document_id` and opens the
+    /// confirmation modal — a true delete (see `messages::delete_message`),
+    /// so this is a danger-mode confirmation like Cancel Request.
+    fn open_delete_message_confirmation(&mut self, document_id: Identifier) {
+        let (Some(identity_key), Some(seed_hash)) = (self.selected_key.clone(), self.seed_hash())
+        else {
+            return;
+        };
+        let task = OrchardPayTask::DeleteMessage {
+            qualified_identity: self.identity.clone(),
+            identity_key,
+            counterparty_identity_id: self.counterparty_identity_id,
+            document_id,
+            seed_hash,
+        };
+        self.pending_document_mutation_id = Some(document_id);
+        self.open_confirmation(
+            "Delete Message?",
+            "This message will be permanently removed from the conversation for both of you."
+                .to_string(),
+            AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task))),
+            true,
+        );
+    }
+
+    /// Drives the one edit-in-progress modal, if any — the counterpart to
+    /// `render_pending_confirmation`, but saving here dispatches directly:
+    /// no second confirmation, since the modal's own Save button already is
+    /// one (per the design decision this differs from `pending_confirmation`).
+    fn render_editing_modal(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(editing) = self.editing.as_mut() else {
+            return AppAction::None;
+        };
+        let (document_id, dialog, is_message) = match editing {
+            EditingState::Message {
+                document_id,
+                dialog,
+            } => (*document_id, dialog, true),
+            EditingState::PaymentMemo {
+                document_id,
+                dialog,
+            } => (*document_id, dialog, false),
+        };
+        let Some(status) = dialog.show(ui).inner.dialog_response else {
+            return AppAction::None;
+        };
+
+        let text = match status {
+            TextEditStatus::Canceled => {
+                self.editing = None;
+                return AppAction::None;
+            }
+            TextEditStatus::Saved(text) => text,
+        };
+
+        let (Some(identity_key), Some(seed_hash)) = (self.selected_key.clone(), self.seed_hash())
+        else {
+            self.editing = None;
+            return AppAction::None;
+        };
+        let task = if is_message {
+            OrchardPayTask::EditMessage {
+                qualified_identity: self.identity.clone(),
+                identity_key,
+                counterparty_identity_id: self.counterparty_identity_id,
+                document_id,
+                new_text: text,
+                seed_hash,
+            }
+        } else {
+            OrchardPayTask::EditPaymentMemo {
+                qualified_identity: self.identity.clone(),
+                identity_key,
+                counterparty_identity_id: self.counterparty_identity_id,
+                document_id,
+                new_memo: (!text.is_empty()).then_some(text),
+                seed_hash,
+            }
+        };
+
+        self.editing = None;
+        self.sending = true;
+        self.pending_document_mutation_id = Some(document_id);
+        AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
     }
 
     fn send_clicked(&mut self) -> AppAction {
@@ -464,22 +640,20 @@ impl MessageThreadScreen {
         AppAction::None
     }
 
-    /// Renders one message bubble. Returns `Some((document_id, amount))`
-    /// when the user clicked "Pay" on an incoming `PaymentRequest` bubble —
-    /// the caller applies that to `self.open_pay_confirmation` outside this
-    /// method, since a `ui.group` closure can't hold a `&mut self` borrow.
-    fn render_message_bubble(
-        &self,
-        ui: &mut Ui,
-        message: &ThreadMessage,
-    ) -> Option<(Identifier, u64)> {
+    /// Renders one message bubble. Returns `Some(BubbleAction)` when the
+    /// user clicked something that needs `&mut self` — Pay, Cancel Request,
+    /// the click-to-expand text, or an Edit/Add Memo button — since a
+    /// `ui.group` closure can't hold a `&mut self` borrow. The caller in
+    /// `ui()` applies the actual state change/dispatch outside the closure.
+    fn render_message_bubble(&self, ui: &mut Ui, message: &ThreadMessage) -> Option<BubbleAction> {
         let dark_mode = ui.style().visuals.dark_mode;
         let sender_label = if message.from_me {
             self.my_name.as_deref().unwrap_or("You")
         } else {
             self.counterparty_name.as_deref().unwrap_or("Them")
         };
-        let mut reply_target = None;
+        let mut bubble_action: Option<BubbleAction> = None;
+        let is_expanded = self.expanded_message == Some(message.document_id);
         // Whether at least one shielded sync pass has completed this
         // session — `PaymentRequest`'s "paid" check reads the shielded
         // store directly (see `decode_thread_message`), so before this a
@@ -521,8 +695,17 @@ impl MessageThreadScreen {
                         ui,
                         |ui| {
                             ui.label(RichText::new(sender_label).strong());
+                            // Suppressed for `PaymentRequest`: its own
+                            // amount/memo are never editable through any
+                            // other path, so an updatedAt/createdAt
+                            // mismatch on this kind always means
+                            // "cancelled" — the dedicated "Request
+                            // Cancelled" status line below already
+                            // communicates that; showing both here too
+                            // would be redundant.
                             if message.updated_at.is_some()
                                 && message.updated_at != message.created_at
+                                && !matches!(message.content, MessageContent::PaymentRequest { .. })
                             {
                                 ui.label(
                                     RichText::new("(edited)")
@@ -545,7 +728,29 @@ impl MessageThreadScreen {
 
                     match &message.content {
                         MessageContent::Message { data } => {
-                            ui.label(data);
+                            let response = ui.add(egui::Label::new(data).sense(egui::Sense::click()));
+                            if message.from_me && response.clicked() {
+                                bubble_action = Some(BubbleAction::ToggleExpanded {
+                                    document_id: message.document_id,
+                                });
+                            }
+                            if message.from_me && is_expanded {
+                                let (delete_clicked, edit_clicked) = egui::Sides::new().show(
+                                    ui,
+                                    |ui| ComponentStyles::add_danger_button(ui, "Delete").clicked(),
+                                    |ui| ui.button("Edit Message").clicked(),
+                                );
+                                if delete_clicked {
+                                    bubble_action = Some(BubbleAction::DeleteMessage {
+                                        document_id: message.document_id,
+                                    });
+                                } else if edit_clicked {
+                                    bubble_action = Some(BubbleAction::EditMessage {
+                                        document_id: message.document_id,
+                                        current_text: data.clone(),
+                                    });
+                                }
+                            }
                         }
                         MessageContent::Payment { amount, memo } => {
                             let display_amount = message.verified_amount.unwrap_or(*amount);
@@ -558,8 +763,46 @@ impl MessageThreadScreen {
                                     .strong(),
                                 );
                             });
-                            if let Some(memo) = memo {
-                                ui.label(memo);
+                            match memo {
+                                Some(memo_text) => {
+                                    let response = ui.add(
+                                        egui::Label::new(memo_text).sense(egui::Sense::click()),
+                                    );
+                                    if message.from_me && response.clicked() {
+                                        bubble_action = Some(BubbleAction::ToggleExpanded {
+                                            document_id: message.document_id,
+                                        });
+                                    }
+                                    if message.from_me && is_expanded {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.button("Edit Memo").clicked() {
+                                                    bubble_action =
+                                                        Some(BubbleAction::EditPaymentMemo {
+                                                            document_id: message.document_id,
+                                                            current_memo: Some(memo_text.clone()),
+                                                        });
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                                None if message.from_me => {
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.button("Add Memo").clicked() {
+                                                bubble_action =
+                                                    Some(BubbleAction::EditPaymentMemo {
+                                                        document_id: message.document_id,
+                                                        current_memo: None,
+                                                    });
+                                            }
+                                        },
+                                    );
+                                }
+                                None => {}
                             }
                             match message.verified_amount {
                                 Some(verified) if verified == *amount => {
@@ -612,6 +855,12 @@ impl MessageThreadScreen {
                             if let Some(memo) = memo {
                                 ui.label(memo);
                             }
+                            // A `PaymentRequest`'s amount/memo are never
+                            // editable through any other path, so this
+                            // mismatch unambiguously means "cancelled" —
+                            // see `cancel_payment_request`'s doc comment.
+                            let is_cancelled = message.updated_at.is_some()
+                                && message.updated_at != message.created_at;
                             match message.verified_amount {
                                 Some(paid_amount) if paid_amount == *amount => {
                                     ui.label(
@@ -634,6 +883,13 @@ impl MessageThreadScreen {
                                         .color(DashColors::warning_color(dark_mode)),
                                     );
                                 }
+                                None if is_cancelled => {
+                                    ui.label(
+                                        RichText::new("Request Cancelled")
+                                            .italics()
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
                                 None if !shielded_state_ready => {
                                     ui.label(
                                         RichText::new("Checking payment status…")
@@ -642,10 +898,23 @@ impl MessageThreadScreen {
                                     );
                                 }
                                 None if message.from_me => {
-                                    ui.label(
-                                        RichText::new("Awaiting payment")
-                                            .italics()
-                                            .color(DashColors::text_secondary(dark_mode)),
+                                    egui::Sides::new().show(
+                                        ui,
+                                        |ui| {
+                                            ui.label(
+                                                RichText::new("Awaiting payment")
+                                                    .italics()
+                                                    .color(DashColors::text_secondary(dark_mode)),
+                                            );
+                                        },
+                                        |ui| {
+                                            if ui.button("Cancel Request").clicked() {
+                                                bubble_action =
+                                                    Some(BubbleAction::CancelPaymentRequest {
+                                                        document_id: message.document_id,
+                                                    });
+                                            }
+                                        },
                                     );
                                 }
                                 None => {
@@ -660,8 +929,10 @@ impl MessageThreadScreen {
                                                 .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
                                                 .clicked()
                                             {
-                                                reply_target =
-                                                    Some((message.document_id, *amount));
+                                                bubble_action = Some(BubbleAction::Pay {
+                                                    document_id: message.document_id,
+                                                    amount: *amount,
+                                                });
                                             }
                                         },
                                     );
@@ -673,7 +944,7 @@ impl MessageThreadScreen {
             });
         });
         ui.add_space(6.0);
-        reply_target
+        bubble_action
     }
 
     fn render_composer(&mut self, ui: &mut Ui) -> AppAction {
@@ -820,6 +1091,24 @@ impl ScreenLike for MessageThreadScreen {
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
             }
+            BackendTaskSuccessResult::ReplacedDocument(document_id, _fee)
+                if self.pending_document_mutation_id == Some(document_id) =>
+            {
+                self.pending_document_mutation_id = None;
+                self.sending = false;
+                self.expanded_message = None;
+                self.pending_reload = true;
+                self.pending_identity_refresh = true;
+            }
+            BackendTaskSuccessResult::DeletedDocument(document_id, _fee)
+                if self.pending_document_mutation_id == Some(document_id) =>
+            {
+                self.pending_document_mutation_id = None;
+                self.sending = false;
+                self.expanded_message = None;
+                self.pending_reload = true;
+                self.pending_identity_refresh = true;
+            }
             _ => {}
         }
     }
@@ -893,6 +1182,7 @@ impl ScreenLike for MessageThreadScreen {
         );
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenOrchardPay);
         action |= self.render_pending_confirmation(ui);
+        action |= self.render_editing_modal(ui);
 
         if self.pending_identity_refresh {
             self.pending_identity_refresh = false;
@@ -999,7 +1289,7 @@ impl ScreenLike for MessageThreadScreen {
                 ui.label("Loading conversation…");
             }
 
-            let mut reply_target: Option<(Identifier, u64)> = None;
+            let mut bubble_action: Option<BubbleAction> = None;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() * 0.6)
                 // Opens on the most recent messages (the bottom, since
@@ -1011,14 +1301,63 @@ impl ScreenLike for MessageThreadScreen {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     for message in self.messages.clone() {
-                        if let Some(target) = self.render_message_bubble(ui, &message) {
-                            reply_target = Some(target);
+                        if let Some(action) = self.render_message_bubble(ui, &message) {
+                            bubble_action = Some(action);
                         }
                     }
                 });
 
-            if let Some((document_id, amount)) = reply_target {
-                self.open_pay_confirmation(document_id, amount);
+            match bubble_action {
+                Some(BubbleAction::Pay {
+                    document_id,
+                    amount,
+                }) => {
+                    self.open_pay_confirmation(document_id, amount);
+                }
+                Some(BubbleAction::ToggleExpanded { document_id }) => {
+                    self.expanded_message = if self.expanded_message == Some(document_id) {
+                        None
+                    } else {
+                        Some(document_id)
+                    };
+                }
+                Some(BubbleAction::EditMessage {
+                    document_id,
+                    current_text,
+                }) => {
+                    self.editing = Some(EditingState::Message {
+                        document_id,
+                        dialog: TextEditDialog::new(
+                            "Edit Message",
+                            current_text,
+                            MAX_MESSAGE_CHARS,
+                            validate_message_text,
+                            "The message is too long. Use 1000 characters or fewer.",
+                        ),
+                    });
+                }
+                Some(BubbleAction::EditPaymentMemo {
+                    document_id,
+                    current_memo,
+                }) => {
+                    self.editing = Some(EditingState::PaymentMemo {
+                        document_id,
+                        dialog: TextEditDialog::new(
+                            "Edit Memo",
+                            current_memo.unwrap_or_default(),
+                            MAX_PAYMENT_MEMO_CHARS,
+                            validate_payment_memo,
+                            "The payment memo is too long. Use 1000 characters or fewer.",
+                        ),
+                    });
+                }
+                Some(BubbleAction::CancelPaymentRequest { document_id }) => {
+                    self.open_cancel_request_confirmation(document_id);
+                }
+                Some(BubbleAction::DeleteMessage { document_id }) => {
+                    self.open_delete_message_confirmation(document_id);
+                }
+                None => {}
             }
 
             inner_action |= self.render_composer(ui);
