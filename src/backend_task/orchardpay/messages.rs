@@ -854,11 +854,27 @@ async fn fetch_messages_by_ref_id(
 /// but sorted descending and capped to one result — for "when did this
 /// side of the conversation last say anything" without fetching the whole
 /// thread.
+///
+/// The `$createdAt < now` range clause is required, not decorative: Drive
+/// only reads an `order_by`'s direction from the clause it picks to drive
+/// iteration, and that clause defaults to whichever `WhereClause` is an
+/// equality match (here, `refId`) when nothing else qualifies — equality
+/// clauses always iterate ascending, silently ignoring `order_by`. Adding
+/// a *range* clause on the same field the `order_by` targets makes Drive
+/// pick that as the deciding clause instead, whose direction genuinely
+/// comes from `order_by` (see `rs-drive`'s `get_non_primary_key_path_query`).
+/// Without this, `limit = 1` silently returns the *oldest* message, not
+/// the newest.
 async fn fetch_latest_message_created_at(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
     ref_id: [u8; 32],
 ) -> Result<Option<u64>, TaskError> {
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
     let mut query =
         DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
             |e| OrchardPayError::QueryCreation {
@@ -871,6 +887,11 @@ async fn fetch_latest_message_created_at(
             field: REF_ID_FIELD.to_string(),
             operator: WhereOperator::Equal,
             value: Value::Bytes(ref_id.to_vec()),
+        })
+        .with_where(WhereClause {
+            field: "$createdAt".to_string(),
+            operator: WhereOperator::LessThan,
+            value: Value::U64(now_millis),
         })
         .with_order_by(OrderClause {
             field: "$createdAt".to_string(),

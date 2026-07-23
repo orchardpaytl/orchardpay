@@ -104,6 +104,20 @@ fn format_duration_ago(duration: std::time::Duration) -> String {
     }
 }
 
+/// The activity label for one [`RecentContactActivity`] entry — shared by
+/// the Most Recent tab's own list and the Contacts tab's `Established`
+/// rows, so the wording only ever lives in one place.
+fn recent_activity_label(entry: &RecentContactActivity) -> String {
+    match (
+        entry.has_messages,
+        entry.last_activity.and_then(format_relative_time),
+    ) {
+        (true, Some(when)) => format!("Last activity {when}"),
+        (false, Some(when)) => format!("No messages yet — connected {when}"),
+        (_, None) => "No messages yet".to_string(),
+    }
+}
+
 /// Renders one shielded-activity row as a labeled card: the kind/amount
 /// header, memo, and confirmation status. Shared between the Unspent Notes
 /// list and both sides of a Spent Notes pairing.
@@ -424,6 +438,20 @@ impl OrchardPayScreen {
             return action;
         };
 
+        // Same idempotent dispatch-if-not-loaded guard `render_most_recent`
+        // uses — shares that tab's `self.recent_activity` cache (gated by
+        // `recent_activity_dispatched`, so this only ever fires once) so
+        // `Established` rows below can show real last-message activity
+        // regardless of which tab the user opens first.
+        if !self.recent_activity_dispatched && self.recent_activity.is_none() {
+            self.recent_activity_dispatched = true;
+            action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+                OrchardPayTask::LoadRecentActivity {
+                    qualified_identity: identity.clone(),
+                },
+            )));
+        }
+
         let backend = match self.app_context.wallet_backend() {
             Ok(backend) => backend,
             Err(_) => {
@@ -518,9 +546,33 @@ impl OrchardPayScreen {
                         ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace())
                     }
                 };
-                if let Some(sent_text) = created_at.and_then(format_relative_time) {
+                // `Established` rows prefer real message activity (from
+                // the same `self.recent_activity` cache `render_most_recent`
+                // populates) over the connection date — falls back to
+                // "Sent {when}" only while that fetch is still in flight.
+                // Pending contacts can't have any `encryptedMessage` yet
+                // (`established_state` requires `Established`), so "Sent
+                // {when}" from the anchor's own date stays correct for them.
+                let activity_label = match &state {
+                    OrchardPayContactState::Established { .. } => self
+                        .recent_activity
+                        .as_ref()
+                        .and_then(|entries| {
+                            entries.iter().find(|e| e.identity_id == counterparty)
+                        })
+                        .map(recent_activity_label)
+                        .or_else(|| {
+                            created_at
+                                .and_then(format_relative_time)
+                                .map(|when| format!("Sent {when}"))
+                        }),
+                    _ => created_at
+                        .and_then(format_relative_time)
+                        .map(|when| format!("Sent {when}")),
+                };
+                if let Some(activity_label) = activity_label {
                     ui.label(
-                        RichText::new(format!("Sent {sent_text}"))
+                        RichText::new(activity_label)
                             .size(11.0)
                             .color(DashColors::text_secondary(dark_mode)),
                     );
@@ -661,16 +713,8 @@ impl OrchardPayScreen {
                         RichText::new(entry.identity_id.to_string(Encoding::Base58)).monospace(),
                     ),
                 };
-                let activity_label = match (
-                    entry.has_messages,
-                    entry.last_activity.and_then(format_relative_time),
-                ) {
-                    (true, Some(when)) => format!("Last activity {when}"),
-                    (false, Some(when)) => format!("No messages yet — connected {when}"),
-                    (_, None) => "No messages yet".to_string(),
-                };
                 ui.label(
-                    RichText::new(activity_label)
+                    RichText::new(recent_activity_label(&entry))
                         .size(11.0)
                         .color(DashColors::text_secondary(dark_mode)),
                 );
@@ -1235,9 +1279,9 @@ impl ScreenLike for OrchardPayScreen {
 
             let items = vec![
                 SubscreenNavItem::new(
-                    "My Profile",
-                    self.orchardpay_subscreen == OrchardPaySubscreen::Profile,
-                    AppAction::Custom(TAB_PROFILE.to_string()),
+                    "Most Recent",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::MostRecent,
+                    AppAction::Custom(TAB_MOST_RECENT.to_string()),
                 ),
                 SubscreenNavItem::new(
                     "Contacts",
@@ -1245,9 +1289,9 @@ impl ScreenLike for OrchardPayScreen {
                     AppAction::Custom(TAB_CONTACTS.to_string()),
                 ),
                 SubscreenNavItem::new(
-                    "Most Recent",
-                    self.orchardpay_subscreen == OrchardPaySubscreen::MostRecent,
-                    AppAction::Custom(TAB_MOST_RECENT.to_string()),
+                    "Send Friend Request",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::AddContact,
+                    AppAction::Custom(TAB_ADD_CONTACT.to_string()),
                 ),
                 SubscreenNavItem::new(
                     "Shielded TXs",
@@ -1255,9 +1299,9 @@ impl ScreenLike for OrchardPayScreen {
                     AppAction::Custom(TAB_PAYMENTS.to_string()),
                 ),
                 SubscreenNavItem::new(
-                    "Send Friend Request",
-                    self.orchardpay_subscreen == OrchardPaySubscreen::AddContact,
-                    AppAction::Custom(TAB_ADD_CONTACT.to_string()),
+                    "Profile",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::Profile,
+                    AppAction::Custom(TAB_PROFILE.to_string()),
                 ),
                 SubscreenNavItem::new(
                     "About",

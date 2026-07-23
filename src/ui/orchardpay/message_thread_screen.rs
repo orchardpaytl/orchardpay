@@ -1222,9 +1222,9 @@ impl ScreenLike for MessageThreadScreen {
         // tab the conversation was opened from.
         let subscreen_items = vec![
             SubscreenNavItem::new(
-                "My Profile",
+                "Most Recent",
                 false,
-                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Profile),
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::MostRecent),
             ),
             SubscreenNavItem::new(
                 "Contacts",
@@ -1232,9 +1232,9 @@ impl ScreenLike for MessageThreadScreen {
                 AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Contacts),
             ),
             SubscreenNavItem::new(
-                "Most Recent",
+                "Send Friend Request",
                 false,
-                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::MostRecent),
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::AddContact),
             ),
             SubscreenNavItem::new(
                 "Shielded TXs",
@@ -1242,9 +1242,9 @@ impl ScreenLike for MessageThreadScreen {
                 AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Payments),
             ),
             SubscreenNavItem::new(
-                "Send Friend Request",
+                "Profile",
                 false,
-                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::AddContact),
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::Profile),
             ),
             SubscreenNavItem::new(
                 "About",

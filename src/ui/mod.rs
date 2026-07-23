@@ -496,7 +496,7 @@ impl ScreenType {
 
             ScreenType::OrchardPay => Screen::OrchardPayScreen(OrchardPayScreen::new(
                 app_context,
-                OrchardPaySubscreen::Profile,
+                OrchardPaySubscreen::MostRecent,
             )),
 
             // DashPay Screens
