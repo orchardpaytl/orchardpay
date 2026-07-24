@@ -40,7 +40,7 @@ use crate::ui::components::{
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
+use crate::ui::theme::{DashColors, ResponseExt, Shape};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -818,7 +818,7 @@ impl MessageThreadScreen {
                             if message.from_me && is_expanded {
                                 let (delete_clicked, edit_clicked) = egui::Sides::new().show(
                                     ui,
-                                    |ui| ComponentStyles::add_danger_button(ui, "Delete").clicked(),
+                                    |ui| ui.button("Delete").clicked(),
                                     |ui| ui.button("Edit Message").clicked(),
                                 );
                                 if delete_clicked {
