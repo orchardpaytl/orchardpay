@@ -930,6 +930,7 @@ As a user, I want to send an actual shielded payment to a contact — either unp
 - Sending a `Payment` performs a real shielded transfer, memo-tagged to correlate it with its encrypted message record.
 - Replying to a `PaymentRequest` fulfills it with a real transfer rather than just a document.
 - The thread shows the amount the sender claims alongside the amount this wallet independently verified from the transfer itself, flagging any mismatch.
+- `Payment` and `PaymentRequest` bubbles are rendered with a distinct tinted background/border that a plain `Message`'s text content can never reproduce, so a spoofed message (e.g. one whose text just reads "Payment: 50 DASH") can't be visually mistaken for a real one.
 
 ### ORP-009: View OrchardPay profile [Implemented]
 **Persona:** Alex, Priya

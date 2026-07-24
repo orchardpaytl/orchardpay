@@ -222,7 +222,7 @@ impl WalletBackend {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
+        let result = wallet
             .shielded_transfer_to(
                 &coordinator,
                 account,
@@ -232,7 +232,11 @@ impl WalletBackend {
                 &prover,
             )
             .await
-            .map_err(map_shielded_op_error)
+            .map_err(map_shielded_op_error);
+        if result.is_ok() {
+            self.inner.connection_status.note_shielded_send_broadcast();
+        }
+        result
     }
 
     /// Unshield from `account`'s notes to a transparent platform address
@@ -252,7 +256,7 @@ impl WalletBackend {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
+        let result = wallet
             .shielded_unshield_to(
                 &coordinator,
                 account,
@@ -261,7 +265,11 @@ impl WalletBackend {
                 &prover,
             )
             .await
-            .map_err(map_shielded_op_error)
+            .map_err(map_shielded_op_error);
+        if result.is_ok() {
+            self.inner.connection_status.note_shielded_send_broadcast();
+        }
+        result
     }
 
     /// Withdraw from `account`'s notes to a Core L1 address (Base58Check).
@@ -281,7 +289,7 @@ impl WalletBackend {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
+        let result = wallet
             .shielded_withdraw_to(
                 &coordinator,
                 account,
@@ -291,7 +299,11 @@ impl WalletBackend {
                 &prover,
             )
             .await
-            .map_err(map_shielded_op_error)
+            .map_err(map_shielded_op_error);
+        if result.is_ok() {
+            self.inner.connection_status.note_shielded_send_broadcast();
+        }
+        result
     }
 
     /// Per-account unspent shielded balance for `seed_hash`'s wallet.

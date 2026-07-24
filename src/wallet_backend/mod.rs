@@ -412,6 +412,11 @@ struct Inner {
     /// `AppState` to run the all-wallets identity sweep once Platform is ready.
     /// A cheap owned clone of the same sender the `EventBridge` holds.
     task_result_sender: SenderAsync<TaskResult>,
+    /// A cheap owned clone of the same `Arc<ConnectionStatus>` the
+    /// `EventBridge` holds, so a shielded-send method here can mark the
+    /// balance possibly-stale on success — see
+    /// `ConnectionStatus::note_shielded_send_broadcast`.
+    connection_status: Arc<ConnectionStatus>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -478,6 +483,7 @@ impl WalletBackend {
 
         let coordinator_gate = Arc::new(CoordinatorGate::default());
 
+        let connection_status_for_sends = Arc::clone(&connection_status);
         let bridge = Arc::new(EventBridge::new(
             connection_status,
             task_result_sender.clone(),
@@ -548,6 +554,7 @@ impl WalletBackend {
                 start_latch: StartLatch::default(),
                 coordinator_gate,
                 task_result_sender,
+                connection_status: connection_status_for_sends,
             }),
         };
 

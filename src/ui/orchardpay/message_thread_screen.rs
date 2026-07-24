@@ -298,9 +298,20 @@ impl MessageThreadScreen {
         if is_credit_balance_low(credits) {
             label.push_str("  ·  Low Credits");
         }
-        label.push_str(&format!(
-            "                        Shielded Balance: {}",
+        // See the sibling `balance_summary_label` in `orchardpay_screen.rs`
+        // for why this checks staleness rather than always formatting the
+        // cached amount.
+        let shielded_label = if self
+            .app_context
+            .connection_status()
+            .shielded_balance_possibly_stale()
+        {
+            "Still Syncing…".to_string()
+        } else {
             format_credits_as_dash_significant(shielded, 4)
+        };
+        label.push_str(&format!(
+            "                        Shielded Balance: {shielded_label}"
         ));
         Some(label)
     }
@@ -702,6 +713,28 @@ impl MessageThreadScreen {
             .is_some();
         let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
 
+        // A `Message`'s text is entirely attacker-controlled — nothing
+        // stops someone from typing "Payment: 50 DASH" as plain text to
+        // impersonate a real bubble. Text styling (bold, underline) isn't a
+        // safe defense against that: Unicode combining characters (e.g.
+        // U+0332 COMBINING LOW LINE) can fake an underline within ordinary
+        // string content. The bubble's own container fill/border, by
+        // contrast, is chrome this rendering code controls directly and no
+        // message content can ever reach — so only `Payment`/`PaymentRequest`
+        // get this tinted frame, applied uniformly regardless of direction
+        // or status, and a plain `Message` always keeps the neutral look.
+        let money_bubble_color = matches!(
+            message.content,
+            MessageContent::Payment { .. } | MessageContent::PaymentRequest { .. }
+        )
+        .then(|| DashColors::info_color(dark_mode));
+        let bubble_frame = match money_bubble_color {
+            Some(color) => egui::Frame::group(ui.style())
+                .fill(color.gamma_multiply(0.08))
+                .stroke(egui::Stroke::new(1.0, color)),
+            None => egui::Frame::group(ui.style()),
+        };
+
         ui.horizontal(|ui| {
             if message.from_me {
                 // Approximates a 7-character indent at the default body
@@ -710,14 +743,14 @@ impl MessageThreadScreen {
                 // "column" from the counterparty's.
                 ui.add_space(MY_MESSAGE_INDENT);
             }
-            ui.group(|ui| {
+            bubble_frame.show(ui, |ui| {
                 // Bounds the bubble's width so it shrink-wraps to its
                 // content instead of stretching to fill the row just to
                 // make room for the right-aligned timestamp below, and so
                 // a long message wraps instead of running off the screen.
                 ui.set_max_width(ui.available_width().min(MESSAGE_BUBBLE_MAX_WIDTH));
-                // A `Frame`-based container (which `ui.group` is) inherits
-                // its parent's layout direction when none is given — and
+                // A `Frame` container inherits its parent's layout direction
+                // when none is given — and
                 // the surrounding indent wrapper above is a `horizontal`,
                 // so without this the whole bubble (header row, body,
                 // PAID label, buttons — everything) would flow left-to-

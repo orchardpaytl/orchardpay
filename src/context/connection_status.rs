@@ -96,6 +96,13 @@ pub struct ConnectionStatus {
     /// handshake can be told apart from a wallet that simply hasn't synced
     /// recently.
     last_shielded_sync_completed_at: Mutex<Option<Instant>>,
+    /// Set to `Instant::now()` whenever this wallet broadcasts a shielded
+    /// send (transfer/unshield/withdraw) — compared against
+    /// `last_shielded_sync_completed_at` to tell whether the locally cached
+    /// shielded balance might not yet reflect that send (spent notes gone,
+    /// a new/change note not yet decrypted). See
+    /// `shielded_balance_possibly_stale`.
+    shielded_send_pending_since: Mutex<Option<Instant>>,
 }
 
 /// Downloaded-notes progress for an in-flight shielded sync pass (DET-shaped —
@@ -140,6 +147,7 @@ impl ConnectionStatus {
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
             last_shielded_sync_completed_at: Mutex::new(None),
+            shielded_send_pending_since: Mutex::new(None),
         }
     }
 
@@ -188,6 +196,10 @@ impl ConnectionStatus {
             Instant::now() - REFRESH_CONNECTED;
         *self
             .last_shielded_sync_completed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .shielded_send_pending_since
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -358,6 +370,41 @@ impl ConnectionStatus {
             .last_shielded_sync_completed_at
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record that this wallet just broadcast a shielded send (transfer,
+    /// unshield, or withdraw) — called from `WalletBackend` only after the
+    /// send actually succeeds, since a failed broadcast changes no note
+    /// state.
+    pub fn note_shielded_send_broadcast(&self) {
+        *self
+            .shielded_send_pending_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// `true` if the shielded balance might not reflect reality yet: either
+    /// no sync pass has completed this session at all, or the most recent
+    /// completed pass finished *before* the most recent shielded send this
+    /// wallet broadcast. The UI should show "Still Syncing…" instead of a
+    /// number while this is true.
+    ///
+    /// Deliberately a timestamp *comparison*, not a flag that gets cleared
+    /// on any sync completion: a pass already in flight when a send
+    /// happens didn't see that send's effects, so its completion must not
+    /// be treated as resolving the staleness. Comparing real `Instant`s
+    /// (monotonic, safe to compare directly) avoids that race.
+    pub fn shielded_balance_possibly_stale(&self) -> bool {
+        let completed_at = self.last_shielded_sync_completed_at();
+        let pending_since = *self
+            .shielded_send_pending_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match (completed_at, pending_since) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(completed_at), Some(pending_since)) => completed_at < pending_since,
+        }
     }
 
     /// Latest shielded committed-to-tree progress, if a pass is in flight.
@@ -1173,6 +1220,100 @@ mod tests {
         assert!(
             status.shielded_tree_progress().is_none(),
             "reset must clear in-flight shielded tree progress"
+        );
+    }
+
+    #[test]
+    fn shielded_balance_stale_until_first_sync_pass() {
+        let status = ConnectionStatus::new();
+        assert!(
+            status.shielded_balance_possibly_stale(),
+            "no sync pass has completed this session yet"
+        );
+    }
+
+    #[test]
+    fn shielded_balance_fresh_once_synced_with_no_pending_send() {
+        let status = ConnectionStatus::new();
+        status.note_shielded_sync_completed();
+        assert!(!status.shielded_balance_possibly_stale());
+    }
+
+    #[test]
+    fn shielded_balance_stale_again_after_a_send_following_the_last_sync() {
+        let status = ConnectionStatus::new();
+        status.note_shielded_sync_completed();
+        assert!(!status.shielded_balance_possibly_stale());
+
+        // A send broadcast strictly after that completed pass must make the
+        // balance possibly-stale again, even though a pass already ran this
+        // session — this is the timestamp-comparison behavior the bare
+        // `last_shielded_sync_completed_at().is_none()` check can't express.
+        std::thread::sleep(Duration::from_millis(1));
+        status.note_shielded_send_broadcast();
+        assert!(
+            status.shielded_balance_possibly_stale(),
+            "a send after the last completed pass must mark the balance stale again"
+        );
+    }
+
+    #[test]
+    fn shielded_balance_fresh_again_once_a_later_sync_pass_completes() {
+        let status = ConnectionStatus::new();
+        status.note_shielded_sync_completed();
+        std::thread::sleep(Duration::from_millis(1));
+        status.note_shielded_send_broadcast();
+        assert!(status.shielded_balance_possibly_stale());
+
+        // A pass completing strictly after the send resolves the staleness.
+        std::thread::sleep(Duration::from_millis(1));
+        status.note_shielded_sync_completed();
+        assert!(
+            !status.shielded_balance_possibly_stale(),
+            "a pass completed after the send must resolve the staleness"
+        );
+    }
+
+    #[test]
+    fn shielded_balance_stays_stale_for_a_pass_already_in_flight_before_the_send() {
+        // Regression guard for the race a naive "clear on any completion"
+        // implementation would have: a pass that STARTED before the send
+        // can't have observed the send's effects, so its completion must
+        // not be mistaken for having resolved the staleness introduced by
+        // a send that happened after that pass had already begun. Since
+        // `note_shielded_sync_completed` only records completion time (not
+        // start time), simulate this by completing a pass, then having the
+        // send land after it but before any *new* completion — the
+        // in-flight pass's own eventual completion is exactly the first
+        // `note_shielded_sync_completed` in the prior test's timeline, and
+        // staleness must persist until a completion strictly after the send.
+        let status = ConnectionStatus::new();
+        status.note_shielded_sync_completed();
+        std::thread::sleep(Duration::from_millis(1));
+        status.note_shielded_send_broadcast();
+
+        // No new completion yet — must still read as stale, not resolved by
+        // the earlier (pre-send) completion.
+        assert!(status.shielded_balance_possibly_stale());
+    }
+
+    #[test]
+    fn reset_clears_shielded_send_pending_and_sync_completed() {
+        let status = ConnectionStatus::new();
+        status.note_shielded_sync_completed();
+        status.note_shielded_send_broadcast();
+        assert!(status.last_shielded_sync_completed_at().is_some());
+
+        status.reset();
+        assert!(
+            status.last_shielded_sync_completed_at().is_none(),
+            "reset must clear the last-completed timestamp"
+        );
+        assert!(
+            status.shielded_balance_possibly_stale(),
+            "reset must also clear the pending-send marker, leaving the \
+             never-synced-this-session state (still possibly-stale, just \
+             for the 'no sync yet' reason)"
         );
     }
 }

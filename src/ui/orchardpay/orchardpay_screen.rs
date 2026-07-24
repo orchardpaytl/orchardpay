@@ -350,10 +350,22 @@ impl OrchardPayScreen {
             }
             label.push_str("                        ");
         }
-        label.push_str(&format!(
-            "Shielded Balance: {}",
+        // Before the first shielded sync pass of the session, or for a
+        // window after this wallet's own most recent shielded send until a
+        // *later* pass confirms it, the cached balance may not reflect
+        // reality (spent notes gone, a new/change note not yet decrypted)
+        // — show an honest "still syncing" instead of a possibly-wrong
+        // number. See `ConnectionStatus::shielded_balance_possibly_stale`.
+        let shielded_label = if self
+            .app_context
+            .connection_status()
+            .shielded_balance_possibly_stale()
+        {
+            "Still Syncing…".to_string()
+        } else {
             format_credits_as_dash_significant(shielded, 4)
-        ));
+        };
+        label.push_str(&format!("Shielded Balance: {shielded_label}"));
         Some(label)
     }
 
@@ -768,11 +780,15 @@ impl OrchardPayScreen {
         );
         ui.add_space(8.0);
 
+        // Same underlying signal as the top panel's "Still Syncing…"
+        // balance label — one source of truth for "is shielded state
+        // possibly stale," covering both "no pass has completed yet this
+        // session" and "a pass completed, but before this wallet's most
+        // recent send." See `ConnectionStatus::shielded_balance_possibly_stale`.
         if self
             .app_context
             .connection_status()
-            .last_shielded_sync_completed_at()
-            .is_none()
+            .shielded_balance_possibly_stale()
         {
             ui.label(
                 RichText::new(
