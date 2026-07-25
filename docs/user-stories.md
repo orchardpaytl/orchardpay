@@ -997,6 +997,18 @@ As a user paying a payment request, I want the option to save my own record of w
 - When checked, before the real shielded payment is sent, the payer's wallet also broadcasts a receipt capturing the request's amount, memo, and original timestamp — required, not best-effort: if the receipt can't be saved, the payment itself is not sent either.
 - A saved receipt is never shown as a message in the conversation. It only surfaces — as a clearly marked warning, placed where the original request used to be in the timeline — if that request is later found to be deleted, changed into a different kind of message, or (still nominally a request) has a different amount or memo than what was originally paid. A legitimate cancellation of the request (via "Cancel Request") is not treated as tampering and never triggers this.
 
+### ORP-015: Send DASH directly, with or without a contact request [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to send DASH straight to someone I've found by DPNS name, without first having to exchange a contact request, so that I can pay someone quickly even if we're not going to become contacts.
+
+- The "Direct Send" tab, next to "Send Friend Request", searches by DPNS name the same way and only offers a Direct Send button for someone I have no existing relationship with — an already-pending or already-established contact shows the same status text Send Friend Request already shows, with no Direct Send action.
+- An amount field above the search box requires more than 0.001 DASH and caps at the wallet's actual shielded balance minus the transfer's own fee, the same guardrail as sending a payment inside a conversation.
+- Confirming shows the amount and recipient and offers an "Include a contact request?" checkbox, unchecked by default.
+- Left unchecked, the DASH moves as a bare shielded transfer with no accompanying document — the recipient sees it as an ordinary shielded receive, with no OrchardPay document created and no relationship formed.
+- Checked, a normal contact request is sent exactly like Send Friend Request's, except the anchor-signaling transfer carries the amount just entered instead of the usual fixed 0.001 DASH.
+- The Direct Send button disables and relabels ("Sending Directly…") the instant it's confirmed, so it can't be clicked again while the send is still in flight.
+
 ---
 
 ## Token Operations (TOK)

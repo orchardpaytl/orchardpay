@@ -1154,5 +1154,22 @@ struct PendingConfirmation {
     Closes most, not all, of the relaunch gap — a `PendingInboundUnaccepted`
     request I never accepted has no anchor of mine to recover from, since
     that state only ever lived locally.
+- **Done (2026-07-25)**: Direct Send — sending DASH to a non-contact found
+  by DPNS search, with an optional contact request bundled in, no new
+  schema. `contact_anchor::initiate_contact` now takes a caller-supplied
+  `amount_credits` instead of always using the fixed
+  `ANCHOR_SIGNAL_AMOUNT_CREDITS` (0.001 DASH) — Send Friend Request still
+  passes that same default explicitly, so its own behavior is unchanged.
+  The no-contact-request path (new `direct_send::send_direct`,
+  `OrchardPayTask::SendDirect`) is a bare `shielded_transfer` with an
+  all-zero memo and no Platform document — already possible before this
+  change (`lookup_shielded_address`/`shielded_transfer` never depended on
+  `OrchardPayContactState`), just not exposed through any UI path. A real
+  `Payment` document to a non-established identity remains out of reach —
+  its `refId` only exists post-handshake, with no discovery mechanism for
+  a stranger — which is why this path stays document-free rather than
+  attempting one. UI: `OrchardPayScreen::render_direct_send`, the "Direct
+  Send" subscreen next to "Send Friend Request". See ORP-015 in
+  `docs/user-stories.md`.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's).
