@@ -964,11 +964,12 @@ impl OrchardPayScreen {
         ui.heading("About OrchardPay");
         ui.add_space(6.0);
         ui.label(
-            "OrchardPay is a private contact and messaging protocol built on \
-             Dash Platform, combining zero-knowledge shielded transactions \
-             with Platform data contracts. It grew out of a two-part design \
-             series exploring how those two primitives could be combined — \
-             the links are below.",
+            "OrchardPay is an anonymous contact and E2EE messaging & payment dapp \
+             (with a data contract) built on Dash Platform, combining \
+             zero-knowledge shielded transactions with Platform data \
+             contracts. It grew out of a two-part design series exploring \
+             how those two primitives could be combined — the links are \
+             below.",
         );
 
         ui.add_space(16.0);
@@ -980,7 +981,7 @@ impl OrchardPayScreen {
             "DashPay's contact-request documents are public and queryable — \
              anyone can see who has requested contact with whom. OrchardPay's \
              contactAnchor documents contain no public identifying or \
-             connecting data: the only way to find one is to already know \
+             connecting data; the only way to find one is to already know \
              its document ID, which is delivered \
              privately through a shielded on-chain transaction memo that only \
              the intended recipient can decrypt.",
@@ -989,9 +990,9 @@ impl OrchardPayScreen {
 
         ui.label(RichText::new("One channel, unlimited uses").strong());
         ui.label(secondary(
-            "DashPay's contact-request documents exist to carry contact info \
-             only. OrchardPay's contactAnchor and encryptedMessage documents \
-             form a general private-communication channel — messages, \
+            "DashPay's contact-request documents exist to exchange an extended \
+             public key only. OrchardPay's contactAnchor and encryptedMessage documents \
+             form a general private communication channel — messages, \
              payment requests, and other structured content all use the \
              exact same encrypted shape, so Platform (and anyone else \
              watching) can't tell them apart. New message types can be added \
@@ -1002,8 +1003,11 @@ impl OrchardPayScreen {
         ui.label(RichText::new("Payments carry real meaning").strong());
         ui.label(secondary(
             "Sending a payment through OrchardPay performs an actual \
-             shielded value transfer, correlated to its message through an \
-             on-chain memo — not just a record that a payment happened.",
+             shielded value transfer, correlated to its message (a Platform \
+             document) through an on-chain memo — not just a record that a \
+             payment happened. Direct sending is also possible, so payments \
+             can be sent even without the users first exchanging a contact \
+             request.",
         ));
 
         ui.add_space(16.0);
