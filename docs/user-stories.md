@@ -899,6 +899,11 @@ As a user, I want to see my OrchardPay contacts and whether each connection is p
 
 - Lists contacts with state: waiting for a response, wants to connect with you, or connected.
 - Selecting an established contact opens the message thread.
+- The Most Recent tab shows the same contacts as the Contacts tab (every handshake
+  stage), just ordered by most recent activity instead of alphabetically.
+- "Check for New Requests" manually re-runs the incoming-request scan for the
+  current identity, for when an already-synced request hasn't appeared yet because
+  no shielded sync pass has completed this session.
 
 ### ORP-005: Recover contacts after reinstalling [Implemented]
 **Persona:** Alex, Priya

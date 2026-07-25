@@ -65,8 +65,9 @@ use std::sync::{Arc, RwLock};
 pub enum OrchardPaySubscreen {
     Profile,
     Contacts,
-    /// Established contacts ordered by their conversation's most recent
-    /// activity (newest first), instead of Contacts' unordered list.
+    /// Same contact set as `Contacts` (all handshake stages), ordered by
+    /// their conversation's most recent activity (newest first) instead
+    /// of alphabetically.
     MostRecent,
     Payments,
     /// "Send Friend Request": DPNS search + initiate a new contact.
@@ -489,6 +490,17 @@ impl OrchardPayScreen {
         });
         ui.add_space(4.0);
 
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Already synced but a new request isn't showing?")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            if ui.button("Check for New Requests").clicked() {
+                action |= self.check_new_requests_clicked();
+            }
+        });
+        ui.add_space(4.0);
+
         // Diagnostic: tells a stalled contact-request handshake apart from a
         // wallet that simply hasn't synced recently. Per-note memo detail
         // (including whether contactAnchor/payment memos are being found at
@@ -539,112 +551,136 @@ impl OrchardPayScreen {
         });
 
         for (counterparty, state) in contacts {
-            let (name, created_at) = match &state {
-                OrchardPayContactState::PendingOutbound {
-                    name, created_at, ..
-                }
-                | OrchardPayContactState::PendingInboundUnaccepted {
-                    name, created_at, ..
-                }
-                | OrchardPayContactState::Established {
-                    name, created_at, ..
-                } => (name.clone(), *created_at),
-            };
+            action |= self.render_contact_card(
+                ui,
+                &identity,
+                counterparty,
+                state,
+                credit_blocked,
+                dark_mode,
+            );
+        }
 
-            ui.group(|ui| {
-                match &name {
-                    Some(name) => ui.label(RichText::new(strip_dash_suffix(name))),
-                    None => {
-                        ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace())
-                    }
-                };
-                // `Established` rows prefer real message activity (from
-                // the same `self.recent_activity` cache `render_most_recent`
-                // populates) over the connection date — falls back to
-                // "Sent {when}" only while that fetch is still in flight.
-                // Pending contacts can't have any `encryptedMessage` yet
-                // (`established_state` requires `Established`), so "Sent
-                // {when}" from the anchor's own date stays correct for them.
-                let activity_label = match &state {
-                    OrchardPayContactState::Established { .. } => self
-                        .recent_activity
-                        .as_ref()
-                        .and_then(|entries| {
-                            entries.iter().find(|e| e.identity_id == counterparty)
-                        })
-                        .map(recent_activity_label)
-                        .or_else(|| {
-                            created_at
-                                .and_then(format_relative_time)
-                                .map(|when| format!("Sent {when}"))
-                        }),
-                    _ => created_at
-                        .and_then(format_relative_time)
-                        .map(|when| format!("Sent {when}")),
-                };
-                if let Some(activity_label) = activity_label {
+        action
+    }
+
+    /// One contact's card, shared by the Contacts and Most Recent tabs —
+    /// both show the same underlying contact set (all three handshake
+    /// stages), differing only in ordering, so the row rendering (name,
+    /// activity label, per-state status/action) must be identical between
+    /// them.
+    fn render_contact_card(
+        &mut self,
+        ui: &mut Ui,
+        identity: &QualifiedIdentity,
+        counterparty: Identifier,
+        state: OrchardPayContactState,
+        credit_blocked: bool,
+        dark_mode: bool,
+    ) -> AppAction {
+        let mut action = AppAction::None;
+
+        let (name, created_at) = match &state {
+            OrchardPayContactState::PendingOutbound {
+                name, created_at, ..
+            }
+            | OrchardPayContactState::PendingInboundUnaccepted {
+                name, created_at, ..
+            }
+            | OrchardPayContactState::Established {
+                name, created_at, ..
+            } => (name.clone(), *created_at),
+        };
+
+        ui.group(|ui| {
+            match &name {
+                Some(name) => ui.label(RichText::new(strip_dash_suffix(name))),
+                None => {
+                    ui.label(RichText::new(counterparty.to_string(Encoding::Base58)).monospace())
+                }
+            };
+            // `Established` rows prefer real message activity (from the
+            // shared `self.recent_activity` cache both tabs populate) over
+            // the connection date — falls back to "Sent {when}" only while
+            // that fetch is still in flight. Pending contacts can't have
+            // any `encryptedMessage` yet (`established_state` requires
+            // `Established`), so "Sent {when}" from the anchor's own date
+            // stays correct for them.
+            let activity_label = match &state {
+                OrchardPayContactState::Established { .. } => self
+                    .recent_activity
+                    .as_ref()
+                    .and_then(|entries| entries.iter().find(|e| e.identity_id == counterparty))
+                    .map(recent_activity_label)
+                    .or_else(|| {
+                        created_at
+                            .and_then(format_relative_time)
+                            .map(|when| format!("Sent {when}"))
+                    }),
+                _ => created_at
+                    .and_then(format_relative_time)
+                    .map(|when| format!("Sent {when}")),
+            };
+            if let Some(activity_label) = activity_label {
+                ui.label(
+                    RichText::new(activity_label)
+                        .size(11.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+            match state {
+                OrchardPayContactState::PendingOutbound { .. } => {
                     ui.label(
-                        RichText::new(activity_label)
-                            .size(11.0)
+                        RichText::new("Waiting for a response…")
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                 }
-                match state {
-                    OrchardPayContactState::PendingOutbound { .. } => {
+                OrchardPayContactState::PendingInboundUnaccepted { .. } => {
+                    ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Waiting for a response…")
+                            RichText::new("Wants to connect with you")
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
-                    }
-                    OrchardPayContactState::PendingInboundUnaccepted { .. } => {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Wants to connect with you")
-                                    .color(DashColors::text_secondary(dark_mode)),
+                        if ui
+                            .add_enabled(!credit_blocked, egui::Button::new("Accept"))
+                            .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                            .clicked()
+                        {
+                            let display_name = name
+                                .as_deref()
+                                .map(strip_dash_suffix)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| counterparty.to_string(Encoding::Base58));
+                            let confirm_action = self.accept_clicked(counterparty);
+                            self.open_confirmation(
+                                "Accept Contact Request",
+                                format!("Accept the contact request from {display_name}?"),
+                                confirm_action,
+                                false,
                             );
-                            if ui
-                                .add_enabled(!credit_blocked, egui::Button::new("Accept"))
-                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-                                .clicked()
-                            {
-                                let display_name = name
-                                    .as_deref()
-                                    .map(strip_dash_suffix)
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| counterparty.to_string(Encoding::Base58));
-                                let confirm_action = self.accept_clicked(counterparty);
-                                self.open_confirmation(
-                                    "Accept Contact Request",
-                                    format!(
-                                        "Accept the contact request from {display_name}?"
-                                    ),
-                                    confirm_action,
-                                    false,
-                                );
-                            }
-                        });
-                    }
-                    OrchardPayContactState::Established { .. } => {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Connected")
-                                    .color(DashColors::success_color(dark_mode)),
-                            );
-                            if ui.button("Open Conversation").clicked() {
-                                action |= AppAction::AddScreen(Screen::MessageThreadScreen(
-                                    crate::ui::orchardpay::message_thread_screen::MessageThreadScreen::new(
-                                        identity.clone(),
-                                        counterparty,
-                                        &self.app_context,
-                                    ),
-                                ));
-                            }
-                        });
-                    }
+                        }
+                    });
                 }
-            });
-            ui.add_space(6.0);
-        }
+                OrchardPayContactState::Established { .. } => {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Connected")
+                                .color(DashColors::success_color(dark_mode)),
+                        );
+                        if ui.button("Open Conversation").clicked() {
+                            action |= AppAction::AddScreen(Screen::MessageThreadScreen(
+                                crate::ui::orchardpay::message_thread_screen::MessageThreadScreen::new(
+                                    identity.clone(),
+                                    counterparty,
+                                    &self.app_context,
+                                ),
+                            ));
+                        }
+                    });
+                }
+            }
+        });
+        ui.add_space(6.0);
 
         action
     }
@@ -667,7 +703,7 @@ impl OrchardPayScreen {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(
-                    "Established contacts, ordered by their conversation's most recent activity.",
+                    "All your contacts, ordered by their conversation's most recent activity.",
                 )
                 .color(DashColors::text_secondary(dark_mode)),
             );
@@ -687,18 +723,14 @@ impl OrchardPayScreen {
             )));
         }
 
-        let Some(entries) = self.recent_activity.clone() else {
+        // Established contacts' real message-activity timestamps need a
+        // network fetch (`self.recent_activity`) — pending contacts don't
+        // (their sort key is just their own local `created_at`), but the
+        // whole tab still waits on this fetch before rendering anything,
+        // to keep a single loading gate rather than rows reflowing once it
+        // lands.
+        if self.recent_activity.is_none() {
             ui.label(RichText::new("Loading…").color(DashColors::text_secondary(dark_mode)));
-            return action;
-        };
-
-        if entries.is_empty() {
-            ui.label(
-                RichText::new(
-                    "No established contacts yet. Use Send Friend Request to find someone on OrchardPay.",
-                )
-                .color(DashColors::text_secondary(dark_mode)),
-            );
             return action;
         }
 
@@ -710,37 +742,70 @@ impl OrchardPayScreen {
             }
         };
         let owner_id = identity.identity.id();
+        let credit_blocked = is_credit_balance_blocked(identity.identity.balance());
 
-        for entry in entries {
-            let Ok(Some(OrchardPayContactState::Established { name, .. })) =
-                backend.orchardpay_get_contact_state(&owner_id, &entry.identity_id)
-            else {
-                continue;
-            };
+        // Same full contact set Contacts shows (all three handshake
+        // stages) — differs from Contacts only in sort order below.
+        let mut contacts: Vec<(Identifier, OrchardPayContactState)> = backend
+            .orchardpay_list_contacts(&owner_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|counterparty| {
+                let state = backend
+                    .orchardpay_get_contact_state(&owner_id, &counterparty)
+                    .ok()??;
+                Some((counterparty, state))
+            })
+            .collect();
 
-            ui.group(|ui| {
-                match &name {
-                    Some(name) => ui.label(RichText::new(strip_dash_suffix(name))),
-                    None => ui.label(
-                        RichText::new(entry.identity_id.to_string(Encoding::Base58)).monospace(),
-                    ),
-                };
-                ui.label(
-                    RichText::new(recent_activity_label(&entry))
-                        .size(11.0)
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-                if ui.button("Open Conversation").clicked() {
-                    action |= AppAction::AddScreen(Screen::MessageThreadScreen(
-                        crate::ui::orchardpay::message_thread_screen::MessageThreadScreen::new(
-                            identity.clone(),
-                            entry.identity_id,
-                            &self.app_context,
-                        ),
-                    ));
+        if contacts.is_empty() {
+            ui.label(
+                RichText::new(
+                    "No contacts yet. Use Send Friend Request to find someone on OrchardPay.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            return action;
+        }
+
+        // Newest activity first: established contacts with real messages
+        // sort by that; anything else (established-but-quiet, or still
+        // pending) sorts by its own `created_at` — same tie-break
+        // `fetch_recent_activity` uses internally (has-messages first,
+        // then newest).
+        contacts.sort_by(|(a_id, a_state), (b_id, b_state)| {
+            // Purely by recency: an established contact's real last-message
+            // time if known, otherwise (for a silent established contact or
+            // any pending one) its own `created_at`. No "has messages" tier
+            // — a 7-hour-old pending request must outrank a 9-hour-old
+            // established contact's last message, not be sorted below every
+            // contact that happens to have any message history at all.
+            let key = |id: &Identifier, state: &OrchardPayContactState| -> Option<u64> {
+                match state {
+                    OrchardPayContactState::Established { created_at, .. } => self
+                        .recent_activity
+                        .as_ref()
+                        .and_then(|entries| entries.iter().find(|e| e.identity_id == *id))
+                        .and_then(|e| e.last_activity)
+                        .or(*created_at),
+                    OrchardPayContactState::PendingOutbound { created_at, .. }
+                    | OrchardPayContactState::PendingInboundUnaccepted { created_at, .. } => {
+                        *created_at
+                    }
                 }
-            });
-            ui.add_space(6.0);
+            };
+            key(b_id, b_state).cmp(&key(a_id, a_state))
+        });
+
+        for (counterparty, state) in contacts {
+            action |= self.render_contact_card(
+                ui,
+                &identity,
+                counterparty,
+                state,
+                credit_blocked,
+                dark_mode,
+            );
         }
 
         action
@@ -1078,6 +1143,28 @@ impl OrchardPayScreen {
         AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
             OrchardPayTask::RecoverContacts {
                 qualified_identity: identity,
+                seed_hash,
+            },
+        )))
+    }
+
+    /// Manually run the incoming-anchor scan for the current identity,
+    /// instead of only ever waiting on the automatic post-sync-completion
+    /// trigger (`EventBridge::on_shielded_sync_completed`). A note already
+    /// visible in Shielded TXs can be sitting unprocessed if that trigger
+    /// hasn't fired yet this session — this lets the user force a pass.
+    fn check_new_requests_clicked(&mut self) -> AppAction {
+        let (Some(identity), Some(wallet)) = (self.identity.clone(), self.selected_wallet.clone())
+        else {
+            return AppAction::None;
+        };
+        let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash()) else {
+            return AppAction::None;
+        };
+
+        AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+            OrchardPayTask::ScanForIncomingAnchors {
+                qualified_identities: vec![identity],
                 seed_hash,
             },
         )))
