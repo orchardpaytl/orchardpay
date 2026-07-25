@@ -22,18 +22,23 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::orchardpay::OrchardPayTask;
+use crate::backend_task::orchardpay::contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS;
 use crate::backend_task::orchardpay::contact_search::OrchardPayContactSearchResult;
 use crate::backend_task::orchardpay::messages::RecentContactActivity;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::dpns::strip_dash_suffix;
-use crate::model::fee_estimation::{format_credits_as_dash, format_credits_as_dash_significant};
+use crate::model::fee_estimation::{
+    format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
+};
 use crate::model::orchardpay::{
     CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, ShieldedActivityRow, SpentEntry,
     group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -46,7 +51,7 @@ use crate::ui::components::top_panel::{
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{Component, MessageBanner};
+use crate::ui::components::{Component, ComponentResponse, MessageBanner};
 use crate::ui::dashpay::format_relative_time;
 use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
@@ -73,6 +78,9 @@ pub enum OrchardPaySubscreen {
     Payments,
     /// "Send Friend Request": DPNS search + initiate a new contact.
     AddContact,
+    /// "Direct Send": search + send DASH directly to a non-contact, with an
+    /// optional contact request bundled in. See `render_direct_send`.
+    DirectSend,
     /// Static informational tab: what OrchardPay is, how it differs from
     /// DashPay, and links to the design articles it grew out of.
     About,
@@ -86,6 +94,7 @@ const TAB_CONTACTS: &str = "orchardpay_tab_contacts";
 const TAB_MOST_RECENT: &str = "orchardpay_tab_most_recent";
 const TAB_PAYMENTS: &str = "orchardpay_tab_payments";
 const TAB_ADD_CONTACT: &str = "orchardpay_tab_add_contact";
+const TAB_DIRECT_SEND: &str = "orchardpay_tab_direct_send";
 const TAB_ABOUT: &str = "orchardpay_tab_about";
 const TAB_QC_WARNING: &str = "orchardpay_tab_qc_warning";
 
@@ -171,6 +180,20 @@ pub struct OrchardPayScreen {
     search_query: String,
     search_results: Vec<OrchardPayContactSearchResult>,
     searching: bool,
+    /// Direct Send's shared "amount to send" field, above its search box —
+    /// lazily created, mirroring `compose_amount_input` in
+    /// `message_thread_screen.rs`. Not reset by `refresh()`, matching
+    /// `search_query`/`search_results`'s own persistence across subscreen
+    /// switches within this one screen instance.
+    direct_send_amount_input: Option<AmountInput>,
+    /// The amount parsed out of `direct_send_amount_input`; `None` while
+    /// empty or invalid (at or below the 0.001-DASH floor, above the
+    /// shielded-balance cap, or simply unparsed) — gates every row's
+    /// "Direct Send" button. Cleared once a `SendDirect` completes; the
+    /// checkbox-checked branch (`InitiateContact`) deliberately leaves it
+    /// alone, matching how a successful Add Contact doesn't clear
+    /// `search_query`/`search_results` either.
+    direct_send_amount: Option<Amount>,
     /// `None` = not yet known (renders a "checking…" state, not the
     /// "publish" prompt — those two must never be conflated). `Some(true)` =
     /// confirmed published, seeded from the local cache
@@ -220,7 +243,13 @@ pub struct OrchardPayScreen {
 /// action itself is only returned to the caller once the user confirms.
 struct PendingConfirmation {
     dialog: ConfirmationDialog,
-    action: Box<AppAction>,
+    /// Built lazily from the dialog's final checkbox state (`true` if
+    /// checked), not eagerly — Direct Send's "Include a contact request?"
+    /// checkbox decides which task this becomes, only known once the user
+    /// confirms. Callers with no checkbox (Accept, Add Contact) just ignore
+    /// the `bool`. Mirrors `message_thread_screen.rs`'s own
+    /// `PendingConfirmation` (its "Save Receipt" checkbox has the same need).
+    action: Box<dyn FnOnce(bool) -> AppAction>,
     /// The counterparty this action targets — claims `contact_actions`'
     /// guard for this key once the user confirms.
     key: Identifier,
@@ -245,6 +274,8 @@ impl OrchardPayScreen {
             search_query: String::new(),
             search_results: Vec::new(),
             searching: false,
+            direct_send_amount_input: None,
+            direct_send_amount: None,
             // If the cache already confirms it, skip the check entirely —
             // no network round-trip, no "checking…"/"publish" flash on open.
             shielded_address_check_dispatched: has_shielded_address == Some(true),
@@ -276,6 +307,15 @@ impl OrchardPayScreen {
             .orchardpay_get_has_shielded_address(&identity.identity.id())
             .ok()
             .flatten()
+    }
+
+    /// The active wallet's seed hash, if resolved — mirrors
+    /// `message_thread_screen.rs`'s own `seed_hash()` exactly. Used by
+    /// Direct Send's shielded-balance cap.
+    fn seed_hash(&self) -> Option<crate::model::wallet::WalletSeedHash> {
+        self.selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|w| w.seed_hash()))
     }
 
     fn resolve_identity_context(
@@ -1141,8 +1181,11 @@ impl OrchardPayScreen {
                                 response
                             };
                             if response.clicked() {
-                                let confirm_action = self
-                                    .initiate_clicked(result.identity_id, result.username.clone());
+                                let confirm_action = self.initiate_clicked(
+                                    result.identity_id,
+                                    result.username.clone(),
+                                    ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                                );
                                 self.open_confirmation(
                                     "Send Contact Request",
                                     format!("Send a contact request to {}?", result.username),
@@ -1165,6 +1208,202 @@ impl OrchardPayScreen {
         }
 
         action
+    }
+
+    fn render_direct_send(&mut self, ui: &mut Ui) -> AppAction {
+        match self.has_shielded_address {
+            Some(true) => {}
+            Some(false) => return self.render_needs_shielded_address(ui),
+            None => return self.render_checking_shielded_address(ui),
+        }
+
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        let credit_blocked = self
+            .identity
+            .as_ref()
+            .map(|i| is_credit_balance_blocked(i.identity.balance()))
+            .unwrap_or(true);
+
+        ui.heading("Direct Send");
+        ui.add_space(6.0);
+
+        // Shielded-funds guardrail (PROTOCOL_DESIGN.md "User safety
+        // guardrails" §1) — applies to both branches identically, since
+        // both spend the typed amount from the shielded pool regardless of
+        // whether a contact request also gets bundled in.
+        let available = self.seed_hash().map(|seed_hash| {
+            let balance = self.app_context.shielded_balance_credits(&seed_hash);
+            let fee = shielded_fee_for_actions(2, self.app_context.platform_version()).unwrap_or(0);
+            balance.saturating_sub(fee)
+        });
+        let widget = self.direct_send_amount_input.get_or_insert_with(|| {
+            AmountInput::new(Amount::new_dash(0.0))
+                .with_label("Enter Dash amount to send directly:")
+                .with_caption("Must send more than 0.001 DASH")
+                // `AmountInput`'s own check is `amount < min_amount → error`
+                // (inclusive of `min_amount`) — Direct Send's floor is
+                // EXCLUSIVE of 0.001 DASH, so pass one credit above it.
+                .with_min_amount(Some(ANCHOR_SIGNAL_AMOUNT_CREDITS + 1))
+        });
+        widget.set_max_amount(available);
+        widget.set_max_exceeded_hint(Some("Insufficient Shielded Funds".to_string()));
+        let response = widget.show(ui);
+        response.inner.update(&mut self.direct_send_amount);
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Search by DPNS name:");
+            ui.text_edit_singleline(&mut self.search_query);
+            if ui.button("Search").clicked()
+                && !self.search_query.trim().is_empty()
+                && let Some(identity) = &self.identity
+            {
+                self.searching = true;
+                action |= AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+                    OrchardPayTask::SearchContacts {
+                        search_query: self.search_query.clone(),
+                        owner_identity_id: identity.identity.id(),
+                    },
+                )));
+            }
+        });
+        ui.add_space(10.0);
+
+        if self.searching {
+            ui.label("Searching…");
+        }
+
+        for result in self.search_results.clone() {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(strip_dash_suffix(&result.username));
+                    match &result.existing_relationship {
+                        Some(OrchardPayContactState::PendingOutbound { .. }) => {
+                            ui.label(
+                                RichText::new("Request already sent")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                        Some(OrchardPayContactState::PendingInboundUnaccepted { .. }) => {
+                            ui.label(
+                                RichText::new(
+                                    "Wants to connect with you — check Contacts to accept",
+                                )
+                                .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                        Some(OrchardPayContactState::Established { .. }) => {
+                            ui.label(
+                                RichText::new("Already connected")
+                                    .color(DashColors::success_color(dark_mode)),
+                            );
+                        }
+                        None if result.contactable => {
+                            let in_flight = self.contact_actions.is_in_flight(&result.identity_id);
+                            let amount_ready = self.direct_send_amount.is_some();
+                            let label = if in_flight {
+                                "Sending Directly…"
+                            } else {
+                                "Direct Send"
+                            };
+                            // Deliberately conservative: gated on
+                            // credit_blocked even though the no-contact-
+                            // request branch alone spends no identity
+                            // credits, because the button's real cost isn't
+                            // known until the confirmation modal's checkbox
+                            // is set. A credit-blocked user can still use
+                            // the plain wallet Send screen for a
+                            // no-strings-attached send.
+                            let response = ui.add_enabled(
+                                !credit_blocked && !in_flight && amount_ready,
+                                egui::Button::new(label),
+                            );
+                            let response = if credit_blocked {
+                                response.disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                            } else if !amount_ready {
+                                response.disabled_tooltip("Enter a valid amount above first")
+                            } else {
+                                response
+                            };
+                            if response.clicked() {
+                                self.direct_send_clicked(
+                                    result.identity_id,
+                                    result.username.clone(),
+                                );
+                            }
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("Hasn't set up OrchardPay yet")
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+
+        action
+    }
+
+    /// Opens Direct Send's confirmation modal. Mirrors `open_pay_confirmation`
+    /// in `message_thread_screen.rs`: the final `AppAction` depends on the
+    /// dialog's own checkbox, only known at confirm time, so it's built
+    /// lazily inside a `move` closure over owned locals.
+    fn direct_send_clicked(
+        &mut self,
+        counterparty_identity_id: Identifier,
+        counterparty_name: String,
+    ) {
+        let Some(amount_credits) = self.direct_send_amount.as_ref().map(Amount::value) else {
+            return;
+        };
+        let (Some(identity), Some(key), Some(wallet)) = (
+            self.identity.clone(),
+            self.selected_key.clone(),
+            self.selected_wallet.clone(),
+        ) else {
+            return;
+        };
+        let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash()) else {
+            return;
+        };
+        let owner_identity_id = identity.identity.id();
+        let display_name = strip_dash_suffix(&counterparty_name).to_string();
+        let message = format!(
+            "Send {} to {display_name}?",
+            format_credits_as_dash(amount_credits)
+        );
+
+        self.open_confirmation_lazy(
+            "Confirm Direct Send",
+            message,
+            Some(("Include a contact request?", false)),
+            Box::new(move |include_contact_request| {
+                let task = if include_contact_request {
+                    OrchardPayTask::InitiateContact {
+                        qualified_identity: identity,
+                        identity_key: key,
+                        counterparty_identity_id,
+                        counterparty_name,
+                        seed_hash,
+                        amount_credits,
+                    }
+                } else {
+                    OrchardPayTask::SendDirect {
+                        owner_identity_id,
+                        counterparty_identity_id,
+                        seed_hash,
+                        amount: amount_credits,
+                    }
+                };
+                AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
+            }),
+            true, // danger_mode: moves real DASH either way (PROTOCOL_DESIGN.md §2)
+            counterparty_identity_id,
+        );
     }
 
     fn recover_contacts_clicked(&mut self) -> AppAction {
@@ -1232,6 +1471,7 @@ impl OrchardPayScreen {
         &mut self,
         counterparty_identity_id: Identifier,
         counterparty_name: String,
+        amount_credits: u64,
     ) -> AppAction {
         let (Some(identity), Some(key), Some(wallet)) = (
             self.identity.clone(),
@@ -1251,6 +1491,7 @@ impl OrchardPayScreen {
                 counterparty_identity_id,
                 counterparty_name,
                 seed_hash,
+                amount_credits,
             },
         )))
     }
@@ -1271,11 +1512,40 @@ impl OrchardPayScreen {
         if matches!(action, AppAction::None) {
             return;
         }
+        self.open_confirmation_lazy(
+            title,
+            message,
+            None,
+            Box::new(move |_include| action),
+            danger_mode,
+            key,
+        );
+    }
+
+    /// Like `open_confirmation`, but for an action whose final shape depends
+    /// on the dialog's own checkbox — only known once the user confirms.
+    /// `checkbox` is `Some((label, default_checked))` to show one, `None`
+    /// for a plain yes/no dialog. Direct Send's "Include a contact request?"
+    /// is the one current user of the checkbox — it decides whether the
+    /// dispatched task is `InitiateContact` or `SendDirect`.
+    fn open_confirmation_lazy(
+        &mut self,
+        title: &str,
+        message: String,
+        checkbox: Option<(&str, bool)>,
+        action: Box<dyn FnOnce(bool) -> AppAction>,
+        danger_mode: bool,
+        key: Identifier,
+    ) {
+        let mut dialog = ConfirmationDialog::new(title, message)
+            .danger_mode(danger_mode)
+            .blocks_input(true);
+        if let Some((label, default_checked)) = checkbox {
+            dialog = dialog.with_checkbox(label, default_checked);
+        }
         self.pending_confirmation = Some(PendingConfirmation {
-            dialog: ConfirmationDialog::new(title, message)
-                .danger_mode(danger_mode)
-                .blocks_input(true),
-            action: Box::new(action),
+            dialog,
+            action,
             key,
         });
     }
@@ -1302,7 +1572,8 @@ impl OrchardPayScreen {
                 if !self.contact_actions.begin(pending.key) {
                     return AppAction::None;
                 }
-                *pending.action
+                let checkbox_state = pending.dialog.checkbox_checked();
+                (pending.action)(checkbox_state)
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.pending_confirmation = None;
@@ -1431,6 +1702,20 @@ impl ScreenLike for OrchardPayScreen {
                 self.pending_identity_refresh = true;
                 self.reconcile_contact_actions();
             }
+            BackendTaskSuccessResult::OrchardPayDirectSendCompleted {
+                counterparty_identity_id,
+                ..
+            } => {
+                // No OrchardPayContactState changed — this branch never
+                // creates a document, so reconcile_contact_actions (which
+                // only releases a guard once real contact state shows it
+                // landed) has nothing to reconcile against. Release the
+                // guard directly, same-frame, on this branch's own
+                // dedicated success variant instead.
+                self.contact_actions.release(counterparty_identity_id);
+                self.direct_send_amount = None;
+                self.direct_send_amount_input = None;
+            }
             _ => {}
         }
         if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
@@ -1495,6 +1780,11 @@ impl ScreenLike for OrchardPayScreen {
                     AppAction::Custom(TAB_ADD_CONTACT.to_string()),
                 ),
                 SubscreenNavItem::new(
+                    "Direct Send",
+                    self.orchardpay_subscreen == OrchardPaySubscreen::DirectSend,
+                    AppAction::Custom(TAB_DIRECT_SEND.to_string()),
+                ),
+                SubscreenNavItem::new(
                     "Shielded TXs",
                     self.orchardpay_subscreen == OrchardPaySubscreen::Payments,
                     AppAction::Custom(TAB_PAYMENTS.to_string()),
@@ -1537,6 +1827,9 @@ impl ScreenLike for OrchardPayScreen {
                 }
                 AppAction::Custom(ref tag) if tag == TAB_ADD_CONTACT => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::AddContact;
+                }
+                AppAction::Custom(ref tag) if tag == TAB_DIRECT_SEND => {
+                    self.orchardpay_subscreen = OrchardPaySubscreen::DirectSend;
                 }
                 AppAction::Custom(ref tag) if tag == TAB_ABOUT => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::About;
@@ -1589,6 +1882,7 @@ impl ScreenLike for OrchardPayScreen {
                         OrchardPaySubscreen::MostRecent => self.render_most_recent(ui),
                         OrchardPaySubscreen::Payments => self.render_payments(ui),
                         OrchardPaySubscreen::AddContact => self.render_add_contact(ui),
+                        OrchardPaySubscreen::DirectSend => self.render_direct_send(ui),
                         OrchardPaySubscreen::About => {
                             self.render_about(ui);
                             AppAction::None
@@ -1773,6 +2067,32 @@ mod tests {
         harness.step();
     }
 
+    /// Like `click_in_one_frame`, but disambiguates by role — needed on
+    /// Direct Send, where the "Direct Send" heading and the "Direct Send"
+    /// button share the exact same label text.
+    fn click_button_in_one_frame(harness: &mut Harness<'_, OrchardPayScreen>, label: &str) {
+        let pos = harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, label)
+            .rect()
+            .center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        harness.step();
+    }
+
     fn mount_add_contact(
         screen: OrchardPayScreen,
         captured_action: Rc<RefCell<AppAction>>,
@@ -1844,6 +2164,201 @@ mod tests {
         assert!(
             matches!(*observed_action.borrow(), AppAction::None),
             "canceling must never dispatch a backend task"
+        );
+    }
+
+    /// Same recipe as `add_contact_screen`, but on `DirectSend` with a valid
+    /// amount already entered (bypassing text-entry simulation, matching
+    /// how `add_contact_screen` seeds `search_results` directly).
+    fn direct_send_screen() -> (OrchardPayScreen, tempfile::TempDir, Identifier) {
+        let (mut screen, temp_dir, counterparty_id) = add_contact_screen();
+        screen.orchardpay_subscreen = OrchardPaySubscreen::DirectSend;
+
+        // `render_direct_send` caps the amount at the real shielded balance
+        // (0 on a cold/offline context by default), which would otherwise
+        // fail every amount as "Insufficient Shielded Funds" regardless of
+        // what's seeded below — give the test wallet a generous balance.
+        let seed_hash = screen
+            .seed_hash()
+            .expect("wallet seeded by add_contact_screen");
+        screen
+            .app_context
+            .shielded_balances
+            .lock()
+            .expect("shielded balances lock")
+            .insert(seed_hash, Amount::new_dash(1.0).value());
+
+        // Seed the widget itself, not just the parsed field — `render_direct_send`
+        // only lazily creates the widget if absent, but once present, its own
+        // `update()` call recomputes `direct_send_amount` from the widget's
+        // displayed value every frame, which would otherwise overwrite a
+        // directly-seeded `direct_send_amount` back to `None` on first render.
+        screen.direct_send_amount_input = Some(AmountInput::new(Amount::new_dash(0.002)));
+        screen.direct_send_amount = Some(Amount::new_dash(0.002));
+        (screen, temp_dir, counterparty_id)
+    }
+
+    fn mount_direct_send(
+        screen: OrchardPayScreen,
+        captured_action: Rc<RefCell<AppAction>>,
+    ) -> Harness<'static, OrchardPayScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut OrchardPayScreen| {
+                    let mut action = screen.render_direct_send(ui);
+                    action |= screen.render_pending_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
+    #[test]
+    fn direct_send_button_disabled_without_amount() {
+        let (mut screen, _temp_dir, _counterparty_id) = direct_send_screen();
+        // Clear the widget itself, not just the parsed field — otherwise
+        // the widget's own `update()` call recomputes `direct_send_amount`
+        // from its still-seeded "0.002" display value on first render,
+        // overriding this `None`. A freshly-created widget starts at 0.0
+        // DASH, below the minimum, so it naturally parses to `None`.
+        screen.direct_send_amount_input = None;
+        screen.direct_send_amount = None;
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        click_button_in_one_frame(&mut harness, "Direct Send");
+
+        assert!(
+            harness.query_by_label("Confirm Direct Send").is_none(),
+            "a click on the disabled button must not open the confirmation modal"
+        );
+        assert!(matches!(*observed_action.borrow(), AppAction::None));
+    }
+
+    #[test]
+    fn direct_send_click_opens_confirmation_with_checkbox() {
+        let (screen, _temp_dir, _counterparty_id) = direct_send_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        click_button_in_one_frame(&mut harness, "Direct Send");
+
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "the original Direct Send click must not dispatch a backend task"
+        );
+        assert!(harness.query_by_label("Confirm Direct Send").is_some());
+        assert!(
+            harness
+                .query_by_label("Include a contact request?")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn direct_send_confirm_without_checkbox_dispatches_send_direct() {
+        let (screen, _temp_dir, counterparty_id) = direct_send_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        click_button_in_one_frame(&mut harness, "Direct Send");
+        // Checkbox left at its unchecked default.
+        harness.get_by_label("Confirm").click_accesskit();
+        harness.step();
+
+        match &*observed_action.borrow() {
+            AppAction::BackendTask(BackendTask::OrchardPayTask(task)) => match task.as_ref() {
+                OrchardPayTask::SendDirect {
+                    counterparty_identity_id,
+                    amount,
+                    ..
+                } => {
+                    assert_eq!(*counterparty_identity_id, counterparty_id);
+                    assert_eq!(*amount, Amount::new_dash(0.002).value());
+                }
+                other => panic!("expected SendDirect, got {other:?}"),
+            },
+            other => panic!("expected a dispatched BackendTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_send_confirm_with_checkbox_dispatches_initiate_contact_with_custom_amount() {
+        let (screen, _temp_dir, counterparty_id) = direct_send_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        click_button_in_one_frame(&mut harness, "Direct Send");
+        harness
+            .get_by_label("Include a contact request?")
+            .click_accesskit();
+        harness.step();
+        harness.get_by_label("Confirm").click_accesskit();
+        harness.step();
+
+        match &*observed_action.borrow() {
+            AppAction::BackendTask(BackendTask::OrchardPayTask(task)) => match task.as_ref() {
+                OrchardPayTask::InitiateContact {
+                    counterparty_identity_id,
+                    amount_credits,
+                    ..
+                } => {
+                    assert_eq!(*counterparty_identity_id, counterparty_id);
+                    assert_eq!(*amount_credits, Amount::new_dash(0.002).value());
+                    assert_ne!(
+                        *amount_credits, ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                        "must use the typed amount, not Send Friend Request's default"
+                    );
+                }
+                other => panic!("expected InitiateContact, got {other:?}"),
+            },
+            other => panic!("expected a dispatched BackendTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn direct_send_cancel_does_not_dispatch() {
+        let (screen, _temp_dir, _counterparty_id) = direct_send_screen();
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        click_button_in_one_frame(&mut harness, "Direct Send");
+        assert!(harness.query_by_label("Confirm Direct Send").is_some());
+
+        harness.get_by_label("Cancel").click_accesskit();
+        harness.step();
+
+        assert!(harness.state().pending_confirmation.is_none());
+        assert!(matches!(*observed_action.borrow(), AppAction::None));
+    }
+
+    #[test]
+    fn direct_send_completed_releases_guard_and_clears_amount() {
+        let (mut screen, _temp_dir, counterparty_id) = direct_send_screen();
+        assert!(screen.contact_actions.begin(counterparty_id));
+
+        screen.display_task_result(BackendTaskSuccessResult::OrchardPayDirectSendCompleted {
+            counterparty_identity_id: counterparty_id,
+            amount: Amount::new_dash(0.002).value(),
+        });
+
+        assert!(
+            !screen.contact_actions.is_in_flight(&counterparty_id),
+            "a completed direct send must release its guard"
+        );
+        assert!(
+            screen.direct_send_amount.is_none(),
+            "a completed direct send must clear the entered amount"
         );
     }
 }

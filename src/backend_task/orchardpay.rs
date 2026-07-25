@@ -5,6 +5,7 @@
 
 pub mod contact_anchor;
 pub mod contact_search;
+pub mod direct_send;
 pub mod encryption;
 pub mod errors;
 pub mod keys;
@@ -72,6 +73,12 @@ pub enum OrchardPayTask {
         /// later rename or lookup failure. See `contact_anchor::initiate_contact`.
         counterparty_name: String,
         seed_hash: WalletSeedHash,
+        /// Credits transferred with the anchor-signaling shielded transfer.
+        /// Send Friend Request passes
+        /// `contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS` (today's fixed
+        /// 0.001 DASH default); Direct Send's "include a contact request"
+        /// branch passes the user's own typed amount instead.
+        amount_credits: u64,
     },
     /// Complete a relationship already recorded as `PendingInboundUnaccepted`.
     /// See `contact_anchor::accept_contact`.
@@ -139,6 +146,18 @@ pub enum OrchardPayTask {
         /// meaningful when `save_receipt` is true.
         original_request_memo: Option<String>,
         original_request_created_at: Option<u64>,
+    },
+    /// Send DASH directly to `counterparty_identity_id` with no contact
+    /// request and no OrchardPay document — a bare shielded transfer. See
+    /// `direct_send::send_direct`. Direct Send's other branch (its
+    /// confirmation modal's checkbox checked) instead dispatches
+    /// `InitiateContact` with a caller-chosen `amount_credits`; this variant
+    /// is only for the no-request path.
+    SendDirect {
+        owner_identity_id: dash_sdk::platform::Identifier,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+        amount: u64,
     },
     /// Edit a `Message` I sent. See `messages::edit_message`.
     EditMessage {
@@ -233,6 +252,7 @@ impl AppContext {
                 counterparty_identity_id,
                 counterparty_name,
                 seed_hash,
+                amount_credits,
             } => {
                 contact_anchor::initiate_contact(
                     self,
@@ -242,6 +262,7 @@ impl AppContext {
                     counterparty_identity_id,
                     counterparty_name,
                     seed_hash,
+                    amount_credits,
                 )
                 .await
             }
@@ -350,6 +371,22 @@ impl AppContext {
                     save_receipt,
                     original_request_memo,
                     original_request_created_at,
+                )
+                .await
+            }
+            OrchardPayTask::SendDirect {
+                owner_identity_id,
+                counterparty_identity_id,
+                seed_hash,
+                amount,
+            } => {
+                direct_send::send_direct(
+                    self,
+                    sdk,
+                    owner_identity_id,
+                    counterparty_identity_id,
+                    seed_hash,
+                    amount,
                 )
                 .await
             }

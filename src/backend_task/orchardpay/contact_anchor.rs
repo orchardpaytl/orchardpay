@@ -68,15 +68,21 @@ const EXTRA_FIELD: &str = "extra";
 /// signaling anchor's 32-byte DocumentID for a 36-byte memo total.
 pub const MEMO_TAG_ANCHOR: [u8; 4] = *b"OPA1";
 
-/// Amount for the anchor-signaling shielded transfer. Its primary purpose is
-/// still to deliver a memo, not to move meaningful value, but it is set well
-/// above the network's dust floor (0.001 DASH) as a deliberate small barrier
-/// to spamming contact requests — sending one costs the sender something,
-/// however little. No independent verification has been done of whether
-/// Platform enforces its own higher minimum; if it does, the underlying
-/// `shielded_transfer` call simply fails with its normal insufficient-amount
-/// error.
-const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 100_000_000;
+/// Default amount for the anchor-signaling shielded transfer, used by Send
+/// Friend Request. Its primary purpose is still to deliver a memo, not to
+/// move meaningful value, but it is set well above the network's dust floor
+/// (0.001 DASH) as a deliberate small barrier to spamming contact requests —
+/// sending one costs the sender something, however little. No independent
+/// verification has been done of whether Platform enforces its own higher
+/// minimum; if it does, the underlying `shielded_transfer` call simply fails
+/// with its normal insufficient-amount error.
+///
+/// `initiate_contact` itself takes a caller-supplied `amount_credits`
+/// instead of referencing this directly — Direct Send's "include a contact
+/// request" branch passes its own user-chosen amount instead of this
+/// default. `pub` so callers building that amount elsewhere (e.g. as a
+/// floor for their own input validation) can reference the same constant.
+pub const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 100_000_000;
 
 /// Platform-assigned `$createdAt` (ms since epoch) of the document a
 /// `DocumentTask::BroadcastDocument` just broadcast, if `result` is that
@@ -93,7 +99,11 @@ fn broadcast_document_created_at(result: &BackendTaskSuccessResult) -> Option<u6
 /// Start a new contact relationship with `counterparty_identity_id`:
 /// publish my own `contactAnchor` (with `anchorData` already populated from
 /// what I know at this point — see [`AnchorDataRecord`]) and send a
-/// memo-tagged shielded transfer to their published `shieldedAddress`.
+/// memo-tagged shielded transfer to their published `shieldedAddress`, worth
+/// `amount_credits` (Send Friend Request passes
+/// [`ANCHOR_SIGNAL_AMOUNT_CREDITS`]; Direct Send's "include a contact
+/// request" branch passes the user's own typed amount instead).
+#[allow(clippy::too_many_arguments)]
 pub async fn initiate_contact(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -102,6 +112,7 @@ pub async fn initiate_contact(
     counterparty_identity_id: Identifier,
     counterparty_name: String,
     seed_hash: WalletSeedHash,
+    amount_credits: u64,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     if owner_id == counterparty_identity_id {
@@ -258,7 +269,7 @@ pub async fn initiate_contact(
             &seed_hash,
             0,
             &counterparty_shielded_address,
-            ANCHOR_SIGNAL_AMOUNT_CREDITS,
+            amount_credits,
             memo,
         )
         .await?;

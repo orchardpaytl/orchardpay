@@ -608,6 +608,18 @@ pub enum BackendTaskSuccessResult {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         amount: u64,
     },
+    /// Result of `OrchardPayTask::SendDirect` — Direct Send's "no contact
+    /// request" branch completed: a bare shielded transfer to
+    /// `counterparty_identity_id`, no relationship required or created, no
+    /// document published. See
+    /// `backend_task::orchardpay::direct_send::send_direct`. Deliberately
+    /// distinct from [`Self::OrchardPayPaymentSent`], which always means an
+    /// established-relationship `Payment` flow — conflating the two would
+    /// misdescribe what happened to any future code matching on this type.
+    OrchardPayDirectSendCompleted {
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        amount: u64,
+    },
     /// Result of `OrchardPayTask::RecoverContacts` — a summary of one pass
     /// rebuilding local contact state from every `contactAnchor` the
     /// identity has published. See
