@@ -15,6 +15,7 @@ use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::orchardpay::orchardpay_screen::OrchardPaySubscreen;
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -107,7 +108,7 @@ impl ShieldedAddressSetupScreen {
             "Shielded Address Published!".to_string(),
             vec![(
                 "Go to OrchardPay".to_string(),
-                AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenOrchardPay),
+                AppAction::NavigateToOrchardPaySubscreen(OrchardPaySubscreen::AddContact),
             )],
             Some((
                 "What's next",
@@ -168,8 +169,8 @@ impl ScreenLike for ShieldedAddressSetupScreen {
             ui.add_space(10.0);
             ui.label(
                 "Publishing a shielded address lets other people find you and start \
-                 a private, encrypted conversation through OrchardPay — without revealing your \
-                 identity publicly.",
+                 a private, encrypted conversation through OrchardPay — without revealing \
+                 who you are connecting with.",
             );
             ui.add_space(15.0);
 
