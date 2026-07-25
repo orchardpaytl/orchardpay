@@ -891,6 +891,7 @@ As a user, I want to connect privately with another OrchardPay user so that we c
 - Initiating publishes my own encrypted anchor document and sends a memo-tagged shielded transfer signaling the request — no document field ever names the counterparty.
 - The recipient detects the incoming signal, decrypts the anchor, and can accept (publishing their own anchor + return signal) or leave it pending.
 - Once both anchors are published and cross-referenced, the connection is "Established" and messaging/payments unlock.
+- Confirming "Add Contact" or "Accept" disables and relabels that row's button ("Sending…"/"Accepting…") until the result lands, so the same request can't be re-sent by clicking again before it resolves.
 
 ### ORP-004: View my contacts and connection status [Implemented]
 **Persona:** Alex, Priya
@@ -955,6 +956,7 @@ As a user, I want to correct or remove a message I sent, add or fix a payment's 
 - A `Payment`'s memo (mine only) is editable the same way as a message's text — click-to-reveal "Edit Memo" when a memo already exists, or an "Add Memo" button when it doesn't. The amount is never editable, since it's sourced from the shielded transfer itself, not the message.
 - A `PaymentRequest`'s amount and memo are never editable — only its own creator can cancel it, and only before it's been paid, via a "Cancel Request" button next to "Awaiting payment" that opens a confirming modal ("Cancel Request?"). Cancelling never deletes the document; it replaces the memo with a `"CANCELED: "`-prefixed version, which both sides render as "Request Cancelled" in place of the Pay button (payer) or "Awaiting payment" (requester) — no plaintext or schema change, since a `PaymentRequest`'s amount/memo are otherwise immutable, so the resulting update-time mismatch is itself the unambiguous cancelled signal.
 - Saving an edit dispatches immediately once valid — no second confirmation, since the edit modal's own Save button is the confirming action; deleting a message and cancelling a request both still show their own confirming (danger-mode) modal, since those are destructive/other-party-visible actions.
+- While any one of Pay/Edit Message/Delete/Edit Memo/Add Memo/Cancel Request/Send is in flight, every mutating button in the conversation is disabled; only the specific one actually clicked relabels to a progress verb ("Paying…", "Deleting…", "Saving…", "Cancelling…", "Sending…") — the rest just stay disabled with their original wording until the result lands or the action fails.
 
 ### ORP-011: Review my shielded notes as unspent and spent [Implemented]
 **Persona:** Alex, Priya, Jordan

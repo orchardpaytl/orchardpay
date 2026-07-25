@@ -65,6 +65,16 @@ const MY_MESSAGE_INDENT: f32 = 48.0;
 /// might otherwise want for exactly that reason.
 const MESSAGE_BUBBLE_MAX_WIDTH: f32 = 340.0;
 
+/// Progress-verb labels shown on a bubble's own button while its action is
+/// the one in flight (`pending_bubble_action_label`) — shared constants
+/// between the "set" call sites and `render_message_bubble`'s "is this the
+/// action that's busy" comparison, so the two can't drift out of sync.
+const LABEL_PAYING: &str = "Paying…";
+const LABEL_DELETING: &str = "Deleting…";
+const LABEL_CANCELLING: &str = "Cancelling…";
+const LABEL_SAVING: &str = "Saving…";
+const LABEL_SENDING: &str = "Sending…";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeKind {
     Message,
@@ -130,13 +140,21 @@ pub struct MessageThreadScreen {
     /// dispatches directly (no second confirmation), per the design
     /// decision that the modal's own Save button is the confirmation.
     editing: Option<EditingState>,
-    /// The document ID of an in-flight `EditMessage`/`EditPaymentMemo`/
-    /// `CancelPaymentRequest`/`DeleteMessage` task, set right before
-    /// dispatch — lets `display_task_result`'s `ReplacedDocument`/
-    /// `DeletedDocument` arms confirm a result belongs to this screen's own
-    /// dispatch rather than an unrelated document mutation elsewhere in the
-    /// app.
+    /// The document ID of an in-flight `SendPayment`/`EditMessage`/
+    /// `EditPaymentMemo`/`CancelPaymentRequest`/`DeleteMessage` task, set
+    /// right before dispatch — lets `display_task_result`'s
+    /// `ReplacedDocument`/`DeletedDocument` arms confirm a result belongs to
+    /// this screen's own dispatch rather than an unrelated document
+    /// mutation elsewhere in the app, and lets `render_message_bubble`
+    /// identify which bubble's own button to relabel with a progress verb.
     pending_document_mutation_id: Option<Identifier>,
+    /// The progress-verb label (one of the `LABEL_*` constants) for
+    /// whichever action `pending_document_mutation_id` refers to — set
+    /// alongside it at every call site. Only meaningful together with
+    /// `pending_document_mutation_id`; disambiguates Delete vs. Edit
+    /// Message, which otherwise target the same document ID and would
+    /// relabel identically.
+    pending_bubble_action_label: Option<&'static str>,
 }
 
 /// A pending action sitting behind a confirmation dialog — the dialog
@@ -248,6 +266,7 @@ impl MessageThreadScreen {
             expanded_message: None,
             editing: None,
             pending_document_mutation_id: None,
+            pending_bubble_action_label: None,
         }
     }
 
@@ -392,11 +411,12 @@ impl MessageThreadScreen {
             }
             Some(ConfirmationStatus::Canceled) => {
                 self.pending_confirmation = None;
-                // Only ever set by `open_cancel_request_confirmation` ahead
-                // of this same dialog — clear it so a canceled Cancel
-                // Request doesn't leave a stale guard value waiting for a
-                // `ReplacedDocument` that will never arrive.
+                // Set ahead of this same dialog by whichever opener needed
+                // it (Pay, Cancel Request, Delete Message) — clear it so a
+                // canceled confirmation doesn't leave a stale guard value
+                // waiting for a result that will never arrive.
                 self.pending_document_mutation_id = None;
+                self.pending_bubble_action_label = None;
                 AppAction::None
             }
             None => AppAction::None,
@@ -430,6 +450,8 @@ impl MessageThreadScreen {
             format_credits_as_dash(amount)
         );
 
+        self.pending_document_mutation_id = Some(document_id);
+        self.pending_bubble_action_label = Some(LABEL_PAYING);
         self.pending_confirmation = Some(PendingConfirmation {
             dialog: ConfirmationDialog::new("Pay Request?", message)
                 .danger_mode(true)
@@ -469,6 +491,7 @@ impl MessageThreadScreen {
             seed_hash,
         };
         self.pending_document_mutation_id = Some(document_id);
+        self.pending_bubble_action_label = Some(LABEL_CANCELLING);
         self.open_confirmation(
             "Cancel Request?",
             "The other party will no longer be able to pay this request.".to_string(),
@@ -493,6 +516,7 @@ impl MessageThreadScreen {
             seed_hash,
         };
         self.pending_document_mutation_id = Some(document_id);
+        self.pending_bubble_action_label = Some(LABEL_DELETING);
         self.open_confirmation(
             "Delete Message?",
             "This message will be permanently removed from the conversation for both of you."
@@ -560,6 +584,7 @@ impl MessageThreadScreen {
         self.editing = None;
         self.sending = true;
         self.pending_document_mutation_id = Some(document_id);
+        self.pending_bubble_action_label = Some(LABEL_SAVING);
         AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
     }
 
@@ -712,6 +737,17 @@ impl MessageThreadScreen {
             .last_shielded_sync_completed_at()
             .is_some();
         let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
+        // Whether *this* bubble's own action is the one currently in
+        // flight — used to relabel just its button to a progress verb.
+        // Every other button in the thread stays disabled (via `sending`
+        // below) with its original wording, since we don't know which
+        // action they'd be restating.
+        let busy_here = self.pending_document_mutation_id == Some(message.document_id);
+        // Conversation-wide, deliberately: `sending` is one flag for the
+        // whole thread, not per-message, so any one action in flight
+        // (including sending a new message from the composer) disables
+        // every mutating button here until it resolves.
+        let action_disabled = self.sending;
 
         // A `Message`'s text is entirely attacker-controlled — nothing
         // stops someone from typing "Payment: 50 DASH" as plain text to
@@ -816,10 +852,38 @@ impl MessageThreadScreen {
                             }
                             show_edited_tag(ui);
                             if message.from_me && is_expanded {
+                                // Delete and Edit Message target the same
+                                // document_id, so `busy_here` alone can't
+                                // tell them apart — only relabel the one
+                                // whose own label matches what's pending.
+                                let delete_label =
+                                    if busy_here && self.pending_bubble_action_label == Some(LABEL_DELETING) {
+                                        LABEL_DELETING
+                                    } else {
+                                        "Delete"
+                                    };
+                                let edit_label =
+                                    if busy_here && self.pending_bubble_action_label == Some(LABEL_SAVING) {
+                                        LABEL_SAVING
+                                    } else {
+                                        "Edit Message"
+                                    };
                                 let (delete_clicked, edit_clicked) = egui::Sides::new().show(
                                     ui,
-                                    |ui| ui.button("Delete").clicked(),
-                                    |ui| ui.button("Edit Message").clicked(),
+                                    |ui| {
+                                        ui.add_enabled(
+                                            !action_disabled,
+                                            egui::Button::new(delete_label),
+                                        )
+                                        .clicked()
+                                    },
+                                    |ui| {
+                                        ui.add_enabled(
+                                            !action_disabled,
+                                            egui::Button::new(edit_label),
+                                        )
+                                        .clicked()
+                                    },
                                 );
                                 if delete_clicked {
                                     bubble_action = Some(BubbleAction::DeleteMessage {
@@ -860,10 +924,17 @@ impl MessageThreadScreen {
                                         ui.label(memo_text);
                                     }
                                     if message.from_me && is_expanded {
+                                        let label = if busy_here { LABEL_SAVING } else { "Edit Memo" };
                                         ui.with_layout(
                                             egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
-                                                if ui.button("Edit Memo").clicked() {
+                                                if ui
+                                                    .add_enabled(
+                                                        !action_disabled,
+                                                        egui::Button::new(label),
+                                                    )
+                                                    .clicked()
+                                                {
                                                     bubble_action =
                                                         Some(BubbleAction::EditPaymentMemo {
                                                             document_id: message.document_id,
@@ -875,10 +946,14 @@ impl MessageThreadScreen {
                                     }
                                 }
                                 None if message.from_me => {
+                                    let label = if busy_here { LABEL_SAVING } else { "Add Memo" };
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.button("Add Memo").clicked() {
+                                            if ui
+                                                .add_enabled(!action_disabled, egui::Button::new(label))
+                                                .clicked()
+                                            {
                                                 bubble_action =
                                                     Some(BubbleAction::EditPaymentMemo {
                                                         document_id: message.document_id,
@@ -995,7 +1070,12 @@ impl MessageThreadScreen {
                                             );
                                         },
                                         |ui| {
-                                            if ui.button("Cancel Request").clicked() {
+                                            let label =
+                                                if busy_here { LABEL_CANCELLING } else { "Cancel Request" };
+                                            if ui
+                                                .add_enabled(!action_disabled, egui::Button::new(label))
+                                                .clicked()
+                                            {
                                                 bubble_action =
                                                     Some(BubbleAction::CancelPaymentRequest {
                                                         document_id: message.document_id,
@@ -1008,14 +1088,17 @@ impl MessageThreadScreen {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui
-                                                .add_enabled(
-                                                    !credit_blocked,
-                                                    egui::Button::new("Pay"),
-                                                )
-                                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-                                                .clicked()
-                                            {
+                                            let label = if busy_here { LABEL_PAYING } else { "Pay" };
+                                            let response = ui.add_enabled(
+                                                !credit_blocked && !action_disabled,
+                                                egui::Button::new(label),
+                                            );
+                                            let response = if credit_blocked {
+                                                response.disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                                            } else {
+                                                response
+                                            };
+                                            if response.clicked() {
                                                 bubble_action = Some(BubbleAction::Pay {
                                                     document_id: message.document_id,
                                                     amount: *amount,
@@ -1180,8 +1263,17 @@ impl MessageThreadScreen {
 
                 let credit_blocked = is_credit_balance_blocked(self.identity.identity.balance());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // No document_id to key off for a brand-new message/request/
+                    // payment, so the composer's own send is "the busy one"
+                    // whenever something is pending and it isn't a bubble-scoped
+                    // mutation.
+                    let composer_busy = self.sending && self.pending_document_mutation_id.is_none();
+                    let send_label = if composer_busy { LABEL_SENDING } else { "Send" };
                     if ui
-                        .add_enabled(!self.sending && !credit_blocked, egui::Button::new("Send"))
+                        .add_enabled(
+                            !self.sending && !credit_blocked,
+                            egui::Button::new(send_label),
+                        )
                         .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
                         .clicked()
                     {
@@ -1211,6 +1303,8 @@ impl ScreenLike for MessageThreadScreen {
         let _ = message;
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.sending = false;
+            self.pending_document_mutation_id = None;
+            self.pending_bubble_action_label = None;
             self.loading = false;
             self.refresh_banner.take_and_clear();
         }
@@ -1229,12 +1323,16 @@ impl ScreenLike for MessageThreadScreen {
             }
             BackendTaskSuccessResult::OrchardPayPaymentSent { .. } => {
                 self.sending = false;
+                self.pending_document_mutation_id = None;
+                self.pending_bubble_action_label = None;
                 self.clear_composer();
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
             }
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.sending = false;
+                self.pending_document_mutation_id = None;
+                self.pending_bubble_action_label = None;
                 self.clear_composer();
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
@@ -1243,6 +1341,7 @@ impl ScreenLike for MessageThreadScreen {
                 if self.pending_document_mutation_id == Some(document_id) =>
             {
                 self.pending_document_mutation_id = None;
+                self.pending_bubble_action_label = None;
                 self.sending = false;
                 self.expanded_message = None;
                 self.pending_reload = true;
@@ -1252,6 +1351,7 @@ impl ScreenLike for MessageThreadScreen {
                 if self.pending_document_mutation_id == Some(document_id) =>
             {
                 self.pending_document_mutation_id = None;
+                self.pending_bubble_action_label = None;
                 self.sending = false;
                 self.expanded_message = None;
                 self.pending_reload = true;

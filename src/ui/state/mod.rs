@@ -10,8 +10,10 @@ pub mod avatar_cache;
 pub mod contacts_view;
 pub mod global_nav;
 pub mod hub_selection;
+pub mod in_flight_actions;
 pub mod masternodes_view;
 pub mod tracked_asset_lock_cache;
 
 pub use avatar_cache::AvatarCache;
+pub use in_flight_actions::InFlightActions;
 pub use tracked_asset_lock_cache::TrackedAssetLockCache;

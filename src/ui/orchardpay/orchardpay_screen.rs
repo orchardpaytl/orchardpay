@@ -52,6 +52,7 @@ use crate::ui::dashpay::profile_screen::ProfileScreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
+use crate::ui::state::InFlightActions;
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -203,6 +204,15 @@ pub struct OrchardPayScreen {
     /// then stash it here instead of dispatching immediately; only
     /// `render_pending_confirmation`'s `Confirmed` arm actually returns it).
     pending_confirmation: Option<PendingConfirmation>,
+    /// Guards Add Contact / Accept against being re-triggered for the same
+    /// counterparty while a prior click's `InitiateContact`/`AcceptContact`
+    /// is still in flight — keyed by counterparty `Identifier` so unrelated
+    /// rows are never disabled by each other. Released precisely, per key,
+    /// once real local state confirms the action landed
+    /// (`reconcile_contact_actions`), or entirely on any error (see that
+    /// function's doc comment for why a broad release is the right
+    /// trade-off there).
+    contact_actions: InFlightActions<Identifier>,
 }
 
 /// A built `AppAction` sitting behind a confirmation dialog — the dialog
@@ -211,6 +221,9 @@ pub struct OrchardPayScreen {
 struct PendingConfirmation {
     dialog: ConfirmationDialog,
     action: Box<AppAction>,
+    /// The counterparty this action targets — claims `contact_actions`'
+    /// guard for this key once the user confirms.
+    key: Identifier,
 }
 
 impl OrchardPayScreen {
@@ -242,6 +255,7 @@ impl OrchardPayScreen {
             shielded_activity_dispatched: false,
             pending_identity_refresh: true,
             pending_confirmation: None,
+            contact_actions: InFlightActions::new(),
         }
     }
 
@@ -641,11 +655,16 @@ impl OrchardPayScreen {
                             RichText::new("Wants to connect with you")
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
-                        if ui
-                            .add_enabled(!credit_blocked, egui::Button::new("Accept"))
-                            .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-                            .clicked()
-                        {
+                        let in_flight = self.contact_actions.is_in_flight(&counterparty);
+                        let label = if in_flight { "Accepting…" } else { "Accept" };
+                        let response =
+                            ui.add_enabled(!credit_blocked && !in_flight, egui::Button::new(label));
+                        let response = if credit_blocked {
+                            response.disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                        } else {
+                            response
+                        };
+                        if response.clicked() {
                             let display_name = name
                                 .as_deref()
                                 .map(strip_dash_suffix)
@@ -657,6 +676,7 @@ impl OrchardPayScreen {
                                 format!("Accept the contact request from {display_name}?"),
                                 confirm_action,
                                 false,
+                                counterparty,
                             );
                         }
                     });
@@ -1105,11 +1125,22 @@ impl OrchardPayScreen {
                             );
                         }
                         None if result.contactable => {
-                            if ui
-                                .add_enabled(!credit_blocked, egui::Button::new("Add Contact"))
-                                .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
-                                .clicked()
-                            {
+                            let in_flight = self.contact_actions.is_in_flight(&result.identity_id);
+                            let label = if in_flight {
+                                "Sending…"
+                            } else {
+                                "Add Contact"
+                            };
+                            let response = ui.add_enabled(
+                                !credit_blocked && !in_flight,
+                                egui::Button::new(label),
+                            );
+                            let response = if credit_blocked {
+                                response.disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
+                            } else {
+                                response
+                            };
+                            if response.clicked() {
                                 let confirm_action = self
                                     .initiate_clicked(result.identity_id, result.username.clone());
                                 self.open_confirmation(
@@ -1117,6 +1148,7 @@ impl OrchardPayScreen {
                                     format!("Send a contact request to {}?", result.username),
                                     confirm_action,
                                     false,
+                                    result.identity_id,
                                 );
                             }
                         }
@@ -1234,6 +1266,7 @@ impl OrchardPayScreen {
         message: String,
         action: AppAction,
         danger_mode: bool,
+        key: Identifier,
     ) {
         if matches!(action, AppAction::None) {
             return;
@@ -1243,6 +1276,7 @@ impl OrchardPayScreen {
                 .danger_mode(danger_mode)
                 .blocks_input(true),
             action: Box::new(action),
+            key,
         });
     }
 
@@ -1261,6 +1295,13 @@ impl OrchardPayScreen {
                 let Some(pending) = self.pending_confirmation.take() else {
                     return AppAction::None;
                 };
+                // Defensive: the triggering button is already disabled once
+                // a key is in flight, so this should never actually claim a
+                // second guard for the same key — but if it somehow did,
+                // don't dispatch a duplicate action.
+                if !self.contact_actions.begin(pending.key) {
+                    return AppAction::None;
+                }
                 *pending.action
             }
             Some(ConfirmationStatus::Canceled) => {
@@ -1268,6 +1309,51 @@ impl OrchardPayScreen {
                 AppAction::None
             }
             None => AppAction::None,
+        }
+    }
+
+    /// Re-validates every currently-tracked `contact_actions` guard against
+    /// real local contact state, releasing the ones whose action has
+    /// actually landed — called after `BroadcastedDocument`, the only
+    /// result type `InitiateContact`/`AcceptContact` produce on this screen.
+    ///
+    /// This never fabricates state: a released `search_results` row is
+    /// patched with the real `OrchardPayContactState` this same read just
+    /// returned, never a guessed placeholder (`PendingOutbound`'s own
+    /// fields, like `my_reference_id`, are real crypto material the UI
+    /// cannot safely invent). A key whose real state hasn't changed yet
+    /// stays in flight — so two contacts' actions running at once don't
+    /// release each other's guard early.
+    fn reconcile_contact_actions(&mut self) {
+        let Some(identity) = self.identity.as_ref() else {
+            return;
+        };
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            return;
+        };
+        let owner_id = identity.identity.id();
+        let keys: Vec<Identifier> = self.contact_actions.keys().copied().collect();
+        for key in keys {
+            let real_state = backend
+                .orchardpay_get_contact_state(&owner_id, &key)
+                .ok()
+                .flatten();
+            let landed = matches!(
+                real_state,
+                Some(OrchardPayContactState::PendingOutbound { .. })
+                    | Some(OrchardPayContactState::Established { .. })
+            );
+            if !landed {
+                continue;
+            }
+            self.contact_actions.release(&key);
+            if let Some(entry) = self
+                .search_results
+                .iter_mut()
+                .find(|r| r.identity_id == key)
+            {
+                entry.existing_relationship = real_state;
+            }
         }
     }
 }
@@ -1294,6 +1380,7 @@ impl ScreenLike for OrchardPayScreen {
         self.shielded_activity_dispatched = false;
         self.pending_identity_refresh = true;
         self.profile_screen.refresh();
+        self.contact_actions.prune_stale();
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
@@ -1305,6 +1392,10 @@ impl ScreenLike for OrchardPayScreen {
             if self.has_shielded_address.is_none() {
                 self.shielded_address_check_dispatched = false;
             }
+            // No per-key correlation is available for a generic error (see
+            // `reconcile_contact_actions`'s doc comment), so release every
+            // guard rather than leave a failed action's row disabled forever.
+            self.contact_actions.clear();
         }
         if self.orchardpay_subscreen == OrchardPaySubscreen::Profile {
             self.profile_screen.display_message(message, message_type);
@@ -1333,9 +1424,12 @@ impl ScreenLike for OrchardPayScreen {
             }
             // A contact request (initiate/accept) publish — both spend
             // identity credits, so the top-panel readout and the
-            // low-credit action gates need a fresh balance.
+            // low-credit action gates need a fresh balance. This is also
+            // the only result type those two tasks produce on this screen,
+            // so it doubles as the in-flight-guard reconciliation signal.
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.pending_identity_refresh = true;
+                self.reconcile_contact_actions();
             }
             _ => {}
         }

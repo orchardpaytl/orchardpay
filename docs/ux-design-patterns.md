@@ -104,7 +104,9 @@ Reference: `ConfirmationDialog` in `src/ui/components/confirmation_dialog.rs`.
   triggering click. Reference implementation and full guardrail policy
   (including credit/shielded-balance sufficiency checks that should
   accompany it): `docs/orchardpay/PROTOCOL_DESIGN.md` § "User safety
-  guardrails".
+  guardrails". Once confirmed, the triggering button must not stay
+  clickable while the dispatched action is in flight -- see §8 "Preventing
+  re-triggering an in-flight action".
 
 ## 5. Forms and Inputs
 
@@ -160,6 +162,37 @@ Reference: `MessageBanner` in `src/ui/components/message_banner.rs`.
 | > 10s    | Progress banner with `.with_elapsed()`          |
 
 - Disable triggering action during load (prevent double-submit)
+
+### Preventing re-triggering an in-flight action
+
+A confirmed action (§4) must keep its triggering button disabled from
+confirm until the result lands -- otherwise nothing tells the user the
+click "took," and a re-click fires a second paid state transition. Pick
+by screen shape:
+
+- **One action at a time** (a single conversation, a single form): reuse
+  a screen-wide `sending: bool`, set on confirm and cleared on both
+  success and error. Reference: `MessageThreadScreen`
+  (`src/ui/orchardpay/message_thread_screen.rs`) -- every mutating
+  button reads `!self.sending`. Relabel *only* the specific button
+  actually clicked to a progress verb ("Pay" -> "Paying...", correlated
+  by document ID via `pending_bubble_action_label`); every other button
+  just disables with its existing label, muted by egui's own disabled
+  styling -- don't guess which action a sibling button would be
+  restating.
+- **Independent list rows** (search results, a contact list -- several
+  unrelated actions can be in flight at once): `InFlightActions<K>`
+  (`src/ui/state/in_flight_actions.rs`), a generic per-key guard
+  (`begin`/`is_in_flight`/`release`/`clear`/`prune_stale`). Claim the
+  guard for the row's key at confirm time; release it only once *real*
+  state confirms that specific key's action landed -- never assume
+  success. Reference: `OrchardPayScreen::reconcile_contact_actions`
+  (`src/ui/orchardpay/orchardpay_screen.rs`) re-reads local state and
+  patches any cached row with what it actually returns, never a
+  fabricated placeholder. On a generic error with no way to correlate it
+  back to one key, release every guard (`clear()`) rather than leave a
+  row disabled forever -- an early re-enable for an unrelated key is a
+  smaller cost than a permanently stuck button.
 
 ## 9. Navigation
 
