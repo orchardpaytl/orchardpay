@@ -1171,5 +1171,28 @@ struct PendingConfirmation {
   attempting one. UI: `OrchardPayScreen::render_direct_send`, the "Direct
   Send" subscreen next to "Send Friend Request". See ORP-015 in
   `docs/user-stories.md`.
+- **Done (2026-07-26)**: pagination fixes for two unbounded `Document::fetch_many`
+  calls that had no explicit `limit`/`order_by`, so Platform silently applied
+  its own 100-document default with no signal that results were truncated:
+  - `messages::fetch_messages_by_ref_id` (the `encryptedMessage` thread
+    fetch) — a conversation with more than 100 messages on either side could
+    silently drop history. Now takes a `before: Option<u64>` cursor with an
+    explicit `$createdAt <` range clause + descending `order_by` + a 100-doc
+    page limit (`byReferenceIdAndCreated` has a `$createdAt` component, so a
+    timestamp cursor works). `messages::load_more_history` fetches further
+    pages on demand via a "See more conversation history" button — initial
+    load stays at 2 queries regardless of conversation length. See ORP-016.
+  - `contact_anchor::fetch_own_anchors` (the "Recover from Network" fetch) —
+    an identity with more than 100 published `contactAnchor` documents could
+    silently lose the rest on recovery. `byOwner` has *no* `$createdAt`
+    component, so this instead pages by document ID
+    (`DocumentQuery.start = Start::StartAfter(last_id)`, which the index
+    supports natively) via a new `fetch_all_own_anchors`, walking up to 4
+    sequential 100-document pages (400 total) automatically — no button,
+    since `recover_own_anchors` already treats anchor order as irrelevant
+    and runs as a one-shot background task. An identity with more than 400
+    published anchors would still lose the remainder; accepted as a very
+    unlikely edge case rather than building a second "load more" affordance
+    for it. See ORP-005.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's).

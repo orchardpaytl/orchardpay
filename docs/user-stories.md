@@ -913,6 +913,7 @@ As a user, I want to recover my OrchardPay contacts from the network after reins
 
 - "Recover from Network" fetches every anchor document I've ever published, decrypts each one with my wallet-derived recovery key, and re-derives local contact state for any that aren't already tracked.
 - Reports how many anchors were found, how many contacts were recovered, how many were already tracked, and how many couldn't be decrypted.
+- Automatically walks up to 400 anchors (4 sequential pages of 100) with no separate action needed — an identity with more than 400 established relationships would have the remainder missed by a single recovery pass (an edge case far outside normal usage).
 
 ### ORP-006: Send an encrypted message [Implemented]
 **Persona:** Alex, Priya

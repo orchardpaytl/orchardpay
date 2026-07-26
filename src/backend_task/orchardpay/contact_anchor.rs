@@ -42,6 +42,7 @@ use bip39::rand::RngCore;
 use bip39::rand::rngs::OsRng;
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
+use dash_sdk::dapi_grpc::platform::v0::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::{
     Document as DppDocument, DocumentV0, DocumentV0Getters, DocumentV0Setters,
@@ -884,18 +885,41 @@ async fn fetch_anchor_document_by_id(
     Ok(results.into_values().flatten().next())
 }
 
-/// Fetch every `contactAnchor` document `owner_id` has ever published, via
-/// the contract's `byOwner` index (`$ownerId` only — no `$createdAt`
-/// component, so results are unordered; callers sort client-side if order
-/// matters). Used only by [`recover_own_anchors`] — every other read path
-/// in this module fetches by document ID, never by query, to preserve the
-/// "no plaintext link" privacy property for anchors *other than my own*.
-/// Querying my own anchors by owner leaks nothing new: `$ownerId` is
-/// already public on every document I publish.
+/// One page's worth of [`fetch_own_anchors`] — Platform's own
+/// `DEFAULT_QUERY_LIMIT`, so a full page is always exactly one query. See
+/// [`fetch_all_own_anchors`].
+const OWN_ANCHOR_PAGE_SIZE: u32 = 100;
+
+/// Hard cap on how many sequential pages [`fetch_all_own_anchors`] will
+/// walk — 400 documents total. Deliberately not a "load more" button: an
+/// identity with more than 400 published `contactAnchor` documents (i.e.
+/// more established relationships than that) is far outside normal usage,
+/// and recovery already runs as a one-shot background task with no
+/// incremental UI to extend.
+const MAX_OWN_ANCHOR_PAGES: u32 = 4;
+
+/// Fetch one page of `contactAnchor` documents `owner_id` has ever
+/// published, via the contract's `byOwner` index (`$ownerId` only — no
+/// `$createdAt` component, so results are unordered within a page; callers
+/// sort client-side if order matters). Used only by
+/// [`fetch_all_own_anchors`] — every other read path in this module fetches
+/// by document ID, never by query, to preserve the "no plaintext link"
+/// privacy property for anchors *other than my own*. Querying my own
+/// anchors by owner leaks nothing new: `$ownerId` is already public on
+/// every document I publish.
+///
+/// `start_after` pages through the `byOwner` index by document ID (via
+/// `DocumentQuery::start`) rather than by `$createdAt`, unlike the
+/// `encryptedMessage` thread fetch's timestamp cursor — `byOwner` has no
+/// `$createdAt` component to range/order on, so a document-ID cursor is
+/// the only pagination the existing index supports without a contract
+/// migration. Since anchor order is already irrelevant to every caller,
+/// this loses nothing.
 async fn fetch_own_anchors(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
     owner_id: Identifier,
+    start_after: Option<Identifier>,
 ) -> Result<Vec<Document>, TaskError> {
     let mut query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
         .map_err(|e| OrchardPayError::QueryCreation {
@@ -907,6 +931,8 @@ async fn fetch_own_anchors(
         operator: WhereOperator::Equal,
         value: Value::Identifier(owner_id.to_buffer()),
     });
+    query.limit = OWN_ANCHOR_PAGE_SIZE;
+    query.start = start_after.map(|id| Start::StartAfter(id.to_vec()));
 
     let results = await_network_request_with_timeout(
         NETWORK_REQUEST_TIMEOUT,
@@ -919,6 +945,46 @@ async fn fetch_own_anchors(
     Ok(results.into_values().flatten().collect())
 }
 
+/// Fetch every `contactAnchor` document `owner_id` has ever published, up
+/// to [`MAX_OWN_ANCHOR_PAGES`] sequential pages of [`OWN_ANCHOR_PAGE_SIZE`]
+/// (400 documents total) — automatically, with no pagination UI. Stops
+/// early as soon as a page comes back short (fewer than
+/// `OWN_ANCHOR_PAGE_SIZE` documents), which means the `byOwner` index is
+/// exhausted. If the page cap is hit while the last page was still full,
+/// logs a warning rather than surfacing anything to the user — this is a
+/// very unlikely edge case (400+ established relationships), not one worth
+/// a dedicated UI. Note a later recovery run won't automatically reach
+/// further: `start_after` pages by document ID, which sorts independently
+/// of publish order, so repeating the same page walk returns the same
+/// leading ~400 documents rather than a different, later slice.
+async fn fetch_all_own_anchors(
+    orchardpay_contract: &DataContract,
+    sdk: &Sdk,
+    owner_id: Identifier,
+) -> Result<Vec<Document>, TaskError> {
+    let mut all = Vec::new();
+    let mut start_after = None;
+
+    for _ in 0..MAX_OWN_ANCHOR_PAGES {
+        let page = fetch_own_anchors(orchardpay_contract, sdk, owner_id, start_after).await?;
+        let page_len = page.len();
+        start_after = page.last().map(|document| document.id());
+        all.extend(page);
+
+        if (page_len as u32) < OWN_ANCHOR_PAGE_SIZE {
+            return Ok(all);
+        }
+    }
+
+    tracing::warn!(
+        owner_id = %owner_id,
+        pages = MAX_OWN_ANCHOR_PAGES,
+        "OrchardPay: own contactAnchor recovery hit its page cap with the last page still \
+         full; some anchors were not recovered."
+    );
+    Ok(all)
+}
+
 /// Outcome of one [`recover_own_anchors`] pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AnchorRecoverySummary {
@@ -929,9 +995,10 @@ pub struct AnchorRecoverySummary {
 }
 
 /// Rebuild local contact state from every `contactAnchor` I've ever
-/// published — the "my published anchors" recovery path for a
-/// reinstalled/new-device wallet with only the recovery phrase. Queries by
-/// [`fetch_own_anchors`], decrypts each `anchorData` with the wallet-local
+/// published (up to [`MAX_OWN_ANCHOR_PAGES`] × [`OWN_ANCHOR_PAGE_SIZE`]) —
+/// the "my published anchors" recovery path for a reinstalled/new-device
+/// wallet with only the recovery phrase. Queries by
+/// [`fetch_all_own_anchors`], decrypts each `anchorData` with the wallet-local
 /// key (recoverable from the seed alone — see
 /// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "`anchorData`: a wallet-local
 /// recovery record"), and writes local [`OrchardPayContactState`] for every
@@ -961,7 +1028,7 @@ pub async fn recover_own_anchors(
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
 
-    let documents = fetch_own_anchors(&orchardpay_contract, sdk, owner_id).await?;
+    let documents = fetch_all_own_anchors(&orchardpay_contract, sdk, owner_id).await?;
     let anchor_data_key = backend
         .orchardpay_anchor_data_key(&seed_hash, app_context.network)
         .await?;
