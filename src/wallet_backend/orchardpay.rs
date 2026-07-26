@@ -191,6 +191,38 @@ const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
 /// `det:orchardpay:has_shielded_address`.
 const KV_PREFIX_HAS_SHIELDED_ADDRESS: &str = "det:orchardpay:has_shielded_address";
 
+/// Value: `bool` (always `true` when present). An incoming `Anchor` signal
+/// (a `contactAnchor` document ID) that decrypted successfully from this
+/// wallet's shielded note stream but didn't match any identity loaded at
+/// the time — see `backend_task::orchardpay::memo_scan::scan_for_incoming_anchors`.
+/// Persisted so a later-loaded identity (or one that has since set up
+/// OrchardPay) can be tried against it without re-walking or re-decrypting
+/// the note stream: the decrypt pass is genuinely wallet-level, keyed off
+/// the single wallet-wide Orchard viewing key (see
+/// [`WalletBackend::orchardpay_scan_incoming_memos`]), so the note itself
+/// never needs re-visiting once its signal is known — only the
+/// identity-match step (`handle_incoming_anchor_signal`) needs retrying.
+/// Cleared once some identity successfully claims it. Scope:
+/// [`DetScope::Wallet`], matching [`KV_PREFIX_MEMO_SCAN_CURSOR`]'s own
+/// wallet-level reasoning. Key shape:
+/// `det:orchardpay:unresolved_anchor:<document_id_b58>`.
+const KV_PREFIX_UNRESOLVED_ANCHOR: &str = "det:orchardpay:unresolved_anchor:";
+
+/// Value: `u32`, the number of consecutive scan passes a specific note
+/// position has failed to process (a genuine processing error, not a clean
+/// "not for this identity" — see `scan_for_incoming_anchors`'s `had_error`
+/// path). Once this reaches [`MEMO_SCAN_ERROR_RETRY_CAP`], the scan stops
+/// holding the resume cursor back for that note, so one persistently-failing
+/// signal can no longer wedge every later signal behind it forever. Scope:
+/// [`DetScope::Wallet`]. Key shape:
+/// `det:orchardpay:memo_scan_retry_count:<note_index>`.
+const KV_PREFIX_MEMO_SCAN_RETRY_COUNT: &str = "det:orchardpay:memo_scan_retry_count:";
+
+/// How many consecutive processing failures a single note position
+/// tolerates before the scan gives up holding the cursor back for it. See
+/// [`KV_PREFIX_MEMO_SCAN_RETRY_COUNT`].
+pub const MEMO_SCAN_ERROR_RETRY_CAP: u32 = 5;
+
 fn contact_key(counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_CONTACT}{}",
@@ -203,6 +235,17 @@ fn verified_payment_key(document_id: &Identifier) -> String {
         "{KV_PREFIX_VERIFIED_PAYMENT}{}",
         document_id.to_string(Encoding::Base58)
     )
+}
+
+fn unresolved_anchor_key(anchor_document_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_UNRESOLVED_ANCHOR}{}",
+        anchor_document_id.to_string(Encoding::Base58)
+    )
+}
+
+fn memo_scan_retry_count_key(note_index: u64) -> String {
+    format!("{KV_PREFIX_MEMO_SCAN_RETRY_COUNT}{note_index}")
 }
 
 impl WalletBackend {
@@ -317,6 +360,102 @@ impl WalletBackend {
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
+    /// List every incoming `Anchor` signal that decrypted successfully but
+    /// hasn't matched any identity yet — candidates to retry the next time a
+    /// scan pass runs (e.g. after a new identity is loaded). See
+    /// [`KV_PREFIX_UNRESOLVED_ANCHOR`].
+    pub fn orchardpay_list_unresolved_anchor_signals(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Vec<Identifier>, TaskError> {
+        let keys = self
+            .kv()
+            .list(
+                DetScope::Wallet(seed_hash),
+                Some(KV_PREFIX_UNRESOLVED_ANCHOR),
+            )
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+
+        Ok(keys
+            .into_iter()
+            .filter_map(|key| {
+                let b58 = key.strip_prefix(KV_PREFIX_UNRESOLVED_ANCHOR)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect())
+    }
+
+    /// Persist that `anchor_document_id` didn't match any currently-loaded
+    /// identity, so a future scan pass can retry it without re-decrypting
+    /// the note that carried it.
+    pub fn orchardpay_record_unresolved_anchor_signal(
+        &self,
+        seed_hash: &WalletSeedHash,
+        anchor_document_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let key = unresolved_anchor_key(anchor_document_id);
+        self.kv()
+            .put::<bool>(DetScope::Wallet(seed_hash), &key, &true)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Clear a previously-unresolved anchor signal once some identity has
+    /// successfully claimed it.
+    pub fn orchardpay_clear_unresolved_anchor_signal(
+        &self,
+        seed_hash: &WalletSeedHash,
+        anchor_document_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let key = unresolved_anchor_key(anchor_document_id);
+        self.kv()
+            .delete(DetScope::Wallet(seed_hash), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Read the current processing-failure count for a specific note
+    /// position (`0` if never recorded). See
+    /// [`KV_PREFIX_MEMO_SCAN_RETRY_COUNT`].
+    pub fn orchardpay_get_memo_scan_retry_count(
+        &self,
+        seed_hash: &WalletSeedHash,
+        note_index: u64,
+    ) -> Result<u32, TaskError> {
+        let key = memo_scan_retry_count_key(note_index);
+        Ok(self
+            .kv()
+            .get::<u32>(DetScope::Wallet(seed_hash), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?
+            .unwrap_or(0))
+    }
+
+    /// Increment and persist the processing-failure count for a specific
+    /// note position, returning the new count.
+    pub fn orchardpay_increment_memo_scan_retry_count(
+        &self,
+        seed_hash: &WalletSeedHash,
+        note_index: u64,
+    ) -> Result<u32, TaskError> {
+        let count = self.orchardpay_get_memo_scan_retry_count(seed_hash, note_index)? + 1;
+        let key = memo_scan_retry_count_key(note_index);
+        self.kv()
+            .put::<u32>(DetScope::Wallet(seed_hash), &key, &count)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+        Ok(count)
+    }
+
+    /// Clear a note position's processing-failure count once it's finally
+    /// resolved (successfully applied, or quarantined past the retry cap).
+    pub fn orchardpay_clear_memo_scan_retry_count(
+        &self,
+        seed_hash: &WalletSeedHash,
+        note_index: u64,
+    ) -> Result<(), TaskError> {
+        let key = memo_scan_retry_count_key(note_index);
+        self.kv()
+            .delete(DetScope::Wallet(seed_hash), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
     /// Read the real credits value this wallet has confirmed for a
     /// `MEMO_TAG_PAYMENT` signal referencing `document_id` — written by
     /// either of two callers, depending on which side of the transfer this
@@ -383,19 +522,21 @@ impl WalletBackend {
     }
 
     /// Drop every OrchardPay wallet-scoped sidecar entry for `seed_hash` —
-    /// the memo-scan resume cursor and the verified-incoming-payment cache.
-    /// Called from `WalletBackend::forget_wallet_local_state`, not the
-    /// per-identity network-clear sweep above: both entries are
+    /// the memo-scan resume cursor, the verified-incoming-payment cache, the
+    /// unresolved-anchor-signal list, and the per-note retry-failure
+    /// counters. Called from `WalletBackend::forget_wallet_local_state`, not
+    /// the per-identity network-clear sweep above: all four are
     /// [`DetScope::Wallet`], and — contrary to an earlier, unverified
     /// assumption in this module — nothing about that scope actually
     /// cascades on wallet removal; `det-app.sqlite` (where this k/v store
     /// lives) has no foreign-key relationship to the upstream persistor's
     /// wallet table, so an explicit sweep is required or these rows orphan
-    /// permanently. Not a secret-bearing-state gap: both values are
+    /// permanently. Not a secret-bearing-state gap: every value here is
     /// non-secret (a resume index; a public credits amount keyed by a
-    /// public document ID) — the seed/session/wallet-meta deletes that
-    /// already run during wallet removal satisfy the actual "no secrets
-    /// survive" guarantee. This is storage hygiene, not hardening.
+    /// public document ID; a public anchor document ID; a retry count) —
+    /// the seed/session/wallet-meta deletes that already run during wallet
+    /// removal satisfy the actual "no secrets survive" guarantee. This is
+    /// storage hygiene, not hardening.
     pub fn orchardpay_clear_wallet_overlays(
         &self,
         seed_hash: &WalletSeedHash,
@@ -406,12 +547,18 @@ impl WalletBackend {
         kv.delete(scope, KV_PREFIX_MEMO_SCAN_CURSOR)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
 
-        let verified_payment_keys = kv
-            .list(scope, Some(KV_PREFIX_VERIFIED_PAYMENT))
-            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
-        for key in verified_payment_keys {
-            kv.delete(scope, &key)
+        for prefix in [
+            KV_PREFIX_VERIFIED_PAYMENT,
+            KV_PREFIX_UNRESOLVED_ANCHOR,
+            KV_PREFIX_MEMO_SCAN_RETRY_COUNT,
+        ] {
+            let keys = kv
+                .list(scope, Some(prefix))
                 .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+            for key in keys {
+                kv.delete(scope, &key)
+                    .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+            }
         }
 
         Ok(())
@@ -1002,6 +1149,181 @@ mod tests {
                 .unwrap(),
             Some(7),
             "wallet_b's memo-scan cursor must be untouched"
+        );
+    }
+
+    /// An anchor recorded as unresolved is listed, then disappears once
+    /// cleared — the exact round-trip `scan_for_incoming_anchors` relies on
+    /// to retry a signal without re-decrypting its note. Mirrors
+    /// `orchardpay_list_unresolved_anchor_signals` /
+    /// `orchardpay_record_unresolved_anchor_signal` /
+    /// `orchardpay_clear_unresolved_anchor_signal`'s logic directly against
+    /// a `DetKv` test double, same style as the overlay-sweep tests above.
+    #[test]
+    fn unresolved_anchor_signal_round_trips() {
+        let kv = empty_kv();
+        let wallet: WalletSeedHash = [0x55u8; 32];
+        let anchor = Identifier::new([0x66u8; 32]);
+        let scope = DetScope::Wallet(&wallet);
+        let key = unresolved_anchor_key(&anchor);
+
+        assert!(
+            kv.list(scope, Some(KV_PREFIX_UNRESOLVED_ANCHOR))
+                .unwrap()
+                .is_empty(),
+            "nothing recorded yet"
+        );
+
+        kv.put::<bool>(scope, &key, &true).unwrap();
+        let listed: Vec<Identifier> = kv
+            .list(scope, Some(KV_PREFIX_UNRESOLVED_ANCHOR))
+            .unwrap()
+            .into_iter()
+            .filter_map(|k| {
+                let b58 = k.strip_prefix(KV_PREFIX_UNRESOLVED_ANCHOR)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect();
+        assert_eq!(listed, vec![anchor], "recorded anchor must be listed");
+
+        kv.delete(scope, &key).unwrap();
+        assert!(
+            kv.list(scope, Some(KV_PREFIX_UNRESOLVED_ANCHOR))
+                .unwrap()
+                .is_empty(),
+            "cleared anchor must no longer be listed"
+        );
+    }
+
+    /// Two wallets' unresolved-anchor lists never cross-contaminate.
+    #[test]
+    fn unresolved_anchor_signals_are_wallet_scoped() {
+        let kv = empty_kv();
+        let wallet_a: WalletSeedHash = [0x77u8; 32];
+        let wallet_b: WalletSeedHash = [0x88u8; 32];
+        let anchor = Identifier::new([0x99u8; 32]);
+
+        kv.put::<bool>(
+            DetScope::Wallet(&wallet_a),
+            &unresolved_anchor_key(&anchor),
+            &true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            kv.list(
+                DetScope::Wallet(&wallet_a),
+                Some(KV_PREFIX_UNRESOLVED_ANCHOR)
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(
+            kv.list(
+                DetScope::Wallet(&wallet_b),
+                Some(KV_PREFIX_UNRESOLVED_ANCHOR)
+            )
+            .unwrap()
+            .is_empty(),
+            "wallet_b must not see wallet_a's unresolved anchor"
+        );
+    }
+
+    /// The retry counter starts at zero, increments on each call, and can be
+    /// cleared — the exact sequence `scan_for_incoming_anchors` runs against
+    /// a note position that keeps failing to process.
+    #[test]
+    fn memo_scan_retry_count_increments_and_clears() {
+        let kv = empty_kv();
+        let wallet: WalletSeedHash = [0xaau8; 32];
+        let scope = DetScope::Wallet(&wallet);
+        let note_index = 12345u64;
+        let key = memo_scan_retry_count_key(note_index);
+
+        assert_eq!(
+            kv.get::<u32>(scope, &key).unwrap(),
+            None,
+            "no failures recorded yet"
+        );
+
+        for expected in 1..=MEMO_SCAN_ERROR_RETRY_CAP {
+            let count = kv.get::<u32>(scope, &key).unwrap().unwrap_or(0) + 1;
+            kv.put::<u32>(scope, &key, &count).unwrap();
+            assert_eq!(count, expected);
+        }
+
+        kv.delete(scope, &key).unwrap();
+        assert_eq!(
+            kv.get::<u32>(scope, &key).unwrap(),
+            None,
+            "cleared counter must be gone"
+        );
+    }
+
+    /// `orchardpay_clear_wallet_overlays`'s sweep loop must also clear the
+    /// two new wallet-scoped prefixes this change adds, leaving other
+    /// wallets untouched — extends
+    /// `wallet_overlays_sweep_clears_only_that_wallets_entries`.
+    #[test]
+    fn wallet_overlays_sweep_clears_unresolved_anchors_and_retry_counts() {
+        let kv = empty_kv();
+        let wallet_a: WalletSeedHash = [0xbbu8; 32];
+        let wallet_b: WalletSeedHash = [0xccu8; 32];
+        let anchor = Identifier::new([0xddu8; 32]);
+
+        kv.put::<bool>(
+            DetScope::Wallet(&wallet_a),
+            &unresolved_anchor_key(&anchor),
+            &true,
+        )
+        .unwrap();
+        kv.put::<u32>(
+            DetScope::Wallet(&wallet_a),
+            &memo_scan_retry_count_key(7),
+            &1,
+        )
+        .unwrap();
+        kv.put::<bool>(
+            DetScope::Wallet(&wallet_b),
+            &unresolved_anchor_key(&anchor),
+            &true,
+        )
+        .unwrap();
+
+        for prefix in [KV_PREFIX_UNRESOLVED_ANCHOR, KV_PREFIX_MEMO_SCAN_RETRY_COUNT] {
+            for key in kv.list(DetScope::Wallet(&wallet_a), Some(prefix)).unwrap() {
+                kv.delete(DetScope::Wallet(&wallet_a), &key).unwrap();
+            }
+        }
+
+        assert!(
+            kv.list(
+                DetScope::Wallet(&wallet_a),
+                Some(KV_PREFIX_UNRESOLVED_ANCHOR)
+            )
+            .unwrap()
+            .is_empty(),
+            "wallet_a's unresolved anchors must be gone"
+        );
+        assert!(
+            kv.list(
+                DetScope::Wallet(&wallet_a),
+                Some(KV_PREFIX_MEMO_SCAN_RETRY_COUNT)
+            )
+            .unwrap()
+            .is_empty(),
+            "wallet_a's retry counts must be gone"
+        );
+        assert_eq!(
+            kv.list(
+                DetScope::Wallet(&wallet_b),
+                Some(KV_PREFIX_UNRESOLVED_ANCHOR)
+            )
+            .unwrap()
+            .len(),
+            1,
+            "wallet_b's unresolved anchor must be untouched"
         );
     }
 }

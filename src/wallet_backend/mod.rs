@@ -76,7 +76,7 @@ pub(crate) use dashpay::{
     ContactRequestActionKind, ContactRequestActionPhase, derive_contact_info_encryption_keys,
     derive_contact_xpub_material,
 };
-pub use orchardpay::IncomingMemoSignal;
+pub use orchardpay::{IncomingMemoSignal, MEMO_SCAN_ERROR_RETRY_CAP};
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
