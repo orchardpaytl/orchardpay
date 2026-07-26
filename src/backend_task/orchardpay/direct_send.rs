@@ -27,6 +27,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::shielded_address::lookup_shielded_address;
 use crate::context::AppContext;
+use crate::model::orchardpay::validate_send_amount;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::platform::Identifier;
@@ -49,6 +50,7 @@ pub async fn send_direct(
     if owner_identity_id == counterparty_identity_id {
         return Err(OrchardPayError::CounterpartyKeyMissing.into());
     }
+    validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
 
     let counterparty_shielded_address =
         lookup_shielded_address(app_context, sdk, counterparty_identity_id)

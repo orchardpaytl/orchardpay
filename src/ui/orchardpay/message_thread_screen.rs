@@ -19,8 +19,9 @@ use crate::model::fee_estimation::{
     format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
 };
 use crate::model::orchardpay::{
-    CREDIT_BLOCKED_TOOLTIP, MAX_MESSAGE_CHARS, MAX_PAYMENT_MEMO_CHARS, OrchardPayContactState,
-    is_credit_balance_blocked, is_credit_balance_low, validate_message_text, validate_payment_memo,
+    CREDIT_BLOCKED_TOOLTIP, MAX_MESSAGE_CHARS, MAX_PAYMENT_MEMO_CHARS, MIN_SEND_AMOUNT_CREDITS,
+    OrchardPayContactState, is_credit_balance_blocked, is_credit_balance_low,
+    validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -1277,7 +1278,9 @@ impl MessageThreadScreen {
                             });
 
                         let widget = self.compose_amount_input.get_or_insert_with(|| {
-                            AmountInput::new(Amount::new_dash(0.0)).with_label("Amount (DASH):")
+                            AmountInput::new(Amount::new_dash(0.0))
+                                .with_label("Amount (DASH):")
+                                .with_min_amount(Some(MIN_SEND_AMOUNT_CREDITS))
                         });
                         match self.compose_kind {
                             ComposeKind::Payment => {

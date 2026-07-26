@@ -22,3 +22,24 @@ pub(crate) fn validate_char_count(
         Err(TextLengthError { actual, min, max })
     }
 }
+
+/// A credits amount is below its permitted minimum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("amount is {actual} credits; minimum is {minimum} credits")]
+pub struct AmountTooLowError {
+    /// Actual amount, in credits.
+    pub actual: u64,
+    /// Minimum permitted amount, in credits.
+    pub minimum: u64,
+}
+
+pub(crate) fn validate_min_amount(value: u64, minimum: u64) -> Result<(), AmountTooLowError> {
+    if value >= minimum {
+        Ok(())
+    } else {
+        Err(AmountTooLowError {
+            actual: value,
+            minimum,
+        })
+    }
+}

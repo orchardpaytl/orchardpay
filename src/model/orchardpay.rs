@@ -300,6 +300,25 @@ pub fn validate_payment_memo(memo: &str) -> Result<(), crate::model::validation:
     crate::model::validation::validate_char_count(memo, 0, MAX_PAYMENT_MEMO_CHARS)
 }
 
+/// Minimum amount for any OrchardPay-initiated value transfer — a real
+/// `Payment`, a `PaymentRequest`'s asked-for amount, Direct Send, or the
+/// contact-request anchor-signal transfer — 0.001 DASH. The single source
+/// of truth for that floor: `contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS`
+/// (Send Friend Request's default signal amount) is defined in terms of
+/// this constant rather than as its own independent value, so the two
+/// concepts can't silently drift apart.
+pub const MIN_SEND_AMOUNT_CREDITS: u64 = 100_000_000;
+
+/// Validates a user-entered send amount (`Payment`, `PaymentRequest`,
+/// Direct Send, or an anchor-signal transfer) against
+/// [`MIN_SEND_AMOUNT_CREDITS`] — the floor enforced consistently across
+/// every OrchardPay value-transfer path.
+pub fn validate_send_amount(
+    amount_credits: u64,
+) -> Result<(), crate::model::validation::AmountTooLowError> {
+    crate::model::validation::validate_min_amount(amount_credits, MIN_SEND_AMOUNT_CREDITS)
+}
+
 #[cfg(test)]
 mod message_validation_tests {
     use super::*;
@@ -334,6 +353,26 @@ mod message_validation_tests {
     #[test]
     fn payment_memo_rejects_one_over_the_limit() {
         assert!(validate_payment_memo(&"m".repeat(MAX_PAYMENT_MEMO_CHARS + 1)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod send_amount_validation_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_one_credit_below_the_floor() {
+        assert!(validate_send_amount(MIN_SEND_AMOUNT_CREDITS - 1).is_err());
+    }
+
+    #[test]
+    fn accepts_exactly_the_floor() {
+        assert!(validate_send_amount(MIN_SEND_AMOUNT_CREDITS).is_ok());
+    }
+
+    #[test]
+    fn accepts_above_the_floor() {
+        assert!(validate_send_amount(MIN_SEND_AMOUNT_CREDITS + 1).is_ok());
     }
 }
 

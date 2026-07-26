@@ -33,8 +33,8 @@ use crate::model::fee_estimation::{
     format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
 };
 use crate::model::orchardpay::{
-    CREDIT_BLOCKED_TOOLTIP, OrchardPayContactState, ShieldedActivityRow, SpentEntry,
-    group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
+    CREDIT_BLOCKED_TOOLTIP, MIN_SEND_AMOUNT_CREDITS, OrchardPayContactState, ShieldedActivityRow,
+    SpentEntry, group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -1240,11 +1240,8 @@ impl OrchardPayScreen {
         let widget = self.direct_send_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
                 .with_label("Enter Dash amount to send directly:")
-                .with_caption("Must send more than 0.001 DASH")
-                // `AmountInput`'s own check is `amount < min_amount → error`
-                // (inclusive of `min_amount`) — Direct Send's floor is
-                // EXCLUSIVE of 0.001 DASH, so pass one credit above it.
-                .with_min_amount(Some(ANCHOR_SIGNAL_AMOUNT_CREDITS + 1))
+                .with_caption("Must send at least 0.001 DASH")
+                .with_min_amount(Some(MIN_SEND_AMOUNT_CREDITS))
         });
         widget.set_max_amount(available);
         widget.set_max_exceeded_hint(Some("Insufficient Shielded Funds".to_string()));

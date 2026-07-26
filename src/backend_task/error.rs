@@ -1253,6 +1253,15 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
+    /// A user-entered OrchardPay send amount (`Payment`, `PaymentRequest`,
+    /// Direct Send, or a contact-request anchor signal) fell below the
+    /// shared minimum.
+    #[error("The amount is too small. Send at least 0.001 DASH and try again.")]
+    OrchardPayAmountTooLow {
+        #[source]
+        source: crate::model::validation::AmountTooLowError,
+    },
+
     /// An OrchardPay edit task targeted a document whose decrypted content
     /// isn't the kind that edit action applies to (e.g. an edit-message
     /// task pointed at a `Payment` document).

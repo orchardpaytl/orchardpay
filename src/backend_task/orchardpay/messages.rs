@@ -30,7 +30,7 @@ use crate::backend_task::{
 };
 use crate::context::AppContext;
 use crate::model::orchardpay::{
-    OrchardPayContactState, validate_message_text, validate_payment_memo,
+    OrchardPayContactState, validate_message_text, validate_payment_memo, validate_send_amount,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
@@ -733,6 +733,7 @@ pub async fn send_payment_request(
     memo: Option<String>,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -794,6 +795,7 @@ pub async fn send_payment(
     original_request_memo: Option<String>,
     original_request_created_at: Option<u64>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;

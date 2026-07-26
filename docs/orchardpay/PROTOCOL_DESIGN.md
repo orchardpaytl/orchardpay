@@ -1194,5 +1194,20 @@ struct PendingConfirmation {
     published anchors would still lose the remainder; accepted as a very
     unlikely edge case rather than building a second "load more" affordance
     for it. See ORP-005.
+- **Done (2026-07-26)**: a shared 0.001 DASH minimum across every OrchardPay
+  send path (`Payment`, `PaymentRequest`, Direct Send, and the
+  contact-request anchor signal) — `model::orchardpay::MIN_SEND_AMOUNT_CREDITS`
+  is now the single source of truth (`validate_send_amount`), enforced
+  authoritatively in each backend task
+  (`messages::send_payment`/`send_payment_request`,
+  `direct_send::send_direct`, `contact_anchor::initiate_contact`) rather
+  than only at the UI layer as before; `contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS`
+  is now defined in terms of the same constant instead of independently.
+  Started as the fix for security audit Finding 2 (LOW): the incoming-memo
+  scan (`wallet_backend::orchardpay::orchardpay_scan_incoming_memos`) now
+  skips a sub-floor `OPA1`-tagged transfer before ever reaching
+  `handle_incoming_anchor_signal`'s expensive fetch-by-ID + per-identity
+  decrypt attempt — a free check, since the note's value is already known
+  locally. See ORP-007/ORP-008/ORP-015.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's).

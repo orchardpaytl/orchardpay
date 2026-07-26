@@ -35,7 +35,7 @@ use crate::backend_task::{
     BackendTaskSuccessResult, NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout,
 };
 use crate::context::AppContext;
-use crate::model::orchardpay::OrchardPayContactState;
+use crate::model::orchardpay::{OrchardPayContactState, validate_send_amount};
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::RngCore;
@@ -71,19 +71,21 @@ pub const MEMO_TAG_ANCHOR: [u8; 4] = *b"OPA1";
 
 /// Default amount for the anchor-signaling shielded transfer, used by Send
 /// Friend Request. Its primary purpose is still to deliver a memo, not to
-/// move meaningful value, but it is set well above the network's dust floor
-/// (0.001 DASH) as a deliberate small barrier to spamming contact requests —
-/// sending one costs the sender something, however little. No independent
-/// verification has been done of whether Platform enforces its own higher
-/// minimum; if it does, the underlying `shielded_transfer` call simply fails
-/// with its normal insufficient-amount error.
+/// move meaningful value, but it's deliberately equal to
+/// [`crate::model::orchardpay::MIN_SEND_AMOUNT_CREDITS`] — the shared floor
+/// every OrchardPay send path enforces — rather than an independent value,
+/// so the two concepts can't drift apart. Sending one costs the sender
+/// something, however little, as a small barrier to spamming contact
+/// requests.
 ///
 /// `initiate_contact` itself takes a caller-supplied `amount_credits`
 /// instead of referencing this directly — Direct Send's "include a contact
 /// request" branch passes its own user-chosen amount instead of this
-/// default. `pub` so callers building that amount elsewhere (e.g. as a
-/// floor for their own input validation) can reference the same constant.
-pub const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = 100_000_000;
+/// default (still subject to the same floor, enforced inside
+/// `initiate_contact` itself). `pub` so callers building that amount
+/// elsewhere (e.g. as a floor for their own input validation) can
+/// reference the same constant.
+pub const ANCHOR_SIGNAL_AMOUNT_CREDITS: u64 = crate::model::orchardpay::MIN_SEND_AMOUNT_CREDITS;
 
 /// Platform-assigned `$createdAt` (ms since epoch) of the document a
 /// `DocumentTask::BroadcastDocument` just broadcast, if `result` is that
@@ -119,6 +121,8 @@ pub async fn initiate_contact(
     if owner_id == counterparty_identity_id {
         return Err(OrchardPayError::CounterpartyKeyMissing.into());
     }
+    validate_send_amount(amount_credits)
+        .map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
 
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 

@@ -930,6 +930,7 @@ As a user, I want to send a contact a request for a specific amount so that I ca
 
 - Specify an amount (in DASH) and an optional memo.
 - Delivered as an encrypted message the recipient can reply to directly with a payment.
+- The amount must be at least 0.001 DASH — the same shared floor every OrchardPay send path enforces, checked both in the composer and by the backend regardless of caller.
 
 ### ORP-008: Send a real payment to a contact [Implemented]
 **Persona:** Alex, Priya
@@ -940,6 +941,7 @@ As a user, I want to send an actual shielded payment to a contact — either unp
 - Replying to a `PaymentRequest` fulfills it with a real transfer rather than just a document.
 - The thread shows the amount the sender claims alongside the amount this wallet independently verified from the transfer itself, flagging any mismatch.
 - `Payment` and `PaymentRequest` bubbles are rendered with a distinct tinted background/border that a plain `Message`'s text content can never reproduce, so a spoofed message (e.g. one whose text just reads "Payment: 50 DASH") can't be visually mistaken for a real one.
+- A `Payment`'s amount must be at least 0.001 DASH, same as a `PaymentRequest` (ORP-007).
 
 ### ORP-009: View OrchardPay profile [Implemented]
 **Persona:** Alex, Priya
@@ -1004,10 +1006,11 @@ As a user paying a payment request, I want the option to save my own record of w
 As a user, I want to send DASH straight to someone I've found by DPNS name, without first having to exchange a contact request, so that I can pay someone quickly even if we're not going to become contacts.
 
 - The "Direct Send" tab, next to "Send Friend Request", searches by DPNS name the same way and only offers a Direct Send button for someone I have no existing relationship with — an already-pending or already-established contact shows the same status text Send Friend Request already shows, with no Direct Send action.
-- An amount field above the search box requires more than 0.001 DASH and caps at the wallet's actual shielded balance minus the transfer's own fee, the same guardrail as sending a payment inside a conversation.
+- An amount field above the search box requires at least 0.001 DASH and caps at the wallet's actual shielded balance minus the transfer's own fee, the same guardrail as sending a payment inside a conversation.
 - Confirming shows the amount and recipient and offers an "Include a contact request?" checkbox, unchecked by default.
 - Left unchecked, the DASH moves as a bare shielded transfer with no accompanying document — the recipient sees it as an ordinary shielded receive, with no OrchardPay document created and no relationship formed.
 - Checked, a normal contact request is sent exactly like Send Friend Request's, except the anchor-signaling transfer carries the amount just entered instead of the usual fixed 0.001 DASH.
+- The 0.001 DASH floor applies everywhere in OrchardPay, not just Direct Send — enforced by the backend regardless of which screen or caller initiated the send, and used by the incoming-memo scan to skip a griefing anchor-signal transfer's Platform lookup entirely before it happens.
 - The Direct Send button disables and relabels ("Sending Directly…") the instant it's confirmed, so it can't be clicked again while the send is still in flight.
 
 ### ORP-016: See more than the most recent 100 messages in a conversation [Implemented]

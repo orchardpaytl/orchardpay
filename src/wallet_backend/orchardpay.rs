@@ -478,6 +478,23 @@ impl WalletBackend {
                         let doc_id_bytes: [u8; 32] =
                             memo[4..].try_into().expect("memo is 36 bytes, tag is 4");
                         if tag == MEMO_TAG_ANCHOR {
+                            // Below the shared send floor (Finding 2 of the
+                            // 2026-07-26 security audit): a real anchor
+                            // signal always carries at least
+                            // `MIN_SEND_AMOUNT_CREDITS`
+                            // (`ANCHOR_SIGNAL_AMOUNT_CREDITS` is defined in
+                            // terms of it), so anything under that is
+                            // necessarily garbage — skip it here, before
+                            // `handle_incoming_anchor_signal`'s expensive
+                            // fetch-by-ID + per-identity decrypt attempt.
+                            // The note's value is already known locally
+                            // (same field the `Payment` branch below reads),
+                            // so this costs nothing extra to check.
+                            if decrypted_note.value().inner()
+                                < crate::model::orchardpay::MIN_SEND_AMOUNT_CREDITS
+                            {
+                                continue;
+                            }
                             found.push((
                                 note_index,
                                 IncomingMemoSignal::Anchor(Identifier::from(doc_id_bytes)),
