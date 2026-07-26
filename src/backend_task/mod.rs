@@ -587,17 +587,30 @@ pub enum BackendTaskSuccessResult {
         identity_id: dash_sdk::platform::Identifier,
         published: bool,
     },
-    /// Result of `OrchardPayTask::LoadThread` — the reconstructed two-way
-    /// message history with `counterparty_identity_id`, sorted by
-    /// `$createdAt`. See `backend_task::orchardpay::messages::load_thread`.
+    /// Result of `OrchardPayTask::LoadThread` or `OrchardPayTask::LoadMoreHistory`
+    /// — the reconstructed two-way message history with
+    /// `counterparty_identity_id`, sorted by `$createdAt`. Both tasks
+    /// produce the same shape (a full, freshly-reassembled thread state, not
+    /// a delta) so a single result variant covers both. See
+    /// `backend_task::orchardpay::messages::load_thread` and
+    /// `load_more_history`.
     OrchardPayThreadLoaded {
         counterparty_identity_id: dash_sdk::platform::Identifier,
+        /// Every decoded document currently held (both sides, receipts
+        /// included) — round-tripped back into `OrchardPayTask::LoadMoreHistory`
+        /// so the next page can be merged and `receipt_alerts` re-detected
+        /// over the complete accumulated set. Not rendered directly.
+        all_decoded: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
         messages: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
         /// Saved `PaymentRequestReceipt`s whose original `PaymentRequest`
         /// no longer matches them (deleted, changed kind, or tampered
         /// amount/memo). See `messages::load_thread`'s anomaly-detection
         /// pass and `messages::ReceiptAlert`.
         receipt_alerts: Vec<crate::backend_task::orchardpay::messages::ReceiptAlert>,
+        /// Whether more history exists beyond what's loaded, per side — drives
+        /// the "See more conversation history" button. See
+        /// `messages::HistoryCursor`.
+        history_cursor: crate::backend_task::orchardpay::messages::HistoryCursor,
     },
     /// Result of `OrchardPayTask::SendPayment` — a real shielded transfer to
     /// `counterparty_identity_id` completed (either an unprompted `Payment`

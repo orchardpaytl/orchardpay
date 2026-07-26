@@ -1009,6 +1009,15 @@ As a user, I want to send DASH straight to someone I've found by DPNS name, with
 - Checked, a normal contact request is sent exactly like Send Friend Request's, except the anchor-signaling transfer carries the amount just entered instead of the usual fixed 0.001 DASH.
 - The Direct Send button disables and relabels ("Sending Directly…") the instant it's confirmed, so it can't be clicked again while the send is still in flight.
 
+### ORP-016: See more than the most recent 100 messages in a conversation [Implemented]
+**Persona:** Alex, Priya
+
+As a user in a long-running conversation, I want to load older messages on demand so that I can find something I said or received months ago without every conversation having to fetch its entire history up front.
+
+- Opening a conversation loads only the newest page (up to 100 messages per side) — the same cost as before pagination existed, regardless of how long the conversation has gotten.
+- Scrolling to the top of a conversation that has more history shows a "See more conversation history" button in place of the oldest loaded message; clicking it fetches the next older page and prepends it, with no change to querying cost for anyone who never needs it.
+- A saved `PaymentRequestReceipt`'s tamper check (ORP-014) only ever concludes its original request was deleted once all history on both sides has been loaded — a request just outside the currently-loaded window is never mistaken for a deleted one.
+
 ---
 
 ## Token Operations (TOK)

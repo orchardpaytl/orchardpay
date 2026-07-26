@@ -8,7 +8,9 @@ use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::orchardpay::OrchardPayTask;
 use crate::backend_task::orchardpay::encryption::MessageContent;
-use crate::backend_task::orchardpay::messages::{ReceiptAlert, ReceiptAlertReason, ThreadMessage};
+use crate::backend_task::orchardpay::messages::{
+    HistoryCursor, ReceiptAlert, ReceiptAlertReason, ThreadMessage,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -95,6 +97,22 @@ pub struct MessageThreadScreen {
     /// longer matches them — see `messages::load_thread`'s anomaly-
     /// detection pass. Rendered as warning panels, never as bubbles.
     receipt_alerts: Vec<ReceiptAlert>,
+    /// Every decoded document held so far (both sides, receipts included) —
+    /// not rendered, just carried along and handed back into
+    /// `OrchardPayTask::LoadMoreHistory` so the backend can merge in the
+    /// next page and re-run receipt-anomaly detection over the complete
+    /// accumulated set. See `messages::LoadedThread::all_decoded`.
+    all_decoded_thread: Vec<ThreadMessage>,
+    /// Whether more history exists beyond `messages`, per side — drives the
+    /// "See more conversation history" button. Reset to whatever the latest
+    /// `OrchardPayThreadLoaded` result reports, whether that came from a
+    /// full reload or a "load more" fetch.
+    history_cursor: HistoryCursor,
+    /// An `OrchardPayTask::LoadMoreHistory` fetch is in flight — distinct
+    /// from `loading` (which gates the initial "Loading conversation…"
+    /// state) so the already-loaded thread stays visible while more history
+    /// loads above it.
+    loading_more: bool,
     load_dispatched: bool,
     loading: bool,
     pending_reload: bool,
@@ -249,6 +267,9 @@ impl MessageThreadScreen {
             wallet_open_attempted: false,
             messages: Vec::new(),
             receipt_alerts: Vec::new(),
+            all_decoded_thread: Vec::new(),
+            history_cursor: HistoryCursor::default(),
+            loading_more: false,
             load_dispatched: false,
             loading: false,
             pending_reload: false,
@@ -346,6 +367,25 @@ impl MessageThreadScreen {
                 qualified_identity: self.identity.clone(),
                 counterparty_identity_id: self.counterparty_identity_id,
                 seed_hash,
+            },
+        )))
+    }
+
+    /// Dispatched by the "See more conversation history" button — fetches
+    /// the next older page for whichever side(s) `self.history_cursor`
+    /// reports more available on, merged with everything already held in
+    /// `self.all_decoded_thread`.
+    fn dispatch_load_more(&mut self) -> AppAction {
+        let Some(seed_hash) = self.seed_hash() else {
+            return AppAction::None;
+        };
+        AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+            OrchardPayTask::LoadMoreHistory {
+                qualified_identity: self.identity.clone(),
+                counterparty_identity_id: self.counterparty_identity_id,
+                seed_hash,
+                all_decoded: self.all_decoded_thread.clone(),
+                history_cursor: self.history_cursor,
             },
         )))
     }
@@ -1306,6 +1346,7 @@ impl ScreenLike for MessageThreadScreen {
             self.pending_document_mutation_id = None;
             self.pending_bubble_action_label = None;
             self.loading = false;
+            self.loading_more = false;
             self.refresh_banner.take_and_clear();
         }
     }
@@ -1314,12 +1355,17 @@ impl ScreenLike for MessageThreadScreen {
         match result {
             BackendTaskSuccessResult::OrchardPayThreadLoaded {
                 counterparty_identity_id,
+                all_decoded,
                 messages,
                 receipt_alerts,
+                history_cursor,
             } if counterparty_identity_id == self.counterparty_identity_id => {
                 self.messages = messages;
                 self.receipt_alerts = receipt_alerts;
+                self.all_decoded_thread = all_decoded;
+                self.history_cursor = history_cursor;
                 self.loading = false;
+                self.loading_more = false;
             }
             BackendTaskSuccessResult::OrchardPayPaymentSent { .. } => {
                 self.sending = false;
@@ -1565,6 +1611,9 @@ impl ScreenLike for MessageThreadScreen {
             });
 
             let mut bubble_action: Option<BubbleAction> = None;
+            let has_more_history = self.history_cursor.has_more();
+            let loading_more = self.loading_more;
+            let mut load_more_clicked = false;
             egui::ScrollArea::vertical()
                 .max_height(ui.available_height() * 0.6)
                 // Opens on the most recent messages (the bottom, since
@@ -1575,6 +1624,18 @@ impl ScreenLike for MessageThreadScreen {
                 // leaves them where they are.
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
+                    // Sits above the oldest bubble, so it's what a user
+                    // scrolling all the way up to read history runs into —
+                    // no scroll-position tracking needed, it's just the
+                    // first item in the same list.
+                    if has_more_history {
+                        if loading_more {
+                            ui.label("Loading more…");
+                        } else if ui.button("See more conversation history").clicked() {
+                            load_more_clicked = true;
+                        }
+                        ui.add_space(6.0);
+                    }
                     for item in timeline {
                         match item {
                             TimelineItem::Message(message) => {
@@ -1588,6 +1649,11 @@ impl ScreenLike for MessageThreadScreen {
                         }
                     }
                 });
+
+            if load_more_clicked {
+                self.loading_more = true;
+                inner_action |= self.dispatch_load_more();
+            }
 
             match bubble_action {
                 Some(BubbleAction::Pay {

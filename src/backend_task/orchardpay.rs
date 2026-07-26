@@ -196,12 +196,23 @@ pub enum OrchardPayTask {
         document_id: dash_sdk::platform::Identifier,
         seed_hash: WalletSeedHash,
     },
-    /// Load the full two-way `encryptedMessage` thread with an established
-    /// contact. See `messages::load_thread`.
+    /// Load the newest page of the two-way `encryptedMessage` thread with an
+    /// established contact. See `messages::load_thread`.
     LoadThread {
         qualified_identity: QualifiedIdentity,
         counterparty_identity_id: dash_sdk::platform::Identifier,
         seed_hash: WalletSeedHash,
+    },
+    /// Fetch the next older page of conversation history, for the "See more
+    /// conversation history" button — only reached once a prior
+    /// `LoadThread`/`LoadMoreHistory` result reported more available via
+    /// `history_cursor`. See `messages::load_more_history`.
+    LoadMoreHistory {
+        qualified_identity: QualifiedIdentity,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+        all_decoded: Vec<messages::ThreadMessage>,
+        history_cursor: messages::HistoryCursor,
     },
     /// Rebuild local contact state from every `contactAnchor` this identity
     /// has published — the "my published anchors" recovery path for a
@@ -472,8 +483,10 @@ impl AppContext {
                 seed_hash,
             } => {
                 let messages::LoadedThread {
+                    all_decoded,
                     messages,
                     receipt_alerts,
+                    history_cursor,
                 } = messages::load_thread(
                     self,
                     sdk,
@@ -484,8 +497,40 @@ impl AppContext {
                 .await?;
                 Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
                     counterparty_identity_id,
+                    all_decoded,
                     messages,
                     receipt_alerts,
+                    history_cursor,
+                })
+            }
+            OrchardPayTask::LoadMoreHistory {
+                qualified_identity,
+                counterparty_identity_id,
+                seed_hash,
+                all_decoded,
+                history_cursor,
+            } => {
+                let messages::LoadedThread {
+                    all_decoded,
+                    messages,
+                    receipt_alerts,
+                    history_cursor,
+                } = messages::load_more_history(
+                    self,
+                    sdk,
+                    &qualified_identity,
+                    counterparty_identity_id,
+                    seed_hash,
+                    all_decoded,
+                    history_cursor,
+                )
+                .await?;
+                Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
+                    counterparty_identity_id,
+                    all_decoded,
+                    messages,
+                    receipt_alerts,
+                    history_cursor,
                 })
             }
             OrchardPayTask::RecoverContacts {

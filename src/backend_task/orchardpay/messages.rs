@@ -56,6 +56,13 @@ pub const ENCRYPTED_MESSAGE_DOCUMENT_TYPE: &str = "encryptedMessage";
 const REF_ID_FIELD: &str = "refId";
 const MSG_DATA_FIELD: &str = "msgData";
 const EXTRA_FIELD: &str = "extra";
+const CREATED_AT_FIELD: &str = "$createdAt";
+
+/// One page's worth of a single side's `encryptedMessage` documents —
+/// Platform's own `DEFAULT_QUERY_LIMIT`, so a full page is always exactly
+/// one query, whether that's the initial (newest) page or a "see more
+/// history" page further back. See [`fetch_messages_by_ref_id`].
+pub const MESSAGE_PAGE_SIZE: u32 = 100;
 
 /// 4-byte tag identifying a real-payment-signaling shielded transfer's
 /// memo, mirroring `contact_anchor::MEMO_TAG_ANCHOR`. Followed by a 32-byte
@@ -67,7 +74,7 @@ const EXTRA_FIELD: &str = "extra";
 pub const MEMO_TAG_PAYMENT: [u8; 4] = *b"OPP1";
 
 /// A decrypted `encryptedMessage`, reconstructed for a thread view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThreadMessage {
     pub document_id: Identifier,
     /// `true` if `qualified_identity` (the thread's owner) sent this
@@ -120,13 +127,42 @@ pub struct ReceiptAlert {
     pub reason: ReceiptAlertReason,
 }
 
-/// [`load_thread`]'s result: the real thread (never includes
-/// `PaymentRequestReceipt` entries — those are never shown as bubbles) plus
-/// any receipts whose original request no longer checks out.
+/// How much more `encryptedMessage` history might exist beyond what's
+/// currently loaded, tracked independently per side of the conversation
+/// since `mine`/`theirs` are two unrelated queries that can run out at
+/// different points. `Some(created_at)` means "there may be more before
+/// this timestamp on this side — use it as the next page's exclusive
+/// `before` cursor"; `None` means that side is fully loaded, nothing more to
+/// fetch. See [`load_more_history`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryCursor {
+    pub mine_before: Option<u64>,
+    pub their_before: Option<u64>,
+}
+
+impl HistoryCursor {
+    pub fn has_more(&self) -> bool {
+        self.mine_before.is_some() || self.their_before.is_some()
+    }
+}
+
+/// [`load_thread`]/[`load_more_history`]'s result: the real thread (never
+/// includes `PaymentRequestReceipt` entries — those are never shown as
+/// bubbles) plus any receipts whose original request no longer checks out.
 #[derive(Debug, Clone)]
 pub struct LoadedThread {
+    /// Every decoded document currently held, both sides, receipts
+    /// included — not rendered directly, but round-tripped back into
+    /// [`load_more_history`] so a later page can be merged in and
+    /// [`ReceiptAlert`] detection re-run over the complete accumulated set.
+    /// A receipt's original `PaymentRequest` may live further back than
+    /// what's loaded at any given point, so that detection can only be
+    /// trusted once it sees everything fetched so far, not just the newest
+    /// page.
+    pub all_decoded: Vec<ThreadMessage>,
     pub messages: Vec<ThreadMessage>,
     pub receipt_alerts: Vec<ReceiptAlert>,
+    pub history_cursor: HistoryCursor,
 }
 
 /// Build a synthetic `IdentityPublicKey` wrapping raw ECDH public key bytes
@@ -900,9 +936,25 @@ pub async fn send_payment(
     })
 }
 
-/// Fetch every `encryptedMessage` document tagged `ref_id`, via the
-/// contract's `byReferenceIdAndCreated` index — then filter to only those
-/// actually owned by `expected_owner`.
+/// One page of [`fetch_messages_by_ref_id`]'s results.
+struct MessagePage {
+    /// Owner-filtered documents, ready to decode.
+    documents: Vec<Document>,
+    /// Whether the *raw* (pre-owner-filter) batch was a full page — i.e.
+    /// older documents on this side may still exist. Deliberately not based
+    /// on `documents.len()`: a counterparty flooding decoys under their own
+    /// `$ownerId` could otherwise make a genuinely-full raw page look
+    /// partial once filtered, hiding real older history behind a "load
+    /// more" button that never appears.
+    has_more: bool,
+    /// The oldest `$createdAt` seen in the *raw* batch — the next page's
+    /// `before` cursor. `None` only when the raw batch was empty.
+    oldest_created_at: Option<u64>,
+}
+
+/// Fetch one page of `encryptedMessage` documents tagged `ref_id`, via the
+/// contract's `byReferenceIdAndCreated` index, newest-first, then filter to
+/// only those actually owned by `expected_owner`.
 ///
 /// `refId` alone does not prove who wrote a document: it's a value the
 /// counterparty legitimately knows too (it's their own `their_reference_id`),
@@ -918,12 +970,33 @@ pub async fn send_payment(
 /// `(refId, $ownerId)` together (only `byReferenceIdAndCreated` and
 /// `byOwnerIdAndCreated` exist), so this can't be pushed into the query
 /// itself without a contract migration.
+///
+/// `before` is an exclusive upper bound on `$createdAt` — `None` means "now"
+/// (the first/newest page). The `$createdAt < before` range clause is
+/// required, not decorative: Drive only reads an `order_by`'s direction from
+/// the clause it picks to drive iteration, and that clause defaults to
+/// whichever `WhereClause` is an equality match (here, `refId`) when nothing
+/// else qualifies — equality clauses always iterate ascending, silently
+/// ignoring `order_by`. Adding a *range* clause on the same field the
+/// `order_by` targets makes Drive pick that as the deciding clause instead,
+/// whose direction genuinely comes from `order_by` (see `rs-drive`'s
+/// `get_non_primary_key_path_query`). Without this, a naive limited fetch
+/// would silently return the *oldest* [`MESSAGE_PAGE_SIZE`] messages, not the
+/// newest — exactly backwards for a conversation view.
 async fn fetch_messages_by_ref_id(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
     ref_id: [u8; 32],
     expected_owner: Identifier,
-) -> Result<Vec<Document>, TaskError> {
+    before: Option<u64>,
+) -> Result<MessagePage, TaskError> {
+    let upper_bound = before.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    });
+
     let mut query =
         DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
             |e| OrchardPayError::QueryCreation {
@@ -931,11 +1004,22 @@ async fn fetch_messages_by_ref_id(
                 source: Box::new(e),
             },
         )?;
-    query = query.with_where(WhereClause {
-        field: REF_ID_FIELD.to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Bytes(ref_id.to_vec()),
-    });
+    query = query
+        .with_where(WhereClause {
+            field: REF_ID_FIELD.to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Bytes(ref_id.to_vec()),
+        })
+        .with_where(WhereClause {
+            field: CREATED_AT_FIELD.to_string(),
+            operator: WhereOperator::LessThan,
+            value: Value::U64(upper_bound),
+        })
+        .with_order_by(OrderClause {
+            field: CREATED_AT_FIELD.to_string(),
+            ascending: false,
+        });
+    query.limit = MESSAGE_PAGE_SIZE;
 
     let results = await_network_request_with_timeout(
         NETWORK_REQUEST_TIMEOUT,
@@ -945,11 +1029,22 @@ async fn fetch_messages_by_ref_id(
     .await?
     .map_err(TaskError::from)?;
 
-    Ok(results
-        .into_values()
-        .flatten()
+    let raw: Vec<Document> = results.into_values().flatten().collect();
+    let has_more = raw.len() as u32 >= MESSAGE_PAGE_SIZE;
+    let oldest_created_at = raw
+        .iter()
+        .filter_map(|document| document.created_at())
+        .min();
+    let documents = raw
+        .into_iter()
         .filter(|document| document.owner_id() == expected_owner)
-        .collect())
+        .collect();
+
+    Ok(MessagePage {
+        documents,
+        has_more,
+        oldest_created_at,
+    })
 }
 
 /// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id` and
@@ -1007,12 +1102,12 @@ async fn fetch_latest_message_created_at(
             value: Value::Bytes(ref_id.to_vec()),
         })
         .with_where(WhereClause {
-            field: "$createdAt".to_string(),
+            field: CREATED_AT_FIELD.to_string(),
             operator: WhereOperator::LessThan,
             value: Value::U64(now_millis),
         })
         .with_order_by(OrderClause {
-            field: "$createdAt".to_string(),
+            field: CREATED_AT_FIELD.to_string(),
             ascending: false,
         });
     query.limit = RECENT_ACTIVITY_FETCH_LIMIT;
@@ -1236,13 +1331,15 @@ pub async fn load_thread(
     )
     .await?;
 
-    let mine =
-        fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id, owner_id).await?;
-    let theirs = fetch_messages_by_ref_id(
+    let mine_page =
+        fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id, owner_id, None)
+            .await?;
+    let their_page = fetch_messages_by_ref_id(
         &orchardpay_contract,
         sdk,
         their_reference_id,
         counterparty_identity_id,
+        None,
     )
     .await?;
     let outgoing_payments = backend
@@ -1252,39 +1349,100 @@ pub async fn load_thread(
         .orchardpay_incoming_payments_by_document(sdk, &seed_hash)
         .await?;
 
-    let mut thread = Vec::with_capacity(mine.len() + theirs.len());
-    for document in &mine {
+    let mut all_decoded =
+        Vec::with_capacity(mine_page.documents.len() + their_page.documents.len());
+    decode_page(
+        &backend,
+        &seed_hash,
+        &mine_page.documents,
+        true,
+        &outbound_secret,
+        &outgoing_payments,
+        &incoming_payments,
+        &mut all_decoded,
+    );
+    decode_page(
+        &backend,
+        &seed_hash,
+        &their_page.documents,
+        false,
+        &inbound_secret,
+        &outgoing_payments,
+        &incoming_payments,
+        &mut all_decoded,
+    );
+
+    let history_cursor = HistoryCursor {
+        mine_before: mine_page
+            .has_more
+            .then_some(mine_page.oldest_created_at)
+            .flatten(),
+        their_before: their_page
+            .has_more
+            .then_some(their_page.oldest_created_at)
+            .flatten(),
+    };
+    let (messages, receipt_alerts) = assemble_thread(&all_decoded, &history_cursor);
+
+    Ok(LoadedThread {
+        all_decoded,
+        messages,
+        receipt_alerts,
+        history_cursor,
+    })
+}
+
+/// Decode a fetched page's documents into `out`, one directional secret at a
+/// time — the shared per-page body of both [`load_thread`] and
+/// [`load_more_history`].
+#[allow(clippy::too_many_arguments)]
+fn decode_page(
+    backend: &crate::wallet_backend::WalletBackend,
+    seed_hash: &WalletSeedHash,
+    documents: &[Document],
+    from_me: bool,
+    shared_secret: &[u8; 32],
+    outgoing_payments: &BTreeMap<Identifier, u64>,
+    incoming_payments: &BTreeMap<Identifier, u64>,
+    out: &mut Vec<ThreadMessage>,
+) {
+    for document in documents {
         if let Some(message) = decode_thread_message(
-            &backend,
-            &seed_hash,
+            backend,
+            seed_hash,
             document,
-            true,
-            &outbound_secret,
-            &outgoing_payments,
-            &incoming_payments,
+            from_me,
+            shared_secret,
+            outgoing_payments,
+            incoming_payments,
         ) {
-            thread.push(message);
+            out.push(message);
         }
     }
-    for document in &theirs {
-        if let Some(message) = decode_thread_message(
-            &backend,
-            &seed_hash,
-            document,
-            false,
-            &inbound_secret,
-            &outgoing_payments,
-            &incoming_payments,
-        ) {
-            thread.push(message);
-        }
-    }
-    // Receipts ride along in the same `mine`/`theirs` fetches (tagged with
-    // the same `refId` as everything else) but are never shown as normal
-    // bubbles — split them out, then use each to check whether the
-    // `PaymentRequest` it refers to still matches what was paid.
+}
+
+/// Split a decoded, accumulated batch of `encryptedMessage` documents (both
+/// sides, receipts included) into the chronological message list plus any
+/// [`ReceiptAlert`]s — shared by [`load_thread`] and [`load_more_history`],
+/// which both need to re-run this over the *complete* set held so far, not
+/// just whatever page was just fetched.
+///
+/// `OriginalDeleted` is only ever raised once `cursor` reports both sides
+/// fully loaded (`!cursor.has_more()`): a receipt's original `PaymentRequest`
+/// can live on either side of the conversation (the requester sent it, the
+/// payer sent the receipt) and further back than what's paged in so far, so
+/// "not found yet" must not be conflated with "genuinely deleted" while more
+/// history could still surface it.
+fn assemble_thread(
+    all_decoded: &[ThreadMessage],
+    cursor: &HistoryCursor,
+) -> (Vec<ThreadMessage>, Vec<ReceiptAlert>) {
+    // Receipts ride along in the same fetches (tagged with the same `refId`
+    // as everything else) but are never shown as normal bubbles — split
+    // them out, then use each to check whether the `PaymentRequest` it
+    // refers to still matches what was paid.
     let (receipts, mut messages): (Vec<ThreadMessage>, Vec<ThreadMessage>) =
-        thread.into_iter().partition(|message| {
+        all_decoded.iter().cloned().partition(|message| {
             matches!(
                 message.content,
                 MessageContent::PaymentRequestReceipt { .. }
@@ -1292,6 +1450,7 @@ pub async fn load_thread(
         });
     messages.sort_by_key(|message| message.created_at.unwrap_or(0));
 
+    let history_fully_loaded = !cursor.has_more();
     let mut receipt_alerts = Vec::new();
     for receipt in &receipts {
         let MessageContent::PaymentRequestReceipt {
@@ -1309,7 +1468,8 @@ pub async fn load_thread(
             .iter()
             .find(|message| message.document_id == original_document_id)
         {
-            None => Some(ReceiptAlertReason::OriginalDeleted),
+            None if history_fully_loaded => Some(ReceiptAlertReason::OriginalDeleted),
+            None => None,
             Some(original) => match &original.content {
                 MessageContent::PaymentRequest { amount, memo } => {
                     // Legitimate cancellation (`cancel_payment_request`'s
@@ -1340,9 +1500,115 @@ pub async fn load_thread(
         }
     }
 
+    (messages, receipt_alerts)
+}
+
+/// Fetch the next older page of history for whichever side(s) of
+/// `history_cursor` still report more (`Some`), merge it into
+/// `all_decoded` (everything already loaded, both sides, receipts
+/// included — round-tripped from the previous [`load_thread`]/
+/// [`load_more_history`] result), and re-run [`assemble_thread`] over the
+/// complete accumulated set. No document already held is re-fetched; only
+/// the new page costs a query, one per side that isn't already exhausted.
+pub async fn load_more_history(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: &QualifiedIdentity,
+    counterparty_identity_id: Identifier,
+    seed_hash: WalletSeedHash,
+    mut all_decoded: Vec<ThreadMessage>,
+    history_cursor: HistoryCursor,
+) -> Result<LoadedThread, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let backend = app_context.wallet_backend()?;
+    let EstablishedRelationship {
+        my_reference_id,
+        their_reference_id,
+        counterparty_encryption_pubkey: enc_pk,
+        counterparty_decryption_pubkey: dec_pk,
+    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+
+    let outbound_secret = outbound_shared_secret(
+        app_context,
+        qualified_identity,
+        orchardpay_contract.id(),
+        &dec_pk,
+        seed_hash,
+    )
+    .await?;
+    let inbound_secret = inbound_shared_secret(
+        app_context,
+        qualified_identity,
+        orchardpay_contract.id(),
+        &enc_pk,
+        seed_hash,
+    )
+    .await?;
+    let outgoing_payments = backend
+        .orchardpay_outgoing_payments_by_document(&seed_hash)
+        .await?;
+    let incoming_payments = backend
+        .orchardpay_incoming_payments_by_document(sdk, &seed_hash)
+        .await?;
+
+    let mut new_mine_before = None;
+    if let Some(before) = history_cursor.mine_before {
+        let page = fetch_messages_by_ref_id(
+            &orchardpay_contract,
+            sdk,
+            my_reference_id,
+            owner_id,
+            Some(before),
+        )
+        .await?;
+        decode_page(
+            &backend,
+            &seed_hash,
+            &page.documents,
+            true,
+            &outbound_secret,
+            &outgoing_payments,
+            &incoming_payments,
+            &mut all_decoded,
+        );
+        new_mine_before = page.has_more.then_some(page.oldest_created_at).flatten();
+    }
+
+    let mut new_their_before = None;
+    if let Some(before) = history_cursor.their_before {
+        let page = fetch_messages_by_ref_id(
+            &orchardpay_contract,
+            sdk,
+            their_reference_id,
+            counterparty_identity_id,
+            Some(before),
+        )
+        .await?;
+        decode_page(
+            &backend,
+            &seed_hash,
+            &page.documents,
+            false,
+            &inbound_secret,
+            &outgoing_payments,
+            &incoming_payments,
+            &mut all_decoded,
+        );
+        new_their_before = page.has_more.then_some(page.oldest_created_at).flatten();
+    }
+
+    let history_cursor = HistoryCursor {
+        mine_before: new_mine_before,
+        their_before: new_their_before,
+    };
+    let (messages, receipt_alerts) = assemble_thread(&all_decoded, &history_cursor);
+
     Ok(LoadedThread {
+        all_decoded,
         messages,
         receipt_alerts,
+        history_cursor,
     })
 }
 
