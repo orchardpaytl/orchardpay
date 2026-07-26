@@ -5,5 +5,5 @@
 #
 # TODO: replace @YOUR-GITHUB-USERNAME with the real reviewer(s)/team before
 # this has any effect.
-/.github/workflows/ @YOUR-GITHUB-USERNAME
-/.github/actions/   @YOUR-GITHUB-USERNAME
+/.github/workflows/ @orchardpaytl
+/.github/actions/   @orchardpaytl
