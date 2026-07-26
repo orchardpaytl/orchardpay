@@ -901,11 +901,28 @@ pub async fn send_payment(
 }
 
 /// Fetch every `encryptedMessage` document tagged `ref_id`, via the
-/// contract's `byReferenceIdAndCreated` index.
+/// contract's `byReferenceIdAndCreated` index — then filter to only those
+/// actually owned by `expected_owner`.
+///
+/// `refId` alone does not prove who wrote a document: it's a value the
+/// counterparty legitimately knows too (it's their own `their_reference_id`),
+/// and Platform lets any identity write any `refId` value into a document
+/// they own. Without this check, a malicious counterparty could broadcast a
+/// decoy document under their own `$ownerId` but tagged with the other
+/// party's `refId`; it would decrypt successfully (the ECDH secret for a
+/// given direction is computable by both parties by construction) and be
+/// silently trusted as if it came from the expected sender. `$ownerId` is
+/// the one field here Platform's own signature verification actually
+/// guarantees is truthful, so checking it is the correct fix — done
+/// client-side, before decryption, since no compound index covers
+/// `(refId, $ownerId)` together (only `byReferenceIdAndCreated` and
+/// `byOwnerIdAndCreated` exist), so this can't be pushed into the query
+/// itself without a contract migration.
 async fn fetch_messages_by_ref_id(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
     ref_id: [u8; 32],
+    expected_owner: Identifier,
 ) -> Result<Vec<Document>, TaskError> {
     let mut query =
         DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
@@ -928,14 +945,26 @@ async fn fetch_messages_by_ref_id(
     .await?
     .map_err(TaskError::from)?;
 
-    Ok(results.into_values().flatten().collect())
+    Ok(results
+        .into_values()
+        .flatten()
+        .filter(|document| document.owner_id() == expected_owner)
+        .collect())
 }
 
-/// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id`, via
-/// the same `byReferenceIdAndCreated` index as [`fetch_messages_by_ref_id`],
-/// but sorted descending and capped to one result — for "when did this
-/// side of the conversation last say anything" without fetching the whole
-/// thread.
+/// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id` and
+/// actually owned by `expected_owner`, via the same `byReferenceIdAndCreated`
+/// index as [`fetch_messages_by_ref_id`], sorted descending — for "when did
+/// this side of the conversation last say anything" without fetching the
+/// whole thread.
+///
+/// Fetches more than one candidate ([`RECENT_ACTIVITY_FETCH_LIMIT`]) and
+/// filters by `expected_owner` client-side, for the same reason
+/// [`fetch_messages_by_ref_id`] does: `refId` alone doesn't prove who wrote
+/// a document. A `limit = 1` fetch filtered afterward would let a single
+/// decoy document (wrong owner, deliberately recent `$createdAt`) hide the
+/// real latest activity behind it indefinitely — fetching a small batch and
+/// taking the first owner-matching hit is cheap insurance against that.
 ///
 /// The `$createdAt < now` range clause is required, not decorative: Drive
 /// only reads an `order_by`'s direction from the clause it picks to drive
@@ -945,13 +974,20 @@ async fn fetch_messages_by_ref_id(
 /// a *range* clause on the same field the `order_by` targets makes Drive
 /// pick that as the deciding clause instead, whose direction genuinely
 /// comes from `order_by` (see `rs-drive`'s `get_non_primary_key_path_query`).
-/// Without this, `limit = 1` silently returns the *oldest* message, not
-/// the newest.
+/// Without this, a naive limited fetch would silently return the *oldest*
+/// messages, not the newest.
 async fn fetch_latest_message_created_at(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
     ref_id: [u8; 32],
+    expected_owner: Identifier,
 ) -> Result<Option<u64>, TaskError> {
+    /// Candidates fetched per side before filtering by owner — comfortably
+    /// more than the handful of decoys a griefing counterparty would
+    /// realistically bother paying to create, without fetching the whole
+    /// thread just to find the one real latest message.
+    const RECENT_ACTIVITY_FETCH_LIMIT: u32 = 10;
+
     let now_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -979,7 +1015,7 @@ async fn fetch_latest_message_created_at(
             field: "$createdAt".to_string(),
             ascending: false,
         });
-    query.limit = 1;
+    query.limit = RECENT_ACTIVITY_FETCH_LIMIT;
 
     let results = await_network_request_with_timeout(
         NETWORK_REQUEST_TIMEOUT,
@@ -992,7 +1028,7 @@ async fn fetch_latest_message_created_at(
     Ok(results
         .into_values()
         .flatten()
-        .next()
+        .find(|document| document.owner_id() == expected_owner)
         .and_then(|document| document.created_at()))
 }
 
@@ -1070,8 +1106,13 @@ pub async fn fetch_recent_activity(
     let contract_ref = &orchardpay_contract;
     let futures = established.into_iter().map(move |contact| async move {
         let (mine, theirs) = futures::future::join(
-            fetch_latest_message_created_at(contract_ref, sdk, contact.my_reference_id),
-            fetch_latest_message_created_at(contract_ref, sdk, contact.their_reference_id),
+            fetch_latest_message_created_at(contract_ref, sdk, contact.my_reference_id, owner_id),
+            fetch_latest_message_created_at(
+                contract_ref,
+                sdk,
+                contact.their_reference_id,
+                contact.identity_id,
+            ),
         )
         .await;
         let latest_message = mine
@@ -1195,8 +1236,15 @@ pub async fn load_thread(
     )
     .await?;
 
-    let mine = fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id).await?;
-    let theirs = fetch_messages_by_ref_id(&orchardpay_contract, sdk, their_reference_id).await?;
+    let mine =
+        fetch_messages_by_ref_id(&orchardpay_contract, sdk, my_reference_id, owner_id).await?;
+    let theirs = fetch_messages_by_ref_id(
+        &orchardpay_contract,
+        sdk,
+        their_reference_id,
+        counterparty_identity_id,
+    )
+    .await?;
     let outgoing_payments = backend
         .orchardpay_outgoing_payments_by_document(&seed_hash)
         .await?;
