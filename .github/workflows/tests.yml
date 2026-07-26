@@ -39,10 +39,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -56,7 +56,7 @@ jobs:
       # version here (or setting a rustup override) would take precedence over
       # that file and silently test a different toolchain than the pinned one.
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # This action defaults RUSTFLAGS to "-D warnings"; the test job has
           # never denied warnings and Clippy owns that gate, so keep it unset.
@@ -79,16 +79,10 @@ jobs:
           PROTOC: /usr/local/bin/protoc
 
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --doc --all-features --workspace
+        run: cargo test --doc --all-features --workspace
       # TODO: Re-enable after backend E2E tests are updated for TaskError migration
       # - name: Run backend E2E tests
       #   run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1

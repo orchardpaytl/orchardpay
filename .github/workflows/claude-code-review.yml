@@ -23,14 +23,19 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-      id-token: write
+      # id-token: write intentionally omitted — this workflow authenticates
+      # via claude_code_oauth_token, not GitHub OIDC/workload-identity
+      # federation (anthropics/claude-code-action only exchanges an OIDC
+      # token when anthropic_organization_id + a federation rule are set,
+      # neither of which this workflow sets). Only re-add if that auth mode
+      # is deliberately adopted later.
     env:
       ANTHROPIC_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
       CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
     steps:
       - name: Claudius Review
         if: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
-        uses: lklimek/claudius-review-action@main
+        uses: lklimek/claudius-review-action@fcf99ed36da0a457621699e1efc202991f08b696  # main HEAD 2026-07-24, reviewed and pinned per H-02 remediation
         with:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           memcan_url: ${{ vars.MEMCAN_URL }}

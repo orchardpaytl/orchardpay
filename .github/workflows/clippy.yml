@@ -38,10 +38,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -55,7 +55,7 @@ jobs:
       # compiler it introduces. Naming 1.92 here duplicated that pin and would
       # silently keep linting 1.92 after the file moved on.
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           # This action defaults RUSTFLAGS to "-D warnings". The Clippy step
           # already passes `-D warnings` itself, and setting it globally would
@@ -82,8 +82,4 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          args: --all-features --all-targets -- -D warnings
-          name: Clippy Report
+        run: cargo clippy --all-features --all-targets -- -D warnings

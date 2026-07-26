@@ -1,0 +1,9 @@
+# Require review on changes to CI workflow files — this is what makes
+# "Require review from Code Owners" (GitHub branch protection, enabled
+# separately in repo Settings → Branches) actually enforce a second set of
+# eyes on workflow changes, closing H-02's item 6.
+#
+# TODO: replace @YOUR-GITHUB-USERNAME with the real reviewer(s)/team before
+# this has any effect.
+/.github/workflows/ @YOUR-GITHUB-USERNAME
+/.github/actions/   @YOUR-GITHUB-USERNAME
