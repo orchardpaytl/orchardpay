@@ -643,6 +643,14 @@ pub enum BackendTaskSuccessResult {
         already_tracked: usize,
         undecryptable: usize,
     },
+    /// Result of `OrchardPayTask::ScanForIncomingAnchors`. Unlike most
+    /// fire-and-forget tasks, this needs a dedicated variant (not the generic
+    /// `Refresh`/`None`) so the Contacts tab's "Check for New Requests"
+    /// button always gets a completion callback to clear its own in-flight
+    /// state, even on the common "nothing new" outcome.
+    OrchardPayIncomingAnchorsScanned {
+        anything_changed: bool,
+    },
     /// Result of `OrchardPayTask::LoadRecentActivity` — every established
     /// contact, sorted by their conversation's most recent activity (newest
     /// first), contacts with no messages yet sorted after by connection

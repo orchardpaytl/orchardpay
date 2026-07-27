@@ -2533,6 +2533,15 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned {
+                            anything_changed,
+                        } => {
+                            if anything_changed {
+                                self.visible_screen_mut().refresh();
+                            }
+                            self.visible_screen_mut()
+                                .display_backend_task_result(&context, unboxed_message);
+                        }
                         BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
                             let network_label = chooser_network_label(network);
                             MessageBanner::set_global(

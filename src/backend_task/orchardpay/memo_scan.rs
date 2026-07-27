@@ -206,11 +206,7 @@ pub async fn scan_for_incoming_anchors(
 
     backend.orchardpay_set_memo_scan_cursor(&seed_hash, retry_from.unwrap_or(next_start_index))?;
 
-    Ok(if anything_changed {
-        BackendTaskSuccessResult::Refresh
-    } else {
-        BackendTaskSuccessResult::None
-    })
+    Ok(BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned { anything_changed })
 }
 
 /// Convenience for callers that only have a `BackendTask` handle (e.g. the

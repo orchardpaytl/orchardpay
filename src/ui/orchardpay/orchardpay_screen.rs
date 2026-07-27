@@ -180,6 +180,11 @@ pub struct OrchardPayScreen {
     search_query: String,
     search_results: Vec<OrchardPayContactSearchResult>,
     searching: bool,
+    /// In-flight guard for the "Check for New Requests" button. Cleared by
+    /// the dedicated `OrchardPayIncomingAnchorsScanned` result (both
+    /// outcomes) in `display_task_result`, and on error in `display_message`
+    /// — mirrors `searching`'s lifecycle.
+    checking_new_requests: bool,
     /// Direct Send's shared "amount to send" field, above its search box —
     /// lazily created, mirroring `compose_amount_input` in
     /// `message_thread_screen.rs`. Not reset by `refresh()`, matching
@@ -274,6 +279,7 @@ impl OrchardPayScreen {
             search_query: String::new(),
             search_results: Vec::new(),
             searching: false,
+            checking_new_requests: false,
             direct_send_amount_input: None,
             direct_send_amount: None,
             // If the cache already confirms it, skip the check entirely —
@@ -549,7 +555,15 @@ impl OrchardPayScreen {
                 RichText::new("Already synced but a new request isn't showing?")
                     .color(DashColors::text_secondary(dark_mode)),
             );
-            if ui.button("Check for New Requests").clicked() {
+            let label = if self.checking_new_requests {
+                "Checking…"
+            } else {
+                "Check for New Requests"
+            };
+            if ui
+                .add_enabled(!self.checking_new_requests, egui::Button::new(label))
+                .clicked()
+            {
                 action |= self.check_new_requests_clicked();
             }
         });
@@ -1434,6 +1448,7 @@ impl OrchardPayScreen {
             return AppAction::None;
         };
 
+        self.checking_new_requests = true;
         AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
             OrchardPayTask::ScanForIncomingAnchors {
                 qualified_identities: vec![identity],
@@ -1654,6 +1669,7 @@ impl ScreenLike for OrchardPayScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.searching = false;
+            self.checking_new_requests = false;
             // A failed shielded-address check leaves `has_shielded_address`
             // at `None` — reset the dispatch guard so the "checking…" state
             // isn't permanently stuck; the next frame's `ui()` retries it.
@@ -1689,6 +1705,9 @@ impl ScreenLike for OrchardPayScreen {
             }
             BackendTaskSuccessResult::OrchardPayShieldedActivity(rows) => {
                 self.shielded_activity = Some(rows.clone());
+            }
+            BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned { .. } => {
+                self.checking_new_requests = false;
             }
             // A contact request (initiate/accept) publish — both spend
             // identity credits, so the top-panel readout and the
