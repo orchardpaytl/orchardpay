@@ -1,6 +1,8 @@
 # M-05: No forward secrecy or transcript-bound key schedule
 
-Status: **proposal, not approved**. One of three independent follow-ups to
+Status: **declined 2026-07-27 (see addendum below) — split into a future
+roadmap item for an actual forward-secrecy ratchet.** One of three
+independent follow-ups to
 `docs/ORCHARDPAY_COMPREHENSIVE_REVIEW_2026-07-25.md` — see
 `docs/ai-design/2026-07-26-comprehensive-review-response/README.md` for how
 this relates to the other two (M-02, M-08). Can be accepted, modified, or
@@ -99,6 +101,40 @@ without a hard cutover.
    decode path is viable now — this window closes once real users have
    real message history, so this is worth doing before that happens, not
    after.
+
+## Addendum (2026-07-27): declined, split into a future roadmap item
+
+Decision: **HKDF/purpose-splitting and AAD are both declined for now**;
+forward secrecy (a real ratchet) is separated out as the one piece with
+actual value and tracked as a future roadmap possibility, not active work.
+See `docs/ai-design/2026-07-26-comprehensive-review-response/README.md`'s
+M-05 entry for the full reasoning. Summary:
+
+- **HKDF/purpose-splitting**: declined — no live cross-context confusion
+  risk exists to close (`anchorData` already uses a fully separate key; the
+  one real overlap, `contactAnchor.data` vs. `encryptedMessage.msgData`,
+  decodes into different structs, so a moved ciphertext would decrypt but
+  almost certainly fail to parse). Purely speculative insurance against a
+  future schema convergence, not worth doing on its own. Note for whoever
+  revisits this: if a real ratchet is ever built, HKDF-style derivation
+  comes back anyway as the actual mechanism a ratchet chains through — this
+  isn't "HKDF is worthless," just "static purpose-labeling without a ratchet
+  behind it isn't worth doing in isolation."
+- **AAD**: real but redundant — it's an integrity/authenticity control, not
+  a privacy one (it doesn't hide anything; it makes a moved/replayed
+  ciphertext fail to decrypt). Its value is as an independent regression
+  guard over the already-sufficient H-01 query-side fix. Declined as active
+  work now; kept as a future roadmap possibility since it's cheap and could
+  be picked up any time without a design phase.
+- **Forward secrecy (the actual ratchet)**: this proposal, as originally
+  scoped (items 1-3 above), delivers **no forward secrecy at all** — one
+  static per-relationship secret split into two labeled static sub-keys
+  still means a leaked ECDH secret decrypts the whole relationship's
+  history, past and future, either way. The real fix needs the
+  Double-Ratchet-style mechanism this doc already flagged as out of scope
+  (session state, out-of-order messages, ratchet-state-loss UX on
+  reinstall/multi-device) — sized and prioritized as its own, much larger,
+  future roadmap item, not bundled with AAD.
 
 ## Explicitly out of scope for this pass
 

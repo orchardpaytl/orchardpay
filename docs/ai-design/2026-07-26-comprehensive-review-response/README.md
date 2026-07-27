@@ -109,6 +109,33 @@ redesign is folded into M-05's design doc (linked below) since they're the
 same underlying change; the adversarial tests are not yet written anywhere
 in this codebase (`messages.rs` currently has zero `#[test]`s).
 
+### Addendum (2026-07-27, later): adversarial tests declined
+
+Decision: **not writing the four adversarial tests.** The specific mechanism
+they'd exercise (a counterparty forging a document under their own identity
+but tagged with the victim's `refId`, landing in the wrong bucket) is already
+closed by the query-side `$ownerId` fix above — Platform's own document
+signature verification means an attacker can never set `$ownerId` to the
+victim's identity, and both query buckets now require the correct owner
+before a document is even fetched. Proving this holds against *live*
+Platform query enforcement would require new backend-e2e infrastructure (a
+`shared_orchardpay_pair()` fixture: two funded, DPNS'd, fully
+contactAnchor-established identities) — real cost for re-confirming a
+property the fix already guarantees by construction, not for catching
+anything currently broken.
+
+One narrower residual was identified and is **explicitly accepted, not
+tested**: an established counterparty can still re-broadcast one of their
+*own* previously-sent, genuinely-owned ciphertext as a new document (same
+true `$ownerId`, same true `refId`, copied `msgData`, new document ID) — the
+`$ownerId` check can't help here since ownership is genuine. This could make
+an already-fulfilled `PaymentRequest` look unfulfilled again in the
+recipient's thread. Low severity (the real transferred amount is still
+independently verified against the decrypted shielded note, per the
+existing amount-trust model; this is a UI/thread-confusion nuisance, not a
+funds-redirection or impersonation path) and distinct from what H-01 or its
+four named tests were actually about. No action planned.
+
 ## H-02 — mutable `@main` GitHub Action with secrets and OIDC authority
 
 **Resolved** in `502f6568`/`d5976eb2`: every third-party action pinned to a
@@ -125,11 +152,33 @@ automatically, no button — `byOwner` has no `$createdAt` component to page
 on, so recovery uses a document-ID cursor instead, which needs no order
 guarantee since recovery already treats anchor order as irrelevant).
 
-**Gap**: no dedicated boundary tests (99/100/101/200-document counts,
-same-`$createdAt` collisions) exist for either pagination path. Both use a
-range-plus-order-by query shape that Drive requires for correct
-directionality (documented inline at `fetch_messages_by_ref_id`), but that
-correctness isn't independently test-covered yet.
+**Gap, same-`$createdAt` collision — fixed (2026-07-27).** Investigated
+after the user asked whether this gap was real or just a test suggestion:
+confirmed genuinely exploitable, not theoretical. `rs-drive`'s
+document-creation transformer stamps `$createdAt` from block time, not a
+per-document clock, so two of the same identity's own `encryptedMessage`
+documents (same `refId`, same `$ownerId` — an entirely ordinary occurrence,
+e.g. two chat messages sent seconds apart landing in the same block) get
+the identical timestamp. If that shared timestamp fell exactly at the
+100-document page boundary, the documents Drive's `LIMIT` happened to
+exclude were permanently unrecoverable: excluded from the current page by
+the limit, and excluded from the next page's `$createdAt < cursor` clause
+(equal, not less than). Fixed in `fetch_messages_by_ref_id`
+(`messages.rs`) via a new `trim_ambiguous_tail` helper: the trailing run of
+documents sharing a full page's minimum timestamp is always held back for
+the next page — even when it's currently visible as a single document,
+since one page's data can never prove a boundary timestamp is truly unique
+versus having siblings the limit's tie-break ordering placed just past the
+cutoff. Pure client-side fix, no contract/index change; the *other*
+pagination path (contactAnchor recovery, document-ID cursored) was already
+immune, since document IDs can't collide. 5 new deterministic unit tests
+(no network needed — this is pure computation over an already-fetched
+list), covering the exact collision case plus the pathological "entire page
+tied" fallback.
+
+**Gap, 99/100/101/200-count boundary tests — still open.** A distinct,
+lower-severity concern (a potential off-by-one in the `has_more`/limit
+check itself, not data loss) for either pagination path. Not yet written.
 
 ## M-02 — multi-step contact/payment flows aren't atomic
 
@@ -162,12 +211,48 @@ feature's MCP tools, not an OrchardPay-specific surface.
 
 ## M-05 — no forward secrecy or transcript-bound key schedule
 
-**Open.** Confirmed unchanged: `generate_ecdh_shared_key`
-(`dashpay/encryption.rs`) derives the AES key as a single `SHA256(prefix ||
-x)` over the raw ECDH point, no HKDF, no context binding; `encrypt`/`decrypt`
-(`orchardpay/encryption.rs`) pass no associated authenticated data to
-AES-GCM at all. See the separate design doc:
-`docs/ai-design/2026-07-26-m05-message-envelope-and-forward-secrecy/README.md`.
+**Accepted risk, deferred (2026-07-27).** Confirmed unchanged:
+`generate_ecdh_shared_key` (`dashpay/encryption.rs`) derives the AES key as a
+single `SHA256(prefix || x)` over the raw ECDH point, no HKDF, no context
+binding; `encrypt`/`decrypt` (`orchardpay/encryption.rs`) pass no associated
+authenticated data to AES-GCM at all. Full proposal and rationale:
+`docs/ai-design/2026-07-26-m05-message-envelope-and-forward-secrecy/README.md`
+(see its 2026-07-27 addendum for the disposition below).
+
+The proposal bundled three independent pieces; each was assessed on its own
+merits rather than accepted or declined as a block:
+
+- **HKDF/purpose-splitting a static per-relationship secret into labeled
+  sub-keys — declined.** No live confusion risk exists to close:
+  `anchorData` already uses a wholly separate key (the wallet-local fixed
+  key, not the relationship ECDH secret at all), and the only real overlap
+  — `contactAnchor.data` vs. `encryptedMessage.msgData` sharing today's
+  single derived key — decodes into different Rust structs, so a ciphertext
+  moved between them would decrypt fine and then almost certainly fail to
+  parse as the wrong type. Real value, but purely speculative (insurance
+  against a future schema change making those structs more alike), not
+  worth the crypto-surface churn now.
+- **AAD (binding `refId`/owner/message-type/etc. into the AES-GCM tag) —
+  declined for now, real but redundant.** This is an integrity/authenticity
+  control, not a privacy one — it doesn't hide anything, it makes a
+  ciphertext moved into the wrong context fail to decrypt. Its actual value
+  is as an independent regression guard over the H-01 fix (if a future
+  refactor ever weakens the `$ownerId` query filter, AAD would still catch a
+  moved/replayed ciphertext) — genuine, but redundant with a fix that's
+  already sufficient on its own. Tracked as a future roadmap possibility,
+  not active work.
+- **Forward secrecy itself (a real ratchet — new key material per message,
+  so a compromised key can't decrypt past messages) — this is the one piece
+  with actual, non-redundant value**, and it's also the one thing this
+  proposal, as scoped, never delivered: splitting one static secret into two
+  labeled static sub-keys provides *no* forward secrecy at all — a leaked
+  ECDH secret still decrypts the whole relationship's history either way.
+  A real fix needs an actual ratchet, which the original proposal already
+  flagged as substantially bigger (session state, out-of-order message
+  handling, a real UX question about lost ratchet state on reinstall/
+  multi-device) and deliberately left undecided. Tracked as a future roadmap
+  possibility, alongside AAD but sized and prioritized separately — a real
+  ratchet is a much larger design effort than AAD, not a bundled pair.
 
 ## M-06 — lockfile contains known advisories and unmaintained crates
 
@@ -239,13 +324,13 @@ schema/MCP paths the review specifically recommended.
 
 | Finding | Status |
 |---|---|
-| H-01 | Resolved (owner check, now query-side via a compound index — see 2026-07-27 addendum, reversing the earlier no-new-index decision); envelope redesign → M-05; adversarial tests still missing |
+| H-01 | Resolved (owner check, now query-side via a compound index — see 2026-07-27 addendum, reversing the earlier no-new-index decision); envelope redesign → M-05; adversarial tests explicitly declined (2026-07-27) — query-side fix already closes the exercised mechanism |
 | H-02 | Resolved |
-| M-01 | Resolved; boundary/collision tests still missing |
+| M-01 | Resolved; same-`$createdAt` collision confirmed real and fixed (2026-07-27, `trim_ambiguous_tail`); 99/100/101/200-count boundary tests still missing |
 | M-02 | Resolved — see linked design doc |
 | M-03 | Out of scope (DET-wide) |
 | M-04 | Out of scope (DET-wide) |
-| M-05 | Open — see linked design doc |
+| M-05 | Accepted risk, deferred (2026-07-27) — HKDF/purpose-splitting and AAD declined as insufficient value now; forward-secrecy ratchet is the one substantive piece, tracked as a future roadmap item, not this review's scope — see linked design doc |
 | M-06 | Out of scope (DET-wide) |
 | M-07 | Out of scope (separate tool, not OrchardPay) |
 | M-08 | Resolved — see linked design doc |
