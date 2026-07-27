@@ -66,6 +66,25 @@ encrypted under the shared secret. Decryption already authenticates the
 sender. An extra `$ownerId` filter would only ever be a spam/efficiency
 trim, never a security requirement.
 
+**Addendum (2026-07-27): the paragraph above was wrong — retracted.**
+This doc reflects Milestone D (see the header above); the security review
+that found the problem, and the fix, both landed after this doc was
+written, so this wasn't a missed cross-check within Milestone D itself.
+
+AEAD decryption only authenticates that the ciphertext was encrypted under
+the shared secret it's being decrypted with — it says nothing about whether
+the *document* carrying that ciphertext legitimately belongs to the owner
+it claims. A forged or replayed `encryptedMessage` document published under
+someone else's `refId` (but a real, attacker-controlled `$ownerId`) decrypts
+cleanly and renders as a genuine message — H-01 confirmed this directly (see
+`bda6f0e7`'s commit message: such a document "would decrypt cleanly and
+render as `from_me: true`"). The `$ownerId` filter this section dismissed
+as a mere spam/efficiency trim was in fact the actual security fix: added
+query-side via a new compound index, `byReferenceIdbyOwnerIdAndCreated`
+(`08d0ab01`), with a client-side filter as defense-in-depth (`bda6f0e7`).
+Full writeup: `docs/ai-design/2026-07-26-comprehensive-review-response/README.md`'s
+H-01 entry.
+
 ### Identity keys — a different kind of query entirely
 
 | Query | Matched on | Returns | Used by |

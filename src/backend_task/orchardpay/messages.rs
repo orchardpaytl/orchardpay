@@ -1401,8 +1401,8 @@ struct EstablishedContactRefs {
 /// One query pair per contact (their sent side + my sent side), run
 /// concurrently — there is no single index that covers "most recent across
 /// all my relationships" in the current `encryptedMessage` schema
-/// (`byReferenceIdAndCreated` is scoped to one `refId` at a time), so this
-/// is inherently O(contacts) network calls, computed on-demand rather than
+/// (`byReferenceIdbyOwnerIdAndCreated` is scoped to one `refId` at a time),
+/// so this is inherently O(contacts) network calls, computed on-demand rather than
 /// cached. A per-contact query failure is treated as "no messages found"
 /// rather than failing the whole view, mirroring `recover_own_anchors`'s
 /// best-effort handling of individual anchors.
