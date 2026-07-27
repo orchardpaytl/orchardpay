@@ -342,7 +342,7 @@ pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
         return Some(addr.to_raw_bytes().to_vec());
     }
     let bytes = hex::decode(trimmed).ok()?;
-    (bytes.len() == SHIELDED_ADDRESS_RAW_LEN).then_some(bytes)
+    validate_shielded_address_bytes(&bytes).ok().map(Vec::from)
 }
 
 /// A raw Orchard payload that does not decode to a valid shielded address.
@@ -352,6 +352,29 @@ pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("This shielded address could not be read. Please reopen the wallet and try again.")]
 pub struct InvalidShieldedAddress;
+
+/// Validate a raw byte slice as a real, currently-defined Orchard shielded
+/// address: exactly [`SHIELDED_ADDRESS_RAW_LEN`] bytes *and* a structurally/
+/// cryptographically valid address (`pk_d` is a genuine Pallas curve point).
+///
+/// Anything else is rejected outright — including any length the
+/// `shieldedAddress` document schema's wider `40..5120` byte range
+/// otherwise permits. That range is reserved headroom for a future address
+/// format that doesn't exist yet; until it does, exactly 43 bytes plus a
+/// valid curve point is the only acceptable shape anywhere in the app. This
+/// is what a caller should run on untrusted address bytes (e.g. a
+/// counterparty's published `shieldedAddress` document) before spending any
+/// fee that trusts the result — a bare length check alone does not imply a
+/// well-formed address once the schema's byte range is wider than 43.
+pub fn validate_shielded_address_bytes(
+    bytes: &[u8],
+) -> Result<[u8; SHIELDED_ADDRESS_RAW_LEN], InvalidShieldedAddress> {
+    let raw: [u8; SHIELDED_ADDRESS_RAW_LEN] =
+        bytes.try_into().map_err(|_| InvalidShieldedAddress)?;
+    dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&raw)
+        .map_err(|_| InvalidShieldedAddress)?;
+    Ok(raw)
+}
 
 /// Encode a raw 43-byte Orchard payload as its canonical Bech32m string
 /// (`dash1z…` on mainnet, `tdash1z…` elsewhere).
@@ -396,7 +419,11 @@ mod tests {
 
     #[test]
     fn parse_shielded_recipient_accepts_exact_length_hex() {
-        let raw = vec![0xABu8; SHIELDED_ADDRESS_RAW_LEN];
+        // A fixed arbitrary byte pattern is not a valid Orchard address (its
+        // `pk_d` is not a valid curve point) — a real derived address is
+        // needed to honestly exercise the structural validation the raw-hex
+        // branch now performs. See `test_shielded_raw_address` below.
+        let raw = test_shielded_raw_address(Network::Testnet).to_vec();
         let hex_str = hex::encode(&raw);
         assert_eq!(parse_shielded_recipient(&hex_str), Some(raw.clone()));
         // Surrounding whitespace is tolerated.
@@ -415,6 +442,17 @@ mod tests {
         );
         assert_eq!(
             parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN + 1])),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_valid_length_invalid_curve_point_hex() {
+        // Exactly the right length, but not a well-formed Orchard address
+        // (all-zero `pk_d` is not a valid curve point) — length alone must
+        // not be treated as validity.
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode([0u8; SHIELDED_ADDRESS_RAW_LEN])),
             None
         );
     }
@@ -496,6 +534,40 @@ mod tests {
             encode_shielded_address(&[0u8; SHIELDED_ADDRESS_RAW_LEN], Network::Testnet),
             Err(InvalidShieldedAddress),
         );
+    }
+
+    #[test]
+    fn validate_shielded_address_bytes_rejects_wrong_length() {
+        assert_eq!(
+            validate_shielded_address_bytes(&[0xABu8; SHIELDED_ADDRESS_RAW_LEN - 1]),
+            Err(InvalidShieldedAddress)
+        );
+        assert_eq!(
+            validate_shielded_address_bytes(&[0xABu8; SHIELDED_ADDRESS_RAW_LEN + 1]),
+            Err(InvalidShieldedAddress)
+        );
+        // Within the schema's wider 40..5120 byte allowance, but still not
+        // today's only defined 43-byte format — must still be rejected.
+        assert_eq!(
+            validate_shielded_address_bytes(&[0xABu8; 5120]),
+            Err(InvalidShieldedAddress)
+        );
+    }
+
+    #[test]
+    fn validate_shielded_address_bytes_rejects_invalid_curve_point() {
+        // Same fixture as encode_shielded_address_rejects_malformed_payload:
+        // all-zero pk_d is not a valid Pallas curve point.
+        assert_eq!(
+            validate_shielded_address_bytes(&[0u8; SHIELDED_ADDRESS_RAW_LEN]),
+            Err(InvalidShieldedAddress)
+        );
+    }
+
+    #[test]
+    fn validate_shielded_address_bytes_accepts_real_address() {
+        let raw = test_shielded_raw_address(Network::Testnet);
+        assert_eq!(validate_shielded_address_bytes(&raw), Ok(raw));
     }
 
     #[test]

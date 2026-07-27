@@ -1050,51 +1050,51 @@ pub async fn send_payment(
 
 /// One page of [`fetch_messages_by_ref_id`]'s results.
 struct MessagePage {
-    /// Owner-filtered documents, ready to decode.
+    /// Owner-filtered documents (by the query itself, not client-side),
+    /// ready to decode.
     documents: Vec<Document>,
-    /// Whether the *raw* (pre-owner-filter) batch was a full page — i.e.
-    /// older documents on this side may still exist. Deliberately not based
-    /// on `documents.len()`: a counterparty flooding decoys under their own
-    /// `$ownerId` could otherwise make a genuinely-full raw page look
-    /// partial once filtered, hiding real older history behind a "load
-    /// more" button that never appears.
+    /// Whether this batch was a full page — i.e. older documents on this
+    /// side may still exist.
     has_more: bool,
-    /// The oldest `$createdAt` seen in the *raw* batch — the next page's
-    /// `before` cursor. `None` only when the raw batch was empty.
+    /// The oldest `$createdAt` seen in this batch — the next page's
+    /// `before` cursor. `None` only when the batch was empty.
     oldest_created_at: Option<u64>,
 }
 
-/// Fetch one page of `encryptedMessage` documents tagged `ref_id`, via the
-/// contract's `byReferenceIdAndCreated` index, newest-first, then filter to
-/// only those actually owned by `expected_owner`.
+/// Fetch one page of `encryptedMessage` documents tagged `ref_id` and
+/// actually owned by `expected_owner`, via the contract's
+/// `byReferenceIdbyOwnerIdAndCreated` index, newest-first.
 ///
 /// `refId` alone does not prove who wrote a document: it's a value the
 /// counterparty legitimately knows too (it's their own `their_reference_id`),
 /// and Platform lets any identity write any `refId` value into a document
-/// they own. Without this check, a malicious counterparty could broadcast a
-/// decoy document under their own `$ownerId` but tagged with the other
-/// party's `refId`; it would decrypt successfully (the ECDH secret for a
-/// given direction is computable by both parties by construction) and be
+/// they own. Without an owner check, a malicious counterparty could
+/// broadcast a decoy document under their own `$ownerId` but tagged with the
+/// other party's `refId`; it would decrypt successfully (the ECDH secret for
+/// a given direction is computable by both parties by construction) and be
 /// silently trusted as if it came from the expected sender. `$ownerId` is
 /// the one field here Platform's own signature verification actually
-/// guarantees is truthful, so checking it is the correct fix — done
-/// client-side, before decryption, since no compound index covers
-/// `(refId, $ownerId)` together (only `byReferenceIdAndCreated` and
-/// `byOwnerIdAndCreated` exist), so this can't be pushed into the query
-/// itself without a contract migration.
+/// guarantees is truthful, so filtering on it is the correct fix. This is
+/// now done in the query itself (an `$ownerId Equal` clause, matching the
+/// compound index's declared field order `refId, $ownerId, $createdAt`) —
+/// previously this had to be a client-side post-fetch filter, since no
+/// index covered `(refId, $ownerId)` together. A forged/wrong-owner
+/// document is now never fetched in the first place, so `has_more`/
+/// `oldest_created_at` no longer need special handling to defend against a
+/// decoy flood skewing them.
 ///
 /// `before` is an exclusive upper bound on `$createdAt` — `None` means "now"
 /// (the first/newest page). The `$createdAt < before` range clause is
 /// required, not decorative: Drive only reads an `order_by`'s direction from
 /// the clause it picks to drive iteration, and that clause defaults to
-/// whichever `WhereClause` is an equality match (here, `refId`) when nothing
-/// else qualifies — equality clauses always iterate ascending, silently
-/// ignoring `order_by`. Adding a *range* clause on the same field the
-/// `order_by` targets makes Drive pick that as the deciding clause instead,
-/// whose direction genuinely comes from `order_by` (see `rs-drive`'s
-/// `get_non_primary_key_path_query`). Without this, a naive limited fetch
-/// would silently return the *oldest* [`MESSAGE_PAGE_SIZE`] messages, not the
-/// newest — exactly backwards for a conversation view.
+/// whichever `WhereClause` is an equality match (here, `refId`/`$ownerId`)
+/// when nothing else qualifies — equality clauses always iterate ascending,
+/// silently ignoring `order_by`. Adding a *range* clause on the same field
+/// the `order_by` targets makes Drive pick that as the deciding clause
+/// instead, whose direction genuinely comes from `order_by` (see
+/// `rs-drive`'s `get_non_primary_key_path_query`). Without this, a naive
+/// limited fetch would silently return the *oldest* [`MESSAGE_PAGE_SIZE`]
+/// messages, not the newest — exactly backwards for a conversation view.
 async fn fetch_messages_by_ref_id(
     orchardpay_contract: &DataContract,
     sdk: &Sdk,
@@ -1123,6 +1123,11 @@ async fn fetch_messages_by_ref_id(
             value: Value::Bytes(ref_id.to_vec()),
         })
         .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(expected_owner.to_buffer()),
+        })
+        .with_where(WhereClause {
             field: CREATED_AT_FIELD.to_string(),
             operator: WhereOperator::LessThan,
             value: Value::U64(upper_bound),
@@ -1141,16 +1146,12 @@ async fn fetch_messages_by_ref_id(
     .await?
     .map_err(TaskError::from)?;
 
-    let raw: Vec<Document> = results.into_values().flatten().collect();
-    let has_more = raw.len() as u32 >= MESSAGE_PAGE_SIZE;
-    let oldest_created_at = raw
+    let documents: Vec<Document> = results.into_values().flatten().collect();
+    let has_more = documents.len() as u32 >= MESSAGE_PAGE_SIZE;
+    let oldest_created_at = documents
         .iter()
         .filter_map(|document| document.created_at())
         .min();
-    let documents = raw
-        .into_iter()
-        .filter(|document| document.owner_id() == expected_owner)
-        .collect();
 
     Ok(MessagePage {
         documents,
@@ -1160,26 +1161,27 @@ async fn fetch_messages_by_ref_id(
 }
 
 /// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id` and
-/// actually owned by `expected_owner`, via the same `byReferenceIdAndCreated`
-/// index as [`fetch_messages_by_ref_id`], sorted descending — for "when did
-/// this side of the conversation last say anything" without fetching the
-/// whole thread.
+/// actually owned by `expected_owner`, via the same
+/// `byReferenceIdbyOwnerIdAndCreated` index as [`fetch_messages_by_ref_id`],
+/// sorted descending — for "when did this side of the conversation last say
+/// anything" without fetching the whole thread.
 ///
-/// Fetches more than one candidate ([`RECENT_ACTIVITY_FETCH_LIMIT`]) and
-/// filters by `expected_owner` client-side, for the same reason
-/// [`fetch_messages_by_ref_id`] does: `refId` alone doesn't prove who wrote
-/// a document. A `limit = 1` fetch filtered afterward would let a single
-/// decoy document (wrong owner, deliberately recent `$createdAt`) hide the
-/// real latest activity behind it indefinitely — fetching a small batch and
-/// taking the first owner-matching hit is cheap insurance against that.
+/// `refId` alone doesn't prove who wrote a document (see
+/// [`fetch_messages_by_ref_id`]'s doc comment for the full threat model), so
+/// this filters on `$ownerId` too — now via the query's own `$ownerId Equal`
+/// clause rather than a client-side post-fetch check, so the single result
+/// this function reads is already guaranteed to be owned by `expected_owner`.
+/// [`RECENT_ACTIVITY_FETCH_LIMIT`] stays slightly above 1 for headroom, but
+/// is no longer load-bearing for correctness the way it was when a decoy
+/// could otherwise occupy the one fetched slot.
 ///
 /// The `$createdAt < now` range clause is required, not decorative: Drive
 /// only reads an `order_by`'s direction from the clause it picks to drive
 /// iteration, and that clause defaults to whichever `WhereClause` is an
-/// equality match (here, `refId`) when nothing else qualifies — equality
-/// clauses always iterate ascending, silently ignoring `order_by`. Adding
-/// a *range* clause on the same field the `order_by` targets makes Drive
-/// pick that as the deciding clause instead, whose direction genuinely
+/// equality match (here, `refId`/`$ownerId`) when nothing else qualifies —
+/// equality clauses always iterate ascending, silently ignoring `order_by`.
+/// Adding a *range* clause on the same field the `order_by` targets makes
+/// Drive pick that as the deciding clause instead, whose direction genuinely
 /// comes from `order_by` (see `rs-drive`'s `get_non_primary_key_path_query`).
 /// Without this, a naive limited fetch would silently return the *oldest*
 /// messages, not the newest.
@@ -1189,10 +1191,9 @@ async fn fetch_latest_message_created_at(
     ref_id: [u8; 32],
     expected_owner: Identifier,
 ) -> Result<Option<u64>, TaskError> {
-    /// Candidates fetched per side before filtering by owner — comfortably
-    /// more than the handful of decoys a griefing counterparty would
-    /// realistically bother paying to create, without fetching the whole
-    /// thread just to find the one real latest message.
+    /// Small headroom above 1 — no longer load-bearing for correctness now
+    /// that the query itself owner-filters, but kept as-is to keep this
+    /// change focused; a shrink to 1-2 is a possible future micro-cleanup.
     const RECENT_ACTIVITY_FETCH_LIMIT: u32 = 10;
 
     let now_millis = std::time::SystemTime::now()
@@ -1212,6 +1213,11 @@ async fn fetch_latest_message_created_at(
             field: REF_ID_FIELD.to_string(),
             operator: WhereOperator::Equal,
             value: Value::Bytes(ref_id.to_vec()),
+        })
+        .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(expected_owner.to_buffer()),
         })
         .with_where(WhereClause {
             field: CREATED_AT_FIELD.to_string(),
@@ -1235,7 +1241,7 @@ async fn fetch_latest_message_created_at(
     Ok(results
         .into_values()
         .flatten()
-        .find(|document| document.owner_id() == expected_owner)
+        .next()
         .and_then(|document| document.created_at()))
 }
 

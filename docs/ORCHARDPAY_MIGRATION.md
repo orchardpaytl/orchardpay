@@ -21,13 +21,23 @@ only (see `combined_default_key_specs` in `src/backend_task/identity/mod.rs`)
 — OrchardPay's contact/messaging features are simply unavailable on that
 network, not broken.
 
-**Testnet: done.** The canonical OrchardPay contract is registered on
-Testnet as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20),
-recorded as `TESTNET_orchardpay_contract_id` in `.env.example` and this
-machine's live `.env`. Mainnet and Devnet still need their own registration
-before OrchardPay works there — each network's canonical ID is separate,
-whoever registers first on a given network sets it for everyone building
-against that network.
+**Testnet: re-registered (2026-07-27).** The contract schema changed
+(`shieldedAddress` widened to `40..5120` bytes; `encryptedMessage`'s two
+indices merged into one `byReferenceIdbyOwnerIdAndCreated` compound index —
+see `docs/orchardpay/PROTOCOL_DESIGN.md`). Because Platform disallows
+removing/altering indices via a contract update, this shipped as a
+brand-new contract registration rather than an update to the previously
+registered one. The updated schema is now registered on Testnet as
+`Bu4MNp1gPogr2zSw27Y3e7CE3cKr3kDacUi9tFAYmMFm` (2026-07-27), recorded as
+`TESTNET_orchardpay_contract_id` in `.env.example` (update the live `.env`
+locally to match). The contract previously registered as
+`Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20) is retired,
+along with any documents published under it — no migration was performed
+(clean slate; see the PROTOCOL_DESIGN.md milestone tracker's 2026-07-27
+entry). Mainnet and Devnet still need their own registration before
+OrchardPay works there, using this updated schema (not the retired one) —
+each network's canonical ID is separate, whoever registers first on a given
+network sets it for everyone building against that network.
 
 DashPay (`src/ui/dashpay/`, `src/backend_task/dashpay/`, `src/database/dashpay.rs`,
 `src/database/contacts.rs`) is **legacy** — superseded in intent by OrchardPay's

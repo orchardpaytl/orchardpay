@@ -98,9 +98,14 @@ pub async fn search_contacts(
     let backend = app_context.wallet_backend()?;
     let mut results = Vec::with_capacity(identity_usernames.len());
     for (identity_id, username) in identity_usernames {
-        let contactable = lookup_shielded_address(app_context, sdk, identity_id)
-            .await?
-            .is_some();
+        // A malformed address (Err) is treated the same as "not
+        // contactable" here, not propagated — this is an advisory search
+        // flag, not a fee-spending decision, and one stranger's corrupted
+        // document shouldn't abort the whole search for every other result.
+        let contactable = matches!(
+            lookup_shielded_address(app_context, sdk, identity_id).await,
+            Ok(Some(_))
+        );
         let existing_relationship =
             backend.orchardpay_get_contact_state(&owner_id, &identity_id)?;
         results.push(OrchardPayContactSearchResult {

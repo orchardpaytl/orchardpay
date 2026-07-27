@@ -62,7 +62,7 @@ Unique index on `$ownerId` means one active shielded address per identity.
         "type": "array",
         "byteArray": true,
         "minItems": 40,
-        "maxItems": 250,
+        "maxItems": 5120,
         "position": 0
       }
     },
@@ -77,10 +77,27 @@ Unique index on `$ownerId` means one active shielded address per identity.
 
 The current Orchard raw payment address is exactly 43 bytes (confirmed
 against `SHIELDED_ADDRESS_RAW_LEN` in `src/model/address.rs`), but the field
-allows `40..250` bytes deliberately — headroom for a future/different address
-encoding without a contract migration. Nothing generates anything other than
+allows `40..5120` bytes deliberately — headroom for a future/different address
+encoding without a contract migration (`5120` is Platform's real
+per-field-value system limit, `max_field_value_size`, the same ceiling
+already used for `contactAnchor`'s `data`/`anchorData`/`extra` — see
+"Resolved design decisions" below). Nothing generates anything other than
 today's 43-byte address yet; the range is reserved capacity, not an active
-feature. No `protocolVersion` field — see "Dropped: protocolVersion" below.
+feature.
+
+Widening this field beyond a tight, specific length means "the right byte
+length" no longer implies "a well-formed address" the way it incidentally
+did at `40..250`. Every place that trusts a fetched `shieldedAddress` before
+spending a fee against it (`lookup_shielded_address`,
+`src/backend_task/orchardpay/shielded_address.rs`) validates the bytes with
+`model::address::validate_shielded_address_bytes` — a real structural/
+cryptographic parse (via `dash_sdk::dpp::address_funds::OrchardAddress::
+from_raw_bytes`, which checks the address's `pk_d` half is an actual valid
+Pallas curve point), not a bare length check. Validation is deliberately
+strict to *only* today's exact 43-byte format — any other length in the
+wider `40..5120` range is rejected outright, since no other format is
+defined yet; the range is reserved headroom, not a relaxed acceptance rule.
+No `protocolVersion` field — see "Dropped: protocolVersion" below.
 
 ## 2. `contactAnchor` — encrypted, publishes no plaintext link to the counterparty
 
@@ -634,18 +651,39 @@ kinds are just new variants inside `msgData`, no contract migration needed.
     "required": ["refId", "msgData", "$updatedAt", "$createdAt"],
     "additionalProperties": false,
     "indices": [
-      { "name": "byReferenceIdAndCreated", "properties": [{ "refId": "asc" }, { "$createdAt": "asc" }] },
-      { "name": "byOwnerIdAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+      { "name": "byReferenceIdbyOwnerIdAndCreated", "properties": [{ "refId": "asc" }, { "$ownerId": "asc" }, { "$createdAt": "asc" }] }
     ]
   }
 }
 ```
 
-`byOwnerIdAndCreated` supports a "list messages I've sent" recovery view,
-mirroring `contactAnchor`'s own `byOwner` recovery index. Neither index
-carries a client-facing sort guarantee beyond what's declared — a "list my
-anchors/messages" recovery UI is expected to be small enough to sort
-client-side rather than needing the index itself to carry the ordering.
+**Revised (2026-07-27):** the original two-index shape (`byReferenceIdAndCreated`:
+`[refId, $createdAt]` plus `byOwnerIdAndCreated`: `[$ownerId, $createdAt]`)
+is replaced with a single compound index covering `refId`, `$ownerId`, and
+`$createdAt` together. This reverses the "no compound index" decision
+recorded in `docs/ai-design/2026-07-26-comprehensive-review-response/README.md`
+(H-01) — see that doc's addendum for the full reasoning. The practical
+effect: `messages.rs`'s thread/recent-activity queries can now filter by
+`$ownerId` directly in the query (an equality clause, matching the index's
+declared field order), rather than fetching by `refId` alone and filtering
+by owner client-side afterward. This closes H-01's residual (a counterparty
+flooding a conversation's result page with wrong-owner decoys to force extra
+"load more" clicks) at the query level instead of merely tolerating it.
+`byOwnerIdAndCreated`'s standalone "list messages I've sent" use case is no
+longer separately indexed — nothing in this codebase queries it that way
+(confirmed by grep before the original drop-only plan), and the merged
+index still lets it be reconstructed by discarding the `$ownerId` component
+client-side if that view is ever built.
+
+Because a registered Platform contract's indices can only be *added*, never
+removed or altered, deploying this shape change required a brand-new
+Testnet contract registration rather than an update to the previously
+registered one — see `docs/ORCHARDPAY_MIGRATION.md` for the current
+contract ID. No migration of documents under the old contract was
+performed, consistent with this project's established pattern for
+pre-launch breaking protocol changes (see the `anchorData` redesign and the
+ENCRYPTION/DECRYPTION HD-derivation sections above, both "no migration
+needed").
 
 ### Editing and deleting messages
 
@@ -941,8 +979,10 @@ structurally identical regardless of purpose.
    separate `contactAnchor` documents (one per party), not one document
    holding both from the start.
 3. **Exact byte length/encoding of the Orchard shielded address**: 43 bytes
-   today, but the schema reserves `40..250` as headroom for a future
-   encoding change.
+   today, but the schema reserves `40..5120` as headroom for a future
+   encoding change. Validation stays strict to exactly today's 43-byte,
+   structurally-valid format regardless of the wider schema range — see
+   `model::address::validate_shielded_address_bytes`.
 4. **Real Dash Platform per-document byte-size ceiling**: `max_field_value_size
    = 5120` bytes (5 KiB), Platform's actual per-field-value system limit.
 5. **`contactAnchor.data` content**: only the ReferenceID is mandatory;
@@ -1080,8 +1120,10 @@ struct PendingConfirmation {
   request these keys automatically (`combined_default_key_specs` in
   `src/backend_task/identity/mod.rs`, used by both the canonical registration
   builder and the identity-creation UI). **Contract registered on Testnet**
-  as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20) — see
-  `docs/ORCHARDPAY_MIGRATION.md` for the per-network registration status.
+  as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20; retired and
+  re-registered 2026-07-27 under a new ID after the `shieldedAddress`/
+  `encryptedMessage` schema changes below — see `docs/ORCHARDPAY_MIGRATION.md`
+  for the current ID and the per-network registration status).
 - **Done (Milestone C, 2026-07-18)**: `shieldedAddress` publish/lookup
   (`src/backend_task/orchardpay/shielded_address.rs`), `ShieldedAddressSetupScreen`,
   wired into the onboarding chain and a 4-step progress stepper.
@@ -1178,8 +1220,9 @@ struct PendingConfirmation {
     fetch) — a conversation with more than 100 messages on either side could
     silently drop history. Now takes a `before: Option<u64>` cursor with an
     explicit `$createdAt <` range clause + descending `order_by` + a 100-doc
-    page limit (`byReferenceIdAndCreated` has a `$createdAt` component, so a
-    timestamp cursor works). `messages::load_more_history` fetches further
+    page limit (the index has a `$createdAt` component, so a
+    timestamp cursor works — see "Revised (2026-07-27)" under `encryptedMessage`
+    above for the index's current shape). `messages::load_more_history` fetches further
     pages on demand via a "See more conversation history" button — initial
     load stays at 2 queries regardless of conversation length. See ORP-016.
   - `contact_anchor::fetch_own_anchors` (the "Recover from Network" fetch) —
@@ -1209,5 +1252,21 @@ struct PendingConfirmation {
   `handle_incoming_anchor_signal`'s expensive fetch-by-ID + per-identity
   decrypt attempt — a free check, since the note's value is already known
   locally. See ORP-007/ORP-008/ORP-015.
+- **Done (2026-07-27)**: `shieldedAddress` widened to `40..5120` bytes, with
+  real structural/cryptographic validation
+  (`model::address::validate_shielded_address_bytes`) now gating every
+  place a fetched counterparty address is trusted before spending a fee
+  against it (`lookup_shielded_address` is the single choke point;
+  `contact_anchor::initiate_contact`/`accept_contact`, `direct_send::send_direct`,
+  and `messages::send_payment` all inherit the fix transitively).
+  `encryptedMessage`'s two indices merged into one compound
+  `byReferenceIdbyOwnerIdAndCreated` index, letting `messages.rs`'s queries
+  filter by `$ownerId` server-side instead of client-side after fetch — see
+  "Revised (2026-07-27)" under `encryptedMessage` above. Because Platform
+  disallows removing/altering indices via a contract update, this shipped as
+  a fresh Testnet contract registration — see `docs/ORCHARDPAY_MIGRATION.md`
+  for the current contract ID. No migration of prior Testnet documents or
+  local wallet-cached state was performed (clean slate, consistent with this
+  project's established pre-launch pattern).
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's).

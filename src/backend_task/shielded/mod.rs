@@ -163,10 +163,10 @@ impl AppContext {
                 recipient_address_bytes,
                 memo,
             } => {
-                let recipient_raw: [u8; 43] = recipient_address_bytes
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
+                let recipient_raw = crate::model::address::validate_shielded_address_bytes(
+                    &recipient_address_bytes,
+                )
+                .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
                 backend
                     .shielded_transfer(&seed_hash, 0, &recipient_raw, amount, memo)

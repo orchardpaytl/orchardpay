@@ -607,4 +607,36 @@ mod tests {
             Some(StorageKeyRequirements::MultipleReferenceToLatest)
         );
     }
+
+    /// Guards the schema invariant `messages.rs`'s owner-scoped queries
+    /// depend on: exactly one index on `encryptedMessage`, covering
+    /// `refId`, `$ownerId`, `$createdAt` in that order (the order the
+    /// `WhereClause`s in `fetch_messages_by_ref_id`/
+    /// `fetch_latest_message_created_at` must match). Nothing else in this
+    /// codebase previously checked `encryptedMessage`'s index shape.
+    #[test]
+    fn encrypted_message_has_single_owner_scoped_index() {
+        let json_val: serde_json::Value =
+            serde_json::from_str(CONTRACT_SCHEMA_JSON).expect("contract_schema.json is valid JSON");
+        let platform_version = PlatformVersion::latest();
+        let contract = DataContract::from_json(json_val, true, platform_version)
+            .expect("contract_schema.json must parse as a valid DataContract");
+
+        let encrypted_message = contract
+            .document_type_for_name("encryptedMessage")
+            .expect("encryptedMessage document type must exist");
+        let indexes = encrypted_message.indexes();
+        assert_eq!(
+            indexes.len(),
+            1,
+            "encryptedMessage must have exactly one index after the H-01 reversal, got {indexes:?}"
+        );
+        let index = indexes.values().next().expect("exactly one index");
+        let field_names: Vec<&str> = index
+            .properties
+            .iter()
+            .map(|property| property.name.as_str())
+            .collect();
+        assert_eq!(field_names, vec!["refId", "$ownerId", "$createdAt"]);
+    }
 }

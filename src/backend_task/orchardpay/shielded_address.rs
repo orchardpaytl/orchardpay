@@ -139,8 +139,12 @@ pub async fn publish_own_shielded_address(
 }
 
 /// Looks up an identity's published `shieldedAddress`, if any. Returns the
-/// raw 43-byte address on success. `None` means the identity hasn't
+/// raw 43-byte address on success. `Ok(None)` means the identity hasn't
 /// published one — not an error, just "not contactable via OrchardPay yet".
+/// `Err(OrchardPayError::CounterpartyShieldedAddressInvalid)` means a
+/// document exists but its payload isn't a valid Orchard address — distinct
+/// from "not contactable" so a caller doesn't spend a fee trusting it (see
+/// `model::address::validate_shielded_address_bytes`).
 pub async fn lookup_shielded_address(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -148,15 +152,18 @@ pub async fn lookup_shielded_address(
 ) -> Result<Option<[u8; 43]>, TaskError> {
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
 
-    let document =
-        fetch_shielded_address_document(&orchardpay_contract, sdk, target_identity_id).await?;
+    let Some(document) =
+        fetch_shielded_address_document(&orchardpay_contract, sdk, target_identity_id).await?
+    else {
+        return Ok(None);
+    };
 
-    Ok(document.and_then(
-        |doc| match doc.properties().get(SHIELDED_ADDRESS_PROPERTY) {
-            Some(Value::Bytes(bytes)) => bytes.as_slice().try_into().ok(),
-            _ => None,
-        },
-    ))
+    match document.properties().get(SHIELDED_ADDRESS_PROPERTY) {
+        Some(Value::Bytes(bytes)) => crate::model::address::validate_shielded_address_bytes(bytes)
+            .map(Some)
+            .map_err(|_| OrchardPayError::CounterpartyShieldedAddressInvalid.into()),
+        _ => Ok(None),
+    }
 }
 
 async fn fetch_shielded_address_document(

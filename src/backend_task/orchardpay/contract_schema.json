@@ -16,7 +16,7 @@
           "type": "array",
           "byteArray": true,
           "minItems": 40,
-          "maxItems": 250,
+          "maxItems": 5120,
           "position": 0
         }
       },
@@ -104,8 +104,8 @@
       "additionalProperties": false,
 
       "indices": [
-        { "name": "byReferenceIdAndCreated", "properties": [{ "refId": "asc" }, { "$createdAt": "asc" }] },
-        { "name": "byOwnerIdAndCreated", "properties": [{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+        { "name": "byReferenceIdbyOwnerIdAndCreated", "properties": [{ "refId": "asc" },{ "$ownerId": "asc" }, { "$createdAt": "asc" }] }
+        
       ]
     }
   }

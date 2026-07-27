@@ -76,6 +76,32 @@ make a genuinely-full page look exhausted. The residual is bounded,
 self-funded by the attacker, and accepted as a low-severity inconvenience
 rather than a security defect.
 
+### Addendum (2026-07-27): decision reversed
+
+This project has reversed course and added the compound index after all —
+`byReferenceIdbyOwnerIdAndCreated`: `refId asc, $ownerId asc, $createdAt asc`,
+replacing both `byReferenceIdAndCreated` and `byOwnerIdAndCreated`.
+`messages::fetch_messages_by_ref_id`/`fetch_latest_message_created_at` now
+filter by `$ownerId` in the query itself (an equality clause matching the
+index's declared field order), eliminating the client-side post-fetch
+filter and its residual entirely — a wrong-owner decoy is never fetched in
+the first place, so it can no longer occupy a result-page slot at all.
+
+Because a registered Platform contract's indices can only be *added*, never
+removed or altered (confirmed directly against `rs-dpp`'s
+`IndexLevel::validate_update`), this was deployed as a brand-new Testnet
+contract registration rather than an update to the existing one — see
+`docs/ORCHARDPAY_MIGRATION.md` for the new contract ID and
+`docs/orchardpay/PROTOCOL_DESIGN.md`'s `encryptedMessage` section for the
+full before/after.
+
+The cost-tradeoff reasoning above remains accurate and is not being
+retracted — the per-document index-write cost this decision originally
+declined to pay is real and is now being paid on every future
+`encryptedMessage` write, forever. The index was added anyway based on a
+reassessment of priorities (closing the residual outright was judged worth
+that permanent cost), not a correction of the prior analysis.
+
 The review's other three H-01 asks — a versioned envelope with KDF-derived
 keys and associated authenticated data, and adversarial tests for
 wrong-owner ciphertext/replay/page-flooding — are still open. The envelope
@@ -213,7 +239,7 @@ schema/MCP paths the review specifically recommended.
 
 | Finding | Status |
 |---|---|
-| H-01 | Resolved (owner check); index-vs-drop decided (no new index); envelope redesign → M-05; adversarial tests still missing |
+| H-01 | Resolved (owner check, now query-side via a compound index — see 2026-07-27 addendum, reversing the earlier no-new-index decision); envelope redesign → M-05; adversarial tests still missing |
 | H-02 | Resolved |
 | M-01 | Resolved; boundary/collision tests still missing |
 | M-02 | Resolved — see linked design doc |

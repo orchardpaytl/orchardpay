@@ -39,6 +39,17 @@ pub enum OrchardPayError {
     )]
     CounterpartyKeyMissing,
 
+    /// A counterparty's published `shieldedAddress` document exists but its
+    /// payload is not a valid 43-byte Orchard address. Distinct from
+    /// [`Self::CounterpartyKeyMissing`], which means no document at all —
+    /// this one exists but is unusable, so no fee should be spent trusting
+    /// it (a `contactAnchor` publish, an anchor-signal transfer, or a real
+    /// payment).
+    #[error(
+        "This person's published payment address appears to be invalid or corrupted. They may need to republish it."
+    )]
+    CounterpartyShieldedAddressInvalid,
+
     /// A key was found for the counterparty, but its `contract_bounds()`
     /// don't match OrchardPay's contract + `contactAnchor` document type —
     /// see `keys::fetch_bounds_verified_counterparty_key`'s hardening note.
