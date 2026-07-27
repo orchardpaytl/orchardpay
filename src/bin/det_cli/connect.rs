@@ -1,4 +1,4 @@
-use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
+use orchardpay::context::SDK_THREAD_STACK_SIZE;
 use rmcp::ServiceExt;
 
 use super::McpClient;

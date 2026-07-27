@@ -7,7 +7,7 @@
 /// runtime teardown to prevent coordinator OS threads from panicking against a
 /// shutting-down timer wheel.  See `DashMcpService::shutdown_wallet_backend`
 /// for the race analysis.
-use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
+use orchardpay::context::SDK_THREAD_STACK_SIZE;
 
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
     use orchardpay::logging::initialize_logger;

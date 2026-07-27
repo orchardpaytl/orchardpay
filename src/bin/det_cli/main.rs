@@ -4,7 +4,7 @@
 //! Mode is selected automatically: HTTP when MCP_API_KEY is set, in-process otherwise.
 
 use clap::{Parser, Subcommand};
-use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
+use orchardpay::context::SDK_THREAD_STACK_SIZE;
 use rmcp::RoleClient;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
