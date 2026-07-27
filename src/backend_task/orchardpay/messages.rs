@@ -1105,8 +1105,11 @@ struct MessagePage {
     /// Whether this batch was a full page — i.e. older documents on this
     /// side may still exist.
     has_more: bool,
-    /// The oldest `$createdAt` seen in this batch — the next page's
-    /// `before` cursor. `None` only when the batch was empty.
+    /// The next page's `before` cursor — the oldest `$createdAt` among
+    /// `documents` *after* [`trim_ambiguous_tail`] has held back any
+    /// trailing documents whose timestamp can't yet be trusted as complete,
+    /// so this is not always literally the oldest timestamp originally
+    /// fetched. `None` only when `documents` ended up empty.
     oldest_created_at: Option<u64>,
 }
 
@@ -1128,9 +1131,11 @@ struct MessagePage {
 /// compound index's declared field order `refId, $ownerId, $createdAt`) —
 /// previously this had to be a client-side post-fetch filter, since no
 /// index covered `(refId, $ownerId)` together. A forged/wrong-owner
-/// document is now never fetched in the first place, so `has_more`/
-/// `oldest_created_at` no longer need special handling to defend against a
-/// decoy flood skewing them.
+/// document is now never fetched in the first place, so `has_more` no
+/// longer needs special handling to defend against a decoy flood skewing
+/// it. `oldest_created_at` still does, for an unrelated reason: see
+/// [`trim_ambiguous_tail`] for why a same-`$createdAt` collision between
+/// two of the *same* owner's own documents needs its own handling.
 ///
 /// `before` is an exclusive upper bound on `$createdAt` — `None` means "now"
 /// (the first/newest page). The `$createdAt < before` range clause is
@@ -1195,18 +1200,86 @@ async fn fetch_messages_by_ref_id(
     .await?
     .map_err(TaskError::from)?;
 
-    let documents: Vec<Document> = results.into_values().flatten().collect();
+    let mut documents: Vec<Document> = results.into_values().flatten().collect();
     let has_more = documents.len() as u32 >= MESSAGE_PAGE_SIZE;
-    let oldest_created_at = documents
-        .iter()
-        .filter_map(|document| document.created_at())
-        .min();
+    let oldest_created_at = trim_ambiguous_tail(&mut documents, has_more);
 
     Ok(MessagePage {
         documents,
         has_more,
         oldest_created_at,
     })
+}
+
+/// A full page's oldest `$createdAt` may be shared by more documents than
+/// made it into this batch — Platform stamps `$createdAt` from block time
+/// (`rs-drive`'s document-creation transformer takes it straight from
+/// `BlockInfo`, not a per-document precise clock), so two of the same
+/// identity's own documents landing in the same block are stamped
+/// identically, and Drive gives no ordering guarantee among same-timestamp
+/// rows at a `LIMIT` cutoff. Any tied run *earlier* in the
+/// (descending-ordered) batch is guaranteed complete, since the limit would
+/// have been hit mid-run if it weren't the last one — but the trailing
+/// run at the batch's minimum timestamp can never be trusted, **even when
+/// it's currently visible as a single document**: one page's results can't
+/// distinguish "this timestamp is genuinely unique" from "this timestamp
+/// has siblings that the limit's tie-break ordering happened to place just
+/// past the cutoff." Both look identical from here, so both must be
+/// treated the same way.
+///
+/// Trims that trailing run out of `documents` — holding it back rather than
+/// showing a possibly-incomplete slice of it — and returns the cursor for
+/// the next page: the timestamp of the last *kept* document, i.e. the
+/// boundary immediately above the trimmed group. The next page's
+/// `$createdAt < cursor` then pulls in the entire trimmed group fresh
+/// (everything that shares that timestamp, not just what this page
+/// happened to see), so nothing already shown is re-displayed and nothing
+/// already-existing is lost. In the common case (the boundary value really
+/// is unique) this costs nothing visible: the one deferred document simply
+/// arrives as part of the next fetch instead of this one, and both
+/// `load_thread`/`load_more_history` re-sort everything by `$createdAt`
+/// after merging pages anyway, so it renders in exactly the same place it
+/// always would have.
+///
+/// No trimming happens when `has_more` is `false`: a non-full page means
+/// nothing was cut off by the limit, so there's no ambiguity to resolve.
+///
+/// Pathological fallback: if *every* document in a full page shares the
+/// same timestamp (would require [`MESSAGE_PAGE_SIZE`]-or-more documents
+/// from one identity landing in one block), there's no safe boundary to
+/// trim to without emptying the page while still claiming more exists.
+/// Falls back to the pre-fix behavior (accept the rare loss risk, log it)
+/// rather than risk an infinite loop (an unchanged cursor re-fetching the
+/// same page forever) or falsely reporting the thread fully loaded (an
+/// empty cursor) — mirrors `recover_own_anchors`'s existing warn-and-accept
+/// precedent for its own analogous page-cap edge case.
+fn trim_ambiguous_tail(documents: &mut Vec<Document>, has_more: bool) -> Option<u64> {
+    if !has_more || documents.is_empty() {
+        return documents.iter().filter_map(|d| d.created_at()).min();
+    }
+
+    let boundary = documents.last().and_then(|d| d.created_at())?;
+
+    match documents
+        .iter()
+        .rposition(|d| d.created_at() != Some(boundary))
+    {
+        Some(last_distinct_index) => {
+            documents.truncate(last_distinct_index + 1);
+            documents.last().and_then(|d| d.created_at())
+        }
+        None => {
+            // Entire page shares one timestamp.
+            tracing::warn!(
+                boundary,
+                page_size = MESSAGE_PAGE_SIZE,
+                "OrchardPay: an entire encryptedMessage page shared one $createdAt \
+                 (block-time collision) — pagination can't safely trim it; \
+                 accepting the rare loss risk for this page rather than stalling"
+            );
+            Some(boundary)
+        }
+    }
 }
 
 /// Latest `encryptedMessage` document's `$createdAt` tagged `ref_id` and
@@ -1808,4 +1881,157 @@ pub fn record_verified_incoming_payment(
         &referenced_document_id,
         received_amount_credits,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal `encryptedMessage`-shaped document carrying only what
+    /// [`trim_ambiguous_tail`] reads (`created_at`) — every other field is a
+    /// throwaway default, mirroring the fixture style used elsewhere in
+    /// this crate's tests for documents that only need one property real.
+    fn doc_with_created_at(id_byte: u8, created_at: u64) -> Document {
+        DppDocument::V0(DocumentV0 {
+            id: Identifier::from([id_byte; 32]),
+            owner_id: Identifier::from([0xAAu8; 32]),
+            creator_id: None,
+            properties: BTreeMap::new(),
+            revision: Some(1),
+            created_at: Some(created_at),
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    fn created_ats(documents: &[Document]) -> Vec<u64> {
+        documents.iter().filter_map(|d| d.created_at()).collect()
+    }
+
+    /// Every document has a distinct timestamp — no *visible* tie at all.
+    /// The trailing (minimum-timestamp) document must still be deferred:
+    /// its apparent uniqueness in this page proves nothing about whether an
+    /// identically-timestamped sibling exists just past the limit cutoff, a
+    /// single page's data can't tell those two situations apart.
+    #[test]
+    fn trim_ambiguous_tail_defers_the_last_item_even_with_no_visible_tie() {
+        let mut documents: Vec<Document> = (0..5)
+            .map(|i| doc_with_created_at(i, 1_000 - u64::from(i)))
+            .collect();
+
+        let cursor = trim_ambiguous_tail(&mut documents, true);
+
+        assert_eq!(
+            created_ats(&documents),
+            vec![1_000, 999, 998, 997],
+            "the trailing document (996) must be deferred, not just documents with a visible tie"
+        );
+        assert_eq!(
+            cursor,
+            Some(997),
+            "cursor must be the last kept document's timestamp"
+        );
+    }
+
+    /// A tie at the very end of a full page — the exact bug scenario: the
+    /// last two documents share the batch's minimum timestamp. Both must be
+    /// trimmed (held back for the next page), and the cursor must point at
+    /// the distinct timestamp just above them, not at the tied value
+    /// itself — using the tied value itself would exclude the trimmed
+    /// documents from ever being re-fetched.
+    #[test]
+    fn trim_ambiguous_tail_trims_a_boundary_tie_and_holds_it_back() {
+        let mut documents = vec![
+            doc_with_created_at(1, 1_000),
+            doc_with_created_at(2, 999),
+            doc_with_created_at(3, 998),
+            doc_with_created_at(4, 997), // tied with #5 below
+            doc_with_created_at(5, 997), // tied with #4 above
+        ];
+
+        let cursor = trim_ambiguous_tail(&mut documents, true);
+
+        assert_eq!(
+            created_ats(&documents),
+            vec![1_000, 999, 998],
+            "both documents sharing the trailing timestamp must be trimmed"
+        );
+        assert_eq!(
+            cursor,
+            Some(998),
+            "cursor must be the last kept document's timestamp, not the trimmed tie's"
+        );
+    }
+
+    /// A tie earlier in the page, away from the boundary, is guaranteed
+    /// complete (the limit can only cut a run short if it's the *last* one
+    /// in the batch) and must be left untouched — but the trailing
+    /// document, even though it's a singleton with no visible tie of its
+    /// own, still gets deferred (same reasoning as the no-visible-tie test
+    /// above).
+    #[test]
+    fn trim_ambiguous_tail_leaves_a_non_boundary_tie_alone() {
+        let mut documents = vec![
+            doc_with_created_at(1, 1_000),
+            doc_with_created_at(2, 999), // tied with #3 — not the trailing run, must survive
+            doc_with_created_at(3, 999),
+            doc_with_created_at(4, 998), // the lone trailing document — must be deferred
+        ];
+
+        let cursor = trim_ambiguous_tail(&mut documents, true);
+
+        assert_eq!(
+            created_ats(&documents),
+            vec![1_000, 999, 999],
+            "the non-boundary tie (999, 999) must survive untouched; only the trailing \
+             singleton (998) is deferred"
+        );
+        assert_eq!(cursor, Some(999));
+    }
+
+    /// Pathological fallback: every document in a full page shares the same
+    /// timestamp, so there's no safe boundary to trim to. Falls back to the
+    /// pre-fix behavior (accept the loss risk, don't stall pagination)
+    /// rather than emptying the page or leaving the cursor unable to
+    /// progress.
+    #[test]
+    fn trim_ambiguous_tail_falls_back_when_the_entire_page_is_tied() {
+        let mut documents: Vec<Document> = (0..5).map(|i| doc_with_created_at(i, 1_000)).collect();
+
+        let cursor = trim_ambiguous_tail(&mut documents, true);
+
+        assert_eq!(
+            created_ats(&documents),
+            vec![1_000, 1_000, 1_000, 1_000, 1_000],
+            "nothing can be safely trimmed, so the full page is kept as-is"
+        );
+        assert_eq!(cursor, Some(1_000));
+    }
+
+    /// A non-full page (`has_more = false`) means nothing was cut off by
+    /// the query limit, so there's no ambiguity to resolve even if the
+    /// trailing entries happen to share a timestamp — no trimming.
+    #[test]
+    fn trim_ambiguous_tail_no_op_when_page_is_not_full() {
+        let mut documents = vec![
+            doc_with_created_at(1, 1_000),
+            doc_with_created_at(2, 999),
+            doc_with_created_at(3, 999),
+        ];
+
+        let cursor = trim_ambiguous_tail(&mut documents, false);
+
+        assert_eq!(
+            created_ats(&documents),
+            vec![1_000, 999, 999],
+            "an already-complete last page must never be trimmed"
+        );
+        assert_eq!(cursor, Some(999));
+    }
 }
