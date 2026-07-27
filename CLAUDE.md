@@ -8,6 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `v1.0-dev` is the current active development branch. Use it as the base for general diffs, comparisons, and new feature branches.
 - PR and commits should follow conventional commit naming rules.
 
+### Syncing from upstream (`dashpay-upstream`)
+
+OrchardPay is a fork of `dashpay/dash-evo-tool` (remote `dashpay-upstream`). When bringing in a commit from `dashpay-upstream/v1.0-dev`, always cherry-pick with `git cherry-pick -x`, which stamps the commit message with a `(cherry picked from commit <hash>)` trailer. This is the only reliable record of what's already been brought in — patch-id/diff comparison against upstream is **not** trustworthy here: OrchardPay's crate rename (`dash_evo_tool::` → `orchardpay::`) changes the diff bytes of nearly every non-trivial commit, and cherry-picked commits are often further refined on landing, so even normalizing the rename before hashing fails to detect already-applied commits (confirmed by testing, 2026-07-28). Before assuming a `git log v1.0-dev..dashpay-upstream/v1.0-dev` commit is new, grep for a distinctive file or symbol it introduces — it may already be present under a different hash. Cherry-picks from `dashpay-upstream` routinely need a follow-up pass to rename any newly-introduced `dash_evo_tool::` paths to `orchardpay::`, including ones that applied cleanly with no conflict markers.
+
 ## Build Commands
 
 ```bash
