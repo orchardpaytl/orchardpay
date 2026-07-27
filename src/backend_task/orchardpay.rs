@@ -309,8 +309,13 @@ impl AppContext {
                     .await?
                     .is_some();
                 if published {
+                    // `lookup_shielded_address` above already resolved and
+                    // cached the contract, so this is guaranteed `Some`.
+                    let contract_id = self
+                        .orchardpay_contract_id()
+                        .ok_or(OrchardPayError::ContractNotConfigured)?;
                     self.wallet_backend()?
-                        .orchardpay_set_has_shielded_address(&identity_id)?;
+                        .orchardpay_set_has_shielded_address(&contract_id, &identity_id)?;
                 }
                 Ok(
                     BackendTaskSuccessResult::OrchardPayOwnShieldedAddressStatus {

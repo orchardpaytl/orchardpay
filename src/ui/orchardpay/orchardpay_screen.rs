@@ -307,10 +307,11 @@ impl OrchardPayScreen {
         identity: Option<&QualifiedIdentity>,
     ) -> Option<bool> {
         let identity = identity?;
+        let contract_id = app_context.orchardpay_contract_id()?;
         app_context
             .wallet_backend()
             .ok()?
-            .orchardpay_get_has_shielded_address(&identity.identity.id())
+            .orchardpay_get_has_shielded_address(&contract_id, &identity.identity.id())
             .ok()
             .flatten()
     }
@@ -534,8 +535,13 @@ impl OrchardPayScreen {
         };
 
         let owner_id = identity.identity.id();
-        let contacts = backend
-            .orchardpay_list_contacts(&owner_id)
+        let contract_id = self.app_context.orchardpay_contract_id();
+        let contacts = contract_id
+            .and_then(|contract_id| {
+                backend
+                    .orchardpay_list_contacts(&contract_id, &owner_id)
+                    .ok()
+            })
             .unwrap_or_default();
         let credit_blocked = is_credit_balance_blocked(identity.identity.balance());
 
@@ -602,8 +608,9 @@ impl OrchardPayScreen {
         let mut contacts: Vec<(Identifier, OrchardPayContactState)> = contacts
             .into_iter()
             .filter_map(|counterparty| {
+                let contract_id = contract_id?;
                 let state = backend
-                    .orchardpay_get_contact_state(&owner_id, &counterparty)
+                    .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty)
                     .ok()??;
                 Some((counterparty, state))
             })
@@ -816,17 +823,23 @@ impl OrchardPayScreen {
             }
         };
         let owner_id = identity.identity.id();
+        let contract_id = self.app_context.orchardpay_contract_id();
         let credit_blocked = is_credit_balance_blocked(identity.identity.balance());
 
         // Same full contact set Contacts shows (all three handshake
         // stages) — differs from Contacts only in sort order below.
-        let mut contacts: Vec<(Identifier, OrchardPayContactState)> = backend
-            .orchardpay_list_contacts(&owner_id)
+        let mut contacts: Vec<(Identifier, OrchardPayContactState)> = contract_id
+            .and_then(|contract_id| {
+                backend
+                    .orchardpay_list_contacts(&contract_id, &owner_id)
+                    .ok()
+            })
             .unwrap_or_default()
             .into_iter()
             .filter_map(|counterparty| {
+                let contract_id = contract_id?;
                 let state = backend
-                    .orchardpay_get_contact_state(&owner_id, &counterparty)
+                    .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty)
                     .ok()??;
                 Some((counterparty, state))
             })
@@ -1614,11 +1627,14 @@ impl OrchardPayScreen {
         let Ok(backend) = self.app_context.wallet_backend() else {
             return;
         };
+        let Some(contract_id) = self.app_context.orchardpay_contract_id() else {
+            return;
+        };
         let owner_id = identity.identity.id();
         let keys: Vec<Identifier> = self.contact_actions.keys().copied().collect();
         for key in keys {
             let real_state = backend
-                .orchardpay_get_contact_state(&owner_id, &key)
+                .orchardpay_get_contact_state(&contract_id, &owner_id, &key)
                 .ok()
                 .flatten();
             let landed = matches!(

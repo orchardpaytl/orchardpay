@@ -303,8 +303,13 @@ impl MessageThreadScreen {
         counterparty_identity_id: Identifier,
     ) -> Option<String> {
         let backend = app_context.wallet_backend().ok()?;
+        let contract_id = app_context.orchardpay_contract_id()?;
         let state = backend
-            .orchardpay_get_contact_state(&identity.identity.id(), &counterparty_identity_id)
+            .orchardpay_get_contact_state(
+                &contract_id,
+                &identity.identity.id(),
+                &counterparty_identity_id,
+            )
             .ok()??;
         match state {
             OrchardPayContactState::Established { name, .. } => {

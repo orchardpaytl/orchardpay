@@ -40,6 +40,7 @@ pub async fn publish_own_shielded_address(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
 
     // Publishing a shielded address is the one flow that gets an identity
     // fully set up for OrchardPay: generate and broadcast its ENCRYPTION/
@@ -134,7 +135,7 @@ pub async fn publish_own_shielded_address(
     };
 
     let result = app_context.run_document_task(task, sdk).await?;
-    backend.orchardpay_set_has_shielded_address(&owner_id)?;
+    backend.orchardpay_set_has_shielded_address(&contract_id, &owner_id)?;
     Ok(result)
 }
 

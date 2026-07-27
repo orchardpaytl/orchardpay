@@ -196,14 +196,19 @@ struct EstablishedRelationship {
 }
 
 /// Resolve `counterparty_identity_id`'s `Established` local contact state
-/// for `owner_id`, or a typed error if no relationship exists yet or the
-/// handshake with them hasn't completed.
+/// for `owner_id` under `contract_id`, or a typed error if no relationship
+/// exists yet or the handshake with them hasn't completed.
 fn established_state(
     backend: &crate::wallet_backend::WalletBackend,
+    contract_id: Identifier,
     owner_id: Identifier,
     counterparty_identity_id: Identifier,
 ) -> Result<EstablishedRelationship, TaskError> {
-    match backend.orchardpay_get_contact_state(&owner_id, &counterparty_identity_id)? {
+    match backend.orchardpay_get_contact_state(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )? {
         Some(OrchardPayContactState::Established {
             my_reference_id,
             their_reference_id,
@@ -385,6 +390,7 @@ async fn broadcast_new_payment_message(
     // already deterministic at this point, so a retry that finds this
     // marker (see `send_payment`) always refers to the same document.
     backend.orchardpay_set_pending_operation(
+        &orchardpay_contract.id(),
         &owner_id,
         &counterparty_identity_id,
         &PendingOrchardPayOperation::Payment {
@@ -532,7 +538,12 @@ pub async fn edit_message(
     let EstablishedRelationship {
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -589,7 +600,12 @@ pub async fn delete_message(
     let EstablishedRelationship {
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -655,7 +671,12 @@ pub async fn edit_payment_memo(
     let EstablishedRelationship {
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -716,7 +737,12 @@ pub async fn cancel_payment_request(
     let EstablishedRelationship {
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -782,7 +808,12 @@ pub async fn send_message(
         my_reference_id,
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -836,7 +867,12 @@ pub async fn send_payment_request(
         my_reference_id,
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let shared_secret = outbound_shared_secret(
         app_context,
@@ -898,7 +934,12 @@ pub async fn send_payment(
         my_reference_id,
         counterparty_decryption_pubkey: dec_pk,
         ..
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let counterparty_shielded_address =
         lookup_shielded_address(app_context, sdk, counterparty_identity_id)
@@ -953,8 +994,12 @@ pub async fn send_payment(
             // confirmed — don't silently start a fresh send (which would
             // publish a second, orphaned document); surface a distinct
             // error instead so the caller can decide how to recover.
-            if let Some(PendingOrchardPayOperation::Payment { document_id, .. }) =
-                backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?
+            if let Some(PendingOrchardPayOperation::Payment { document_id, .. }) = backend
+                .orchardpay_get_pending_operation(
+                    &orchardpay_contract.id(),
+                    &owner_id,
+                    &counterparty_identity_id,
+                )?
             {
                 return Err(TaskError::OrchardPayPaymentRecoveryNeeded {
                     document_id: Identifier::from(document_id),
@@ -1010,7 +1055,11 @@ pub async fn send_payment(
     // pending-operation marker (a no-op if the `Some(...)` branch never set
     // one, since it targets an already-durable `PaymentRequest`, not a
     // freshly-created document).
-    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
+    backend.orchardpay_clear_pending_operation(
+        &orchardpay_contract.id(),
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     if fulfilling_request_document_id.is_some() {
         // Optimistic local "paid" record so this wallet's own copy of the
@@ -1171,9 +1220,10 @@ async fn fetch_messages_by_ref_id(
 /// this filters on `$ownerId` too — now via the query's own `$ownerId Equal`
 /// clause rather than a client-side post-fetch check, so the single result
 /// this function reads is already guaranteed to be owned by `expected_owner`.
-/// [`RECENT_ACTIVITY_FETCH_LIMIT`] stays slightly above 1 for headroom, but
-/// is no longer load-bearing for correctness the way it was when a decoy
-/// could otherwise occupy the one fetched slot.
+/// [`RECENT_ACTIVITY_FETCH_LIMIT`] is `1`: with the query itself owner- and
+/// ref-scoped and sorted newest-first, the first (and only) row it can
+/// return is already the answer — no decoy can occupy the slot anymore, so
+/// there's nothing left to over-fetch for.
 ///
 /// The `$createdAt < now` range clause is required, not decorative: Drive
 /// only reads an `order_by`'s direction from the clause it picks to drive
@@ -1191,10 +1241,10 @@ async fn fetch_latest_message_created_at(
     ref_id: [u8; 32],
     expected_owner: Identifier,
 ) -> Result<Option<u64>, TaskError> {
-    /// Small headroom above 1 — no longer load-bearing for correctness now
-    /// that the query itself owner-filters, but kept as-is to keep this
-    /// change focused; a shrink to 1-2 is a possible future micro-cleanup.
-    const RECENT_ACTIVITY_FETCH_LIMIT: u32 = 10;
+    /// The query is owner- and ref-scoped and sorted newest-first, so the
+    /// single matching row (if any) is already the latest message — no
+    /// over-fetch headroom needed.
+    const RECENT_ACTIVITY_FETCH_LIMIT: u32 = 1;
 
     let now_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1292,12 +1342,13 @@ pub async fn fetch_recent_activity(
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
 
-    let contacts = backend.orchardpay_list_contacts(&owner_id)?;
+    let contract_id = orchardpay_contract.id();
+    let contacts = backend.orchardpay_list_contacts(&contract_id, &owner_id)?;
     let established: Vec<EstablishedContactRefs> = contacts
         .into_iter()
         .filter_map(|counterparty| {
             match backend
-                .orchardpay_get_contact_state(&owner_id, &counterparty)
+                .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty)
                 .ok()?
             {
                 Some(OrchardPayContactState::Established {
@@ -1430,7 +1481,12 @@ pub async fn load_thread(
         their_reference_id,
         counterparty_encryption_pubkey: enc_pk,
         counterparty_decryption_pubkey: dec_pk,
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let outbound_secret = outbound_shared_secret(
         app_context,
@@ -1645,7 +1701,12 @@ pub async fn load_more_history(
         their_reference_id,
         counterparty_encryption_pubkey: enc_pk,
         counterparty_decryption_pubkey: dec_pk,
-    } = established_state(&backend, owner_id, counterparty_identity_id)?;
+    } = established_state(
+        &backend,
+        orchardpay_contract.id(),
+        owner_id,
+        counterparty_identity_id,
+    )?;
 
     let outbound_secret = outbound_shared_secret(
         app_context,

@@ -13,6 +13,7 @@ use crate::backend_task::{
 use crate::context::AppContext;
 use crate::model::orchardpay::OrchardPayContactState;
 use dash_sdk::Sdk;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
@@ -95,6 +96,8 @@ pub async fn search_contacts(
         identity_usernames.push((identity_id, username));
     }
 
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
     let backend = app_context.wallet_backend()?;
     let mut results = Vec::with_capacity(identity_usernames.len());
     for (identity_id, username) in identity_usernames {
@@ -107,7 +110,7 @@ pub async fn search_contacts(
             Ok(Some(_))
         );
         let existing_relationship =
-            backend.orchardpay_get_contact_state(&owner_id, &identity_id)?;
+            backend.orchardpay_get_contact_state(&contract_id, &owner_id, &identity_id)?;
         results.push(OrchardPayContactSearchResult {
             identity_id,
             username,

@@ -148,7 +148,18 @@ fn derive_identity_key_candidate(
 /// Value: bincode-encoded [`OrchardPayContactState`]. Scope:
 /// [`DetScope::Identity`] of the owner — per-relationship state is private
 /// to the acting identity and cascades on identity removal. Key shape:
-/// `det:orchardpay:contact:<counterparty_b58>`.
+/// `det:orchardpay:contact:<contract_id_b58>:<counterparty_b58>` — scoped by
+/// the current OrchardPay contract ID, not just the counterparty. Without
+/// this, a contract re-registration (a fresh contract ID — Platform
+/// disallows removing/altering indices via a contract *update*, so a
+/// breaking schema change ships as a brand-new contract, see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`) would leave stale `Established`/
+/// `Pending*` records pointing at anchor/message documents that live under
+/// the *retired* contract ID, but still read back as valid under the new
+/// one — silently mis-scoping every query built from them (empty threads,
+/// or a permanently-stuck pending handshake) instead of erroring. Scoping
+/// the key itself by contract ID makes a stale entry simply invisible once
+/// the contract ID changes, with no explicit migration step required.
 const KV_PREFIX_CONTACT: &str = "det:orchardpay:contact:";
 
 /// Presence marker: resume cursor for the DET-side incoming-memo scan (see
@@ -188,7 +199,12 @@ const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
 /// `publish_own_shielded_address` on success, so the next launch/visit
 /// knows instantly instead of re-querying Platform. Scope:
 /// [`DetScope::Identity`] of the owner. Key shape:
-/// `det:orchardpay:has_shielded_address`.
+/// `det:orchardpay:has_shielded_address:<contract_id_b58>` — scoped by
+/// contract ID for the same reason as [`KV_PREFIX_CONTACT`]: the
+/// `shieldedAddress` document this flag caches "confirmed" lives under one
+/// specific contract, so a cached `true` from a retired contract must not
+/// suppress the live check (and therefore the republish) needed under a
+/// freshly re-registered one.
 const KV_PREFIX_HAS_SHIELDED_ADDRESS: &str = "det:orchardpay:has_shielded_address";
 
 /// Value: `bool` (always `true` when present). An incoming `Anchor` signal
@@ -232,14 +248,30 @@ pub const MEMO_SCAN_ERROR_RETRY_CAP: u32 = 5;
 /// Cleared once the operation reaches a consistent end state. Scope:
 /// [`DetScope::Identity`] of the owner, matching [`KV_PREFIX_CONTACT`]'s own
 /// reasoning (per-relationship state, private to the acting identity,
-/// cascades on identity removal). Key shape:
-/// `det:orchardpay:pending_op:<counterparty_b58>`.
+/// cascades on identity removal, and contract-ID-scoped for the same
+/// stale-across-migration reason). Key shape:
+/// `det:orchardpay:pending_op:<contract_id_b58>:<counterparty_b58>`.
 const KV_PREFIX_PENDING_OPERATION: &str = "det:orchardpay:pending_op:";
 
-fn contact_key(counterparty: &Identifier) -> String {
+fn contact_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
     format!(
-        "{KV_PREFIX_CONTACT}{}",
+        "{KV_PREFIX_CONTACT}{}:{}",
+        contract_id.to_string(Encoding::Base58),
         counterparty.to_string(Encoding::Base58)
+    )
+}
+
+fn contact_key_prefix(contract_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_CONTACT}{}:",
+        contract_id.to_string(Encoding::Base58)
+    )
+}
+
+fn has_shielded_address_key(contract_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_HAS_SHIELDED_ADDRESS}:{}",
+        contract_id.to_string(Encoding::Base58)
     )
 }
 
@@ -261,138 +293,149 @@ fn memo_scan_retry_count_key(note_index: u64) -> String {
     format!("{KV_PREFIX_MEMO_SCAN_RETRY_COUNT}{note_index}")
 }
 
-fn pending_operation_key(counterparty: &Identifier) -> String {
+fn pending_operation_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
     format!(
-        "{KV_PREFIX_PENDING_OPERATION}{}",
+        "{KV_PREFIX_PENDING_OPERATION}{}:{}",
+        contract_id.to_string(Encoding::Base58),
         counterparty.to_string(Encoding::Base58)
     )
 }
 
 impl WalletBackend {
-    /// Read the local contact-establishment state for `(owner,
-    /// counterparty)`. `Ok(None)` means no relationship has been started —
-    /// callers should treat this as "not a contact yet."
+    /// Read the local contact-establishment state for `(contract_id, owner,
+    /// counterparty)`. `Ok(None)` means no relationship has been started
+    /// under this contract — callers should treat this as "not a contact
+    /// yet." See [`KV_PREFIX_CONTACT`] for why this is contract-scoped.
     pub fn orchardpay_get_contact_state(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
         counterparty: &Identifier,
     ) -> Result<Option<OrchardPayContactState>, TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_key(counterparty);
+        let key = contact_key(contract_id, counterparty);
         self.kv()
             .get::<OrchardPayContactState>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
-    /// Upsert the local contact-establishment state for `(owner,
+    /// Upsert the local contact-establishment state for `(contract_id, owner,
     /// counterparty)`.
     pub fn orchardpay_set_contact_state(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
         counterparty: &Identifier,
         state: &OrchardPayContactState,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_key(counterparty);
+        let key = contact_key(contract_id, counterparty);
         self.kv()
             .put::<OrchardPayContactState>(DetScope::Identity(&owner_buf), &key, state)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
     /// Read the local resumable marker for an in-flight publish-then-transfer
-    /// operation with `counterparty`, if one exists. `Ok(None)` means no
-    /// operation is in flight — callers should treat this as "safe to start
-    /// fresh." See [`KV_PREFIX_PENDING_OPERATION`].
+    /// operation with `counterparty` under `contract_id`, if one exists.
+    /// `Ok(None)` means no operation is in flight — callers should treat
+    /// this as "safe to start fresh." See [`KV_PREFIX_PENDING_OPERATION`].
     pub fn orchardpay_get_pending_operation(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
         counterparty: &Identifier,
     ) -> Result<Option<PendingOrchardPayOperation>, TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = pending_operation_key(counterparty);
+        let key = pending_operation_key(contract_id, counterparty);
         self.kv()
             .get::<PendingOrchardPayOperation>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
     /// Upsert the local resumable marker for an in-flight operation with
-    /// `counterparty`.
+    /// `counterparty` under `contract_id`.
     pub fn orchardpay_set_pending_operation(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
         counterparty: &Identifier,
         operation: &PendingOrchardPayOperation,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = pending_operation_key(counterparty);
+        let key = pending_operation_key(contract_id, counterparty);
         self.kv()
             .put::<PendingOrchardPayOperation>(DetScope::Identity(&owner_buf), &key, operation)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
-    /// Clear the local pending-operation marker for `counterparty` — called
-    /// once the operation reaches a consistent end state (local contact
-    /// state written, or a payment transfer confirmed).
+    /// Clear the local pending-operation marker for `counterparty` under
+    /// `contract_id` — called once the operation reaches a consistent end
+    /// state (local contact state written, or a payment transfer
+    /// confirmed).
     pub fn orchardpay_clear_pending_operation(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
         counterparty: &Identifier,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = pending_operation_key(counterparty);
+        let key = pending_operation_key(contract_id, counterparty);
         self.kv()
             .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
     /// Read the locally cached "has this identity published a
-    /// `shieldedAddress`" flag. `Ok(None)` means never confirmed locally
-    /// yet — callers should do a live Platform check. There is no cached
-    /// `false`; see [`KV_PREFIX_HAS_SHIELDED_ADDRESS`]'s doc comment for why.
+    /// `shieldedAddress`" flag under `contract_id`. `Ok(None)` means never
+    /// confirmed locally yet — callers should do a live Platform check.
+    /// There is no cached `false`; see [`KV_PREFIX_HAS_SHIELDED_ADDRESS`]'s
+    /// doc comment for why.
     pub fn orchardpay_get_has_shielded_address(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
     ) -> Result<Option<bool>, TaskError> {
         let owner_buf = owner.to_buffer();
+        let key = has_shielded_address_key(contract_id);
         self.kv()
-            .get::<bool>(
-                DetScope::Identity(&owner_buf),
-                KV_PREFIX_HAS_SHIELDED_ADDRESS,
-            )
+            .get::<bool>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
     /// Persist that `owner` has a confirmed published `shieldedAddress`
-    /// document, so later launches/visits know instantly instead of
-    /// re-querying Platform.
-    pub fn orchardpay_set_has_shielded_address(&self, owner: &Identifier) -> Result<(), TaskError> {
+    /// document under `contract_id`, so later launches/visits know instantly
+    /// instead of re-querying Platform.
+    pub fn orchardpay_set_has_shielded_address(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+    ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
+        let key = has_shielded_address_key(contract_id);
         self.kv()
-            .put::<bool>(
-                DetScope::Identity(&owner_buf),
-                KV_PREFIX_HAS_SHIELDED_ADDRESS,
-                &true,
-            )
+            .put::<bool>(DetScope::Identity(&owner_buf), &key, &true)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
     /// List every counterparty identity `owner` has a local contact-state
-    /// record for, regardless of phase (pending outbound, pending inbound,
-    /// or established).
+    /// record for under `contract_id`, regardless of phase (pending
+    /// outbound, pending inbound, or established).
     pub fn orchardpay_list_contacts(
         &self,
+        contract_id: &Identifier,
         owner: &Identifier,
     ) -> Result<Vec<Identifier>, TaskError> {
         let owner_buf = owner.to_buffer();
+        let prefix = contact_key_prefix(contract_id);
         let keys = self
             .kv()
-            .list(DetScope::Identity(&owner_buf), Some(KV_PREFIX_CONTACT))
+            .list(DetScope::Identity(&owner_buf), Some(&prefix))
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
 
         Ok(keys
             .into_iter()
             .filter_map(|key| {
-                let b58 = key.strip_prefix(KV_PREFIX_CONTACT)?;
+                let b58 = key.strip_prefix(&prefix)?;
                 Identifier::from_string(b58, Encoding::Base58).ok()
             })
             .collect())
@@ -574,7 +617,15 @@ impl WalletBackend {
         let scope = DetScope::Identity(&owner_buf);
         let kv = self.kv();
 
-        for prefix in [KV_PREFIX_CONTACT, KV_PREFIX_PENDING_OPERATION] {
+        // Bare (contract-agnostic) prefixes deliberately used here, unlike
+        // the per-contract accessors above: identity removal must wipe
+        // every contract-scoped entry for this owner, not just the one
+        // matching the currently-configured contract ID.
+        for prefix in [
+            KV_PREFIX_CONTACT,
+            KV_PREFIX_PENDING_OPERATION,
+            KV_PREFIX_HAS_SHIELDED_ADDRESS,
+        ] {
             let keys = kv
                 .list(scope, Some(prefix))
                 .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
@@ -583,9 +634,6 @@ impl WalletBackend {
                     .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
             }
         }
-
-        kv.delete(scope, KV_PREFIX_HAS_SHIELDED_ADDRESS)
-            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
 
         Ok(())
     }
@@ -1175,9 +1223,10 @@ mod tests {
     fn pending_contact_anchor_operation_round_trips() {
         let kv = empty_kv();
         let owner = [0x66u8; 32];
+        let contract_id = Identifier::new([0x11u8; 32]);
         let counterparty = Identifier::new([0x77u8; 32]);
         let scope = DetScope::Identity(&owner);
-        let key = pending_operation_key(&counterparty);
+        let key = pending_operation_key(&contract_id, &counterparty);
 
         assert_eq!(
             kv.get::<PendingOrchardPayOperation>(scope, &key).unwrap(),
@@ -1212,9 +1261,10 @@ mod tests {
     fn pending_payment_operation_round_trips() {
         let kv = empty_kv();
         let owner = [0x88u8; 32];
+        let contract_id = Identifier::new([0x11u8; 32]);
         let counterparty = Identifier::new([0x99u8; 32]);
         let scope = DetScope::Identity(&owner);
-        let key = pending_operation_key(&counterparty);
+        let key = pending_operation_key(&contract_id, &counterparty);
 
         let op = PendingOrchardPayOperation::Payment {
             document_id: [3u8; 32],
@@ -1234,6 +1284,7 @@ mod tests {
     fn pending_operations_are_scoped_per_counterparty() {
         let kv = empty_kv();
         let owner = [0xaau8; 32];
+        let contract_id = Identifier::new([0x11u8; 32]);
         let counterparty_a = Identifier::new([0xbbu8; 32]);
         let counterparty_b = Identifier::new([0xccu8; 32]);
         let scope = DetScope::Identity(&owner);
@@ -1243,20 +1294,180 @@ mod tests {
             my_anchor_document_id: [5u8; 32],
             step: PendingOperationStep::TransferSent,
         };
-        kv.put::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_a), &op)
-            .unwrap();
+        kv.put::<PendingOrchardPayOperation>(
+            scope,
+            &pending_operation_key(&contract_id, &counterparty_a),
+            &op,
+        )
+        .unwrap();
 
         assert_eq!(
-            kv.get::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_a))
-                .unwrap(),
+            kv.get::<PendingOrchardPayOperation>(
+                scope,
+                &pending_operation_key(&contract_id, &counterparty_a)
+            )
+            .unwrap(),
             Some(op),
             "counterparty_a's marker must be present"
         );
         assert_eq!(
-            kv.get::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_b))
-                .unwrap(),
+            kv.get::<PendingOrchardPayOperation>(
+                scope,
+                &pending_operation_key(&contract_id, &counterparty_b)
+            )
+            .unwrap(),
             None,
             "counterparty_b must not see counterparty_a's marker"
+        );
+    }
+
+    /// The same `(owner, counterparty)` pair under two different contract
+    /// IDs never collides — the exact scenario a contract re-registration
+    /// creates: a stale entry under a retired contract ID must not be read
+    /// back as valid under the new one.
+    #[test]
+    fn pending_operations_are_scoped_per_contract_id() {
+        let kv = empty_kv();
+        let owner = [0xa1u8; 32];
+        let counterparty = Identifier::new([0xa2u8; 32]);
+        let old_contract = Identifier::new([0x01u8; 32]);
+        let new_contract = Identifier::new([0x02u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        let op = PendingOrchardPayOperation::ContactAnchor {
+            my_reference_id: [7u8; 32],
+            my_anchor_document_id: [8u8; 32],
+            step: PendingOperationStep::TransferSent,
+        };
+        kv.put::<PendingOrchardPayOperation>(
+            scope,
+            &pending_operation_key(&old_contract, &counterparty),
+            &op,
+        )
+        .unwrap();
+
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(
+                scope,
+                &pending_operation_key(&new_contract, &counterparty)
+            )
+            .unwrap(),
+            None,
+            "a marker recorded under the old contract must not appear under the new one"
+        );
+    }
+
+    /// The exact regression scenario for the "stale contact survives a
+    /// contract re-registration" bug: the same `(owner, counterparty)` pair
+    /// recorded as `Established` under a retired contract ID must not be
+    /// readable as a contact under a freshly re-registered contract ID.
+    #[test]
+    fn contact_state_is_scoped_per_contract_id() {
+        let kv = empty_kv();
+        let owner = [0xb1u8; 32];
+        let counterparty = Identifier::new([0xb2u8; 32]);
+        let old_contract = Identifier::new([0x03u8; 32]);
+        let new_contract = Identifier::new([0x04u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        let state = OrchardPayContactState::Established {
+            my_reference_id: [9u8; 32],
+            my_anchor_document_id: [10u8; 32],
+            their_reference_id: [11u8; 32],
+            counterparty_encryption_pubkey: vec![1, 2, 3],
+            counterparty_decryption_pubkey: vec![4, 5, 6],
+            name: None,
+            created_at: None,
+        };
+        kv.put::<OrchardPayContactState>(scope, &contact_key(&old_contract, &counterparty), &state)
+            .unwrap();
+
+        assert_eq!(
+            kv.get::<OrchardPayContactState>(scope, &contact_key(&new_contract, &counterparty))
+                .unwrap(),
+            None,
+            "an Established record under the retired contract must not read back as a contact \
+             under the newly re-registered one"
+        );
+        assert_eq!(
+            kv.get::<OrchardPayContactState>(scope, &contact_key(&old_contract, &counterparty))
+                .unwrap(),
+            Some(state),
+            "the record must still be readable under the contract ID it was actually written under"
+        );
+    }
+
+    /// `orchardpay_list_contacts`'s prefix scan (via [`contact_key_prefix`])
+    /// only surfaces contacts recorded under the given contract ID, even
+    /// when the same owner has entries under another (e.g. retired)
+    /// contract ID too.
+    #[test]
+    fn list_contacts_prefix_is_scoped_per_contract_id() {
+        let kv = empty_kv();
+        let owner = [0xb3u8; 32];
+        let old_contract = Identifier::new([0x05u8; 32]);
+        let new_contract = Identifier::new([0x06u8; 32]);
+        let old_counterparty = Identifier::new([0xc1u8; 32]);
+        let new_counterparty = Identifier::new([0xc2u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        let state = OrchardPayContactState::PendingOutbound {
+            my_reference_id: [1u8; 32],
+            my_anchor_document_id: [2u8; 32],
+            name: None,
+            created_at: None,
+        };
+        kv.put::<OrchardPayContactState>(
+            scope,
+            &contact_key(&old_contract, &old_counterparty),
+            &state,
+        )
+        .unwrap();
+        kv.put::<OrchardPayContactState>(
+            scope,
+            &contact_key(&new_contract, &new_counterparty),
+            &state,
+        )
+        .unwrap();
+
+        let prefix = contact_key_prefix(&new_contract);
+        let listed: Vec<Identifier> = kv
+            .list(scope, Some(&prefix))
+            .unwrap()
+            .into_iter()
+            .filter_map(|k| {
+                let b58 = k.strip_prefix(&prefix)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect();
+
+        assert_eq!(
+            listed,
+            vec![new_counterparty],
+            "listing under the new contract ID must not include the old contract's counterparty"
+        );
+    }
+
+    /// The cached "published a shieldedAddress" flag is contract-scoped:
+    /// confirmed `true` under a retired contract ID must not suppress the
+    /// live check (and republish) needed under a freshly re-registered one.
+    #[test]
+    fn has_shielded_address_flag_is_scoped_per_contract_id() {
+        let kv = empty_kv();
+        let owner = [0xb4u8; 32];
+        let old_contract = Identifier::new([0x07u8; 32]);
+        let new_contract = Identifier::new([0x08u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        kv.put::<bool>(scope, &has_shielded_address_key(&old_contract), &true)
+            .unwrap();
+
+        assert_eq!(
+            kv.get::<bool>(scope, &has_shielded_address_key(&new_contract))
+                .unwrap(),
+            None,
+            "a confirmed publish under the old contract must not read back as confirmed under \
+             the new one"
         );
     }
 
@@ -1268,8 +1479,9 @@ mod tests {
         let kv = empty_kv();
         let owner_a = [0xddu8; 32];
         let owner_b = [0xeeu8; 32];
+        let contract_id = Identifier::new([0x11u8; 32]);
         let counterparty = Identifier::new([0xffu8; 32]);
-        let key = pending_operation_key(&counterparty);
+        let key = pending_operation_key(&contract_id, &counterparty);
         let op = PendingOrchardPayOperation::Payment {
             document_id: [6u8; 32],
             step: PendingOperationStep::DocumentPublished,
@@ -1297,6 +1509,78 @@ mod tests {
                 .unwrap(),
             Some(op),
             "owner_b's pending operation must be untouched"
+        );
+    }
+
+    /// `orchardpay_clear_owner_overlays` now sweeps
+    /// `KV_PREFIX_HAS_SHIELDED_ADDRESS` by prefix (a family of per-contract
+    /// keys) rather than deleting one exact key — proves that sweep clears
+    /// every contract-scoped flag for the target owner, including one
+    /// recorded under a since-retired contract ID, while leaving another
+    /// owner's flag untouched.
+    #[test]
+    fn owner_overlays_sweep_clears_has_shielded_address_flags_across_contracts() {
+        let kv = empty_kv();
+        let owner_a = [0x12u8; 32];
+        let owner_b = [0x13u8; 32];
+        let old_contract = Identifier::new([0x09u8; 32]);
+        let new_contract = Identifier::new([0x0au8; 32]);
+
+        kv.put::<bool>(
+            DetScope::Identity(&owner_a),
+            &has_shielded_address_key(&old_contract),
+            &true,
+        )
+        .unwrap();
+        kv.put::<bool>(
+            DetScope::Identity(&owner_a),
+            &has_shielded_address_key(&new_contract),
+            &true,
+        )
+        .unwrap();
+        kv.put::<bool>(
+            DetScope::Identity(&owner_b),
+            &has_shielded_address_key(&new_contract),
+            &true,
+        )
+        .unwrap();
+
+        for prefix in [
+            KV_PREFIX_CONTACT,
+            KV_PREFIX_PENDING_OPERATION,
+            KV_PREFIX_HAS_SHIELDED_ADDRESS,
+        ] {
+            for k in kv.list(DetScope::Identity(&owner_a), Some(prefix)).unwrap() {
+                kv.delete(DetScope::Identity(&owner_a), &k).unwrap();
+            }
+        }
+
+        assert_eq!(
+            kv.get::<bool>(
+                DetScope::Identity(&owner_a),
+                &has_shielded_address_key(&old_contract)
+            )
+            .unwrap(),
+            None,
+            "owner_a's flag under the old contract must be gone"
+        );
+        assert_eq!(
+            kv.get::<bool>(
+                DetScope::Identity(&owner_a),
+                &has_shielded_address_key(&new_contract)
+            )
+            .unwrap(),
+            None,
+            "owner_a's flag under the new contract must be gone too"
+        );
+        assert_eq!(
+            kv.get::<bool>(
+                DetScope::Identity(&owner_b),
+                &has_shielded_address_key(&new_contract)
+            )
+            .unwrap(),
+            Some(true),
+            "owner_b's flag must be untouched"
         );
     }
 

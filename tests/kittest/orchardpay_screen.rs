@@ -10,7 +10,6 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
@@ -28,41 +27,21 @@ use orchardpay::ui::orchardpay::orchardpay_screen::{OrchardPayScreen, OrchardPay
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-const CONTRACT_ID_ENV: &str = "TESTNET_ORCHARDPAY_CONTRACT_ID";
-
-/// There is no runtime setter for `AppContext::orchardpay_contract_id()`
-/// anywhere in the app — it's only ever read, off `NetworkConfig` loaded
-/// via `envy::prefixed` over process env vars. This is the only way to
-/// clear `LocalReadiness::ContractConfigured` in a test. Must only be
-/// constructed inside `with_isolated_data_dir`'s closure — its
-/// process-global lock already serializes this env mutation the same way
-/// it serializes `ORCHARDPAY_DATA_DIR`, so no separate lock is needed here.
-struct ContractIdEnvGuard {
-    prior: Option<String>,
-}
-
-impl ContractIdEnvGuard {
-    fn set(contract_id: Identifier) -> Self {
-        let prior = std::env::var(CONTRACT_ID_ENV).ok();
-        // Safety: serialized by `with_isolated_data_dir`'s lock, which every
-        // caller of this guard is already inside; restored by `Drop`.
-        unsafe {
-            std::env::set_var(CONTRACT_ID_ENV, contract_id.to_string(Encoding::Base58));
-        }
-        Self { prior }
-    }
-}
-
-impl Drop for ContractIdEnvGuard {
-    fn drop(&mut self) {
-        // Safety: see `set` above.
-        unsafe {
-            match &self.prior {
-                Some(value) => std::env::set_var(CONTRACT_ID_ENV, value),
-                None => std::env::remove_var(CONTRACT_ID_ENV),
-            }
-        }
-    }
+/// The contract ID these tests seed local state under. `AppContext` always
+/// resolves *some* real OrchardPay contract ID here — a fresh, isolated data
+/// dir (via `with_isolated_data_dir`) has no `.env` of its own yet, so the
+/// app's first-run bootstrap writes out the bundled `.env.example` (compiled
+/// in via `include_bytes!`), which ships a real, committed Testnet contract
+/// ID. There is no runtime setter for `AppContext::orchardpay_contract_id()`,
+/// and no way to override it via a process env var either — `Config::load`
+/// loads the data dir's `.env` with `dotenvy::from_path_override`, which
+/// unconditionally overwrites any env var a test sets first. So tests read
+/// back whatever real ID actually got configured instead of trying to inject
+/// a fake one.
+fn resolve_test_contract_id(app_context: &Arc<AppContext>) -> Identifier {
+    app_context
+        .orchardpay_contract_id()
+        .expect("OrchardPay contract must be configured via the bundled default .env.example")
 }
 
 /// Seed a wallet-less identity with a resolvable DPNS name (required to
@@ -106,6 +85,7 @@ fn seed_identity(app_context: &Arc<AppContext>, byte: u8, dpns_name: &str) -> Id
 /// established_id)`.
 fn seed_three_stage_contacts(
     app_context: &Arc<AppContext>,
+    contract_id: Identifier,
     owner_id: Identifier,
 ) -> (Identifier, Identifier, Identifier) {
     let backend = app_context.wallet_backend().expect("wallet backend wired");
@@ -113,6 +93,7 @@ fn seed_three_stage_contacts(
     let outbound_id = Identifier::from([101u8; 32]);
     backend
         .orchardpay_set_contact_state(
+            &contract_id,
             &owner_id,
             &outbound_id,
             &OrchardPayContactState::PendingOutbound {
@@ -127,6 +108,7 @@ fn seed_three_stage_contacts(
     let inbound_id = Identifier::from([102u8; 32]);
     backend
         .orchardpay_set_contact_state(
+            &contract_id,
             &owner_id,
             &inbound_id,
             &OrchardPayContactState::PendingInboundUnaccepted {
@@ -141,6 +123,7 @@ fn seed_three_stage_contacts(
     let established_id = Identifier::from([103u8; 32]);
     backend
         .orchardpay_set_contact_state(
+            &contract_id,
             &owner_id,
             &established_id,
             &OrchardPayContactState::Established {
@@ -174,14 +157,14 @@ fn mount(screen: OrchardPayScreen) -> Harness<'static, OrchardPayScreen> {
 #[test]
 fn contacts_tab_shows_all_three_handshake_states() {
     with_isolated_data_dir(|| {
-        let _contract_guard = ContractIdEnvGuard::set(Identifier::from([9u8; 32]));
         let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
 
         let owner_id = seed_identity(&ctx, 1, "alice.dash");
-        seed_three_stage_contacts(&ctx, owner_id);
+        seed_three_stage_contacts(&ctx, contract_id, owner_id);
         ctx.wallet_backend()
             .expect("wallet backend wired")
-            .orchardpay_set_has_shielded_address(&owner_id)
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
             .expect("seed shielded-address flag");
 
         let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
@@ -205,14 +188,15 @@ fn contacts_tab_shows_all_three_handshake_states() {
 #[test]
 fn most_recent_tab_shows_all_three_handshake_states_not_just_established() {
     with_isolated_data_dir(|| {
-        let _contract_guard = ContractIdEnvGuard::set(Identifier::from([9u8; 32]));
         let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
 
         let owner_id = seed_identity(&ctx, 1, "alice.dash");
-        let (_outbound_id, _inbound_id, established_id) = seed_three_stage_contacts(&ctx, owner_id);
+        let (_outbound_id, _inbound_id, established_id) =
+            seed_three_stage_contacts(&ctx, contract_id, owner_id);
         ctx.wallet_backend()
             .expect("wallet backend wired")
-            .orchardpay_set_has_shielded_address(&owner_id)
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
             .expect("seed shielded-address flag");
 
         let mut screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::MostRecent);
@@ -245,8 +229,8 @@ fn most_recent_tab_shows_all_three_handshake_states_not_just_established() {
 #[test]
 fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_message() {
     with_isolated_data_dir(|| {
-        let _contract_guard = ContractIdEnvGuard::set(Identifier::from([9u8; 32]));
         let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
 
         let owner_id = seed_identity(&ctx, 1, "alice.dash");
         let backend = ctx.wallet_backend().expect("wallet backend wired");
@@ -261,6 +245,7 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
         let established_id = Identifier::from([201u8; 32]);
         backend
             .orchardpay_set_contact_state(
+                &contract_id,
                 &owner_id,
                 &established_id,
                 &OrchardPayContactState::Established {
@@ -278,6 +263,7 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
         let pending_id = Identifier::from([202u8; 32]);
         backend
             .orchardpay_set_contact_state(
+                &contract_id,
                 &owner_id,
                 &pending_id,
                 &OrchardPayContactState::PendingInboundUnaccepted {
@@ -290,7 +276,7 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
             .expect("seed pending contact");
 
         backend
-            .orchardpay_set_has_shielded_address(&owner_id)
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
             .expect("seed shielded-address flag");
 
         let mut screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::MostRecent);
@@ -320,13 +306,13 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
 #[test]
 fn most_recent_header_text_no_longer_says_established() {
     with_isolated_data_dir(|| {
-        let _contract_guard = ContractIdEnvGuard::set(Identifier::from([9u8; 32]));
         let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
 
         let owner_id = seed_identity(&ctx, 1, "alice.dash");
         ctx.wallet_backend()
             .expect("wallet backend wired")
-            .orchardpay_set_has_shielded_address(&owner_id)
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
             .expect("seed shielded-address flag");
 
         let mut screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::MostRecent);

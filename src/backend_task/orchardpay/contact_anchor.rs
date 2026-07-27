@@ -127,10 +127,11 @@ pub async fn initiate_contact(
         .map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
 
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
 
     let backend = app_context.wallet_backend()?;
     if backend
-        .orchardpay_get_contact_state(&owner_id, &counterparty_identity_id)?
+        .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty_identity_id)?
         .is_some()
     {
         // Already initiated, already inbound-pending, or already established
@@ -155,7 +156,11 @@ pub async fn initiate_contact(
     // Reusing the persisted `my_reference_id`/`document_id` instead of
     // generating fresh ones is what prevents a naive retry from publishing a
     // second, orphaned anchor.
-    let pending = backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?;
+    let pending = backend.orchardpay_get_pending_operation(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     let (my_reference_id, document_id, needs_transfer, mut broadcast_result) = match pending {
         Some(PendingOrchardPayOperation::ContactAnchor {
@@ -281,6 +286,7 @@ pub async fn initiate_contact(
             // broadcast or transfer below fails, a retry finds this marker
             // and resumes instead of generating a second anchor.
             backend.orchardpay_set_pending_operation(
+                &contract_id,
                 &owner_id,
                 &counterparty_identity_id,
                 &PendingOrchardPayOperation::ContactAnchor {
@@ -324,6 +330,7 @@ pub async fn initiate_contact(
             .await?;
 
         backend.orchardpay_set_pending_operation(
+            &contract_id,
             &owner_id,
             &counterparty_identity_id,
             &PendingOrchardPayOperation::ContactAnchor {
@@ -335,6 +342,7 @@ pub async fn initiate_contact(
     }
 
     backend.orchardpay_set_contact_state(
+        &contract_id,
         &owner_id,
         &counterparty_identity_id,
         &OrchardPayContactState::PendingOutbound {
@@ -346,7 +354,11 @@ pub async fn initiate_contact(
                 .and_then(broadcast_document_created_at),
         },
     )?;
-    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
+    backend.orchardpay_clear_pending_operation(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     Ok(broadcast_result
         .take()
@@ -367,15 +379,19 @@ pub async fn accept_contact(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
 
     let backend = app_context.wallet_backend()?;
-    let their_reference_id =
-        match backend.orchardpay_get_contact_state(&owner_id, &counterparty_identity_id)? {
-            Some(OrchardPayContactState::PendingInboundUnaccepted {
-                their_reference_id, ..
-            }) => their_reference_id,
-            _ => return Err(OrchardPayError::AnchorNotFound.into()),
-        };
+    let their_reference_id = match backend.orchardpay_get_contact_state(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )? {
+        Some(OrchardPayContactState::PendingInboundUnaccepted {
+            their_reference_id, ..
+        }) => their_reference_id,
+        _ => return Err(OrchardPayError::AnchorNotFound.into()),
+    };
 
     let counterparty_shielded_address =
         lookup_shielded_address(app_context, sdk, counterparty_identity_id)
@@ -413,7 +429,11 @@ pub async fn accept_contact(
     // one was left behind — see M-02 of
     // `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`
     // and `initiate_contact`'s identical treatment above.
-    let pending = backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?;
+    let pending = backend.orchardpay_get_pending_operation(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     let (my_reference_id, document_id, needs_transfer, mut broadcast_result) = match pending {
         Some(PendingOrchardPayOperation::ContactAnchor {
@@ -517,6 +537,7 @@ pub async fn accept_contact(
             // Persist intent *before* the first network side effect, same
             // reasoning as `initiate_contact`.
             backend.orchardpay_set_pending_operation(
+                &contract_id,
                 &owner_id,
                 &counterparty_identity_id,
                 &PendingOrchardPayOperation::ContactAnchor {
@@ -560,6 +581,7 @@ pub async fn accept_contact(
             .await?;
 
         backend.orchardpay_set_pending_operation(
+            &contract_id,
             &owner_id,
             &counterparty_identity_id,
             &PendingOrchardPayOperation::ContactAnchor {
@@ -571,6 +593,7 @@ pub async fn accept_contact(
     }
 
     backend.orchardpay_set_contact_state(
+        &contract_id,
         &owner_id,
         &counterparty_identity_id,
         &OrchardPayContactState::Established {
@@ -585,7 +608,11 @@ pub async fn accept_contact(
                 .and_then(broadcast_document_created_at),
         },
     )?;
-    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
+    backend.orchardpay_clear_pending_operation(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     Ok(broadcast_result
         .take()
@@ -610,6 +637,7 @@ pub async fn handle_incoming_anchor_signal(
 ) -> Result<bool, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
 
     let Some(document) =
         fetch_anchor_document_by_id(&orchardpay_contract, sdk, anchor_document_id).await?
@@ -672,7 +700,7 @@ pub async fn handle_incoming_anchor_signal(
     };
 
     let backend = app_context.wallet_backend()?;
-    match backend.orchardpay_get_contact_state(&owner_id, &sender_id)? {
+    match backend.orchardpay_get_contact_state(&contract_id, &owner_id, &sender_id)? {
         None => {
             // Fresh inbound request. Best-effort: a DPNS lookup failure
             // shouldn't block recording the request, it just means the
@@ -682,6 +710,7 @@ pub async fn handle_incoming_anchor_signal(
                 .ok()
                 .flatten();
             backend.orchardpay_set_contact_state(
+                &contract_id,
                 &owner_id,
                 &sender_id,
                 &OrchardPayContactState::PendingInboundUnaccepted {
@@ -772,6 +801,7 @@ pub async fn handle_incoming_anchor_signal(
             app_context.run_document_task(task, sdk).await?;
 
             backend.orchardpay_set_contact_state(
+                &contract_id,
                 &owner_id,
                 &sender_id,
                 &OrchardPayContactState::Established {
@@ -1145,6 +1175,7 @@ pub async fn recover_own_anchors(
 ) -> Result<AnchorRecoverySummary, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
     let backend = app_context.wallet_backend()?;
 
     let documents = fetch_all_own_anchors(&orchardpay_contract, sdk, owner_id).await?;
@@ -1173,7 +1204,7 @@ pub async fn recover_own_anchors(
 
         let counterparty_id = Identifier::from(anchor_record.counterparty_identity_id);
         if backend
-            .orchardpay_get_contact_state(&owner_id, &counterparty_id)?
+            .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty_id)?
             .is_some()
         {
             summary.already_tracked += 1;
@@ -1230,7 +1261,7 @@ pub async fn recover_own_anchors(
             },
         };
 
-        backend.orchardpay_set_contact_state(&owner_id, &counterparty_id, &state)?;
+        backend.orchardpay_set_contact_state(&contract_id, &owner_id, &counterparty_id, &state)?;
         summary.contacts_recovered += 1;
     }
 
