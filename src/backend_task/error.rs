@@ -714,6 +714,16 @@ pub enum TaskError {
         source: Box<dash_sdk::dpp::ProtocolError>,
     },
 
+    /// Attempted to remove a contract the app depends on internally (DPNS,
+    /// DashPay, token history, withdrawals, keyword search, or OrchardPay).
+    /// The UI is expected to hide the option for these, but this is the
+    /// authoritative backend-side guard — see
+    /// `AppContext::is_system_contract_id`.
+    #[error(
+        "This is a built-in contract the app depends on, so it can't be removed. Choose a different contract if you want to remove one."
+    )]
+    CannotRemoveSystemContract,
+
     /// A DPNS contest record could not be read or written in the
     /// per-network wallet k/v store.
     #[error("Could not access your DPNS contest data. Check available disk space and try again.")]

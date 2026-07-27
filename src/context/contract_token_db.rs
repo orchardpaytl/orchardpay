@@ -151,19 +151,12 @@ impl AppContext {
         // (config ID + local cache both present). Pin it right after the
         // other system contracts when available; omit it otherwise, matching
         // this list's existing silent-omission convention.
-        if let Some(orchardpay_contract) = self.orchardpay_contract() {
-            // It lives in the same k/v store `load_user_contracts` just
-            // scanned, so drop any unpinned duplicate before re-inserting it
-            // pinned.
-            contracts.retain(|qc| qc.contract.id() != orchardpay_contract.id());
-            contracts.insert(
-                system_contracts.len(),
-                QualifiedContract {
-                    contract: orchardpay_contract,
-                    alias: Some("orchardpay".to_string()),
-                },
-            );
-        }
+        contracts = pin_singleton_by_alias(
+            contracts,
+            "orchardpay",
+            self.orchardpay_contract(),
+            system_contracts.len(),
+        );
 
         Ok(contracts)
     }
@@ -302,8 +295,33 @@ impl AppContext {
         Ok(())
     }
 
-    // Remove contract from the per-network k/v store by ID.
+    /// Whether `id` is one of the contracts this app depends on internally
+    /// (DPNS, DashPay, token history, withdrawals, keyword search, or
+    /// OrchardPay). These are pinned at the head of [`Self::get_contracts`]
+    /// and must never be deletable — checked here, not just left to the UI
+    /// hiding a button, since a UI-only guard is fragile: it has to be
+    /// re-implemented at every removal entry point and can be bypassed by a
+    /// contract that reaches this app's cache under some other alias than
+    /// the one the UI checks for (e.g. a contract registered through the
+    /// generic "Register Contract" screen under a user-chosen alias, which
+    /// need not be the literal string `"orchardpay"` even though its ID is
+    /// the configured OrchardPay contract).
+    pub fn is_system_contract_id(&self, id: &Identifier) -> bool {
+        *id == self.dpns_contract.id()
+            || *id == self.token_history_contract.id()
+            || *id == self.withdraws_contract.id()
+            || *id == self.keyword_search_contract.id()
+            || *id == self.dashpay_contract.id()
+            || self.orchardpay_contract_id() == Some(*id)
+    }
+
+    /// Remove a contract from the per-network k/v store by ID. Refuses to
+    /// remove any [`Self::is_system_contract_id`] contract — see that
+    /// method's doc comment for why this can't be left to the UI alone.
     pub fn remove_contract(&self, contract_id: &Identifier) -> std::result::Result<(), TaskError> {
+        if self.is_system_contract_id(contract_id) {
+            return Err(TaskError::CannotRemoveSystemContract);
+        }
         let backend = self.wallet_backend()?;
         backend
             .kv()
@@ -733,6 +751,51 @@ impl AppContext {
     }
 }
 
+/// Ensures at most one entry in `contracts` carries `alias` *or* shares
+/// `current`'s ID: strips every entry matching either, then re-inserts
+/// `current` (pinned at `insert_at`, forcibly labeled `alias`) if given.
+///
+/// Both criteria are needed, independently, to catch every way a stale or
+/// duplicate OrchardPay entry can end up in the same k/v store
+/// `load_user_contracts` scans:
+///
+/// - **Alias match, different ID**: a copy cached under a *previous*
+///   contract ID (from before a re-registration, per
+///   `docs/ORCHARDPAY_MIGRATION.md`) — `ensure_orchardpay_contract` always
+///   inserts with `alias = Some("orchardpay")`, so the old entry still
+///   carries that alias even though its ID no longer matches the currently
+///   configured one. An ID-only filter would never catch this.
+/// - **ID match, different alias**: OrchardPay isn't SDK-embedded, so it
+///   has to be registered like any normal contract via the generic
+///   "Register Contract" screen first — which stores whatever alias the
+///   user typed there (or `None`), not necessarily the literal string
+///   `"orchardpay"`. `insert_contract_if_not_exists`'s insert-only-if-absent
+///   semantics mean that first-registration alias sticks permanently; a
+///   later `ensure_orchardpay_contract` call never overwrites it. An
+///   alias-only filter would never catch this — the entry would keep
+///   showing up as an ordinary (deletable!) user contract alongside the
+///   pinned, correctly-labeled copy.
+fn pin_singleton_by_alias(
+    mut contracts: Vec<QualifiedContract>,
+    alias: &str,
+    current: Option<DataContract>,
+    insert_at: usize,
+) -> Vec<QualifiedContract> {
+    let current_id = current.as_ref().map(|c| c.id());
+    contracts
+        .retain(|qc| qc.alias.as_deref() != Some(alias) && Some(qc.contract.id()) != current_id);
+    if let Some(contract) = current {
+        contracts.insert(
+            insert_at,
+            QualifiedContract {
+                contract,
+                alias: Some(alias.to_string()),
+            },
+        );
+    }
+    contracts
+}
+
 /// Decode a stored bincode-encoded [`TokenConfiguration`] blob. Mirrors
 /// the pre-C7 read path that wrapped the same bytes inside SQLite.
 fn decode_token_config(bytes: &[u8]) -> std::result::Result<TokenConfiguration, TaskError> {
@@ -841,6 +904,7 @@ where
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
     use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::{Arc, Mutex};
 
@@ -852,6 +916,40 @@ mod tests {
         Identifier::from([b; 32])
     }
 
+    /// A trivial but valid [`DataContract`] fixture with a distinguishable
+    /// ID (`id_byte`) — [`pin_singleton_by_alias`] cares about both `.alias`
+    /// and the contract's own ID, so tests need entries that vary
+    /// independently on each axis.
+    fn dummy_contract(id_byte: u8) -> DataContract {
+        let id = ident(id_byte).to_string(Encoding::Base58);
+        let json = serde_json::json!({
+            "$formatVersion": "1",
+            "id": id,
+            "ownerId": id,
+            "version": 1,
+            "documentSchemas": {
+                "note": {
+                    "type": "object",
+                    "properties": { "text": { "type": "string", "position": 0 } },
+                    "additionalProperties": false
+                }
+            }
+        });
+        DataContract::from_json(
+            json,
+            true,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        )
+        .expect("dummy fixture contract must parse")
+    }
+
+    fn qc(alias: &str, id_byte: u8) -> QualifiedContract {
+        QualifiedContract {
+            contract: dummy_contract(id_byte),
+            alias: Some(alias.to_string()),
+        }
+    }
+
     fn stored_token(alias: &str, contract: u8, position: u16) -> StoredToken {
         StoredToken {
             config_bytes: vec![0xAB, 0xCD, 0xEF],
@@ -859,6 +957,123 @@ mod tests {
             data_contract_id: [contract; 32],
             position,
         }
+    }
+
+    // ----------------------------------------------------------------
+    // pin_singleton_by_alias: the OrchardPay-contract-list dedup fix.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn pin_singleton_by_alias_drops_stale_alias_under_a_different_id() {
+        // Simulates a re-registration: an old cached "orchardpay" entry
+        // under a *previous* contract ID (id_byte 9), plus an unrelated
+        // entry, then the newly resolved current contract (id_byte 1) gets
+        // pinned. Catches the "alias survives, ID changed" case.
+        let contracts = vec![qc("orchardpay", 9), qc("dpns", 2)];
+        let current = dummy_contract(1);
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", Some(current), 1);
+
+        let orchardpay_entries = result
+            .iter()
+            .filter(|qc| qc.alias.as_deref() == Some("orchardpay"))
+            .count();
+        assert_eq!(
+            orchardpay_entries, 1,
+            "a stale entry under an old ID must never survive alongside the current one"
+        );
+        assert_eq!(result[1].alias.as_deref(), Some("orchardpay"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn pin_singleton_by_alias_drops_matching_id_under_a_different_alias() {
+        // Simulates the actual bug found in practice: OrchardPay isn't
+        // SDK-embedded, so its first registration goes through the generic
+        // "Register Contract" screen, which stores whatever alias the user
+        // typed (or none) — not necessarily "orchardpay". That entry shares
+        // the *same ID* as the currently-resolved contract but a different
+        // alias, so an alias-only filter would never catch it, leaving a
+        // second, unprotected (deletable) copy in the list.
+        let contracts = vec![qc("my custom name", 1), qc("dpns", 2)];
+        let current = dummy_contract(1);
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", Some(current), 1);
+
+        assert_eq!(
+            result.len(),
+            2,
+            "the same-ID, differently-aliased entry must be replaced by the pinned one, not kept alongside it"
+        );
+        assert!(
+            result
+                .iter()
+                .all(|qc| qc.alias.as_deref() != Some("my custom name")),
+            "the arbitrary registration-time alias must not survive"
+        );
+        assert_eq!(result[1].alias.as_deref(), Some("orchardpay"));
+    }
+
+    #[test]
+    fn pin_singleton_by_alias_drops_both_stale_alias_and_stale_id_matches_together() {
+        // Both failure modes could plausibly coexist: an old-ID entry
+        // aliased "orchardpay" from a previous registration, *and* a
+        // same-ID entry under whatever alias the latest registration used.
+        let contracts = vec![
+            qc("orchardpay", 9),     // stale alias, old ID
+            qc("my custom name", 1), // current ID, stale alias
+            qc("dashpay", 2),        // unrelated, untouched
+        ];
+        let current = dummy_contract(1);
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", Some(current), 0);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].alias.as_deref(), Some("orchardpay"));
+        assert_eq!(result[1].alias.as_deref(), Some("dashpay"));
+    }
+
+    #[test]
+    fn pin_singleton_by_alias_drops_multiple_stale_matches() {
+        // More than one prior re-registration could plausibly leave more
+        // than one stale entry behind — all of them must go.
+        let contracts = vec![qc("orchardpay", 8), qc("orchardpay", 9), qc("dashpay", 2)];
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", Some(dummy_contract(1)), 0);
+
+        assert_eq!(
+            result
+                .iter()
+                .filter(|qc| qc.alias.as_deref() == Some("orchardpay"))
+                .count(),
+            1
+        );
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn pin_singleton_by_alias_omits_entry_when_no_current_contract() {
+        // No configured/resolved contract right now — a leftover stale
+        // entry still must not surface as a confusing generic listing.
+        let contracts = vec![qc("orchardpay", 9), qc("dpns", 2)];
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", None, 0);
+
+        assert!(
+            result
+                .iter()
+                .all(|qc| qc.alias.as_deref() != Some("orchardpay"))
+        );
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn pin_singleton_by_alias_is_a_no_op_when_nothing_matches() {
+        let contracts = vec![qc("dpns", 2), qc("dashpay", 3)];
+
+        let result = pin_singleton_by_alias(contracts, "orchardpay", None, 0);
+
+        assert_eq!(result.len(), 2);
     }
 
     // ----------------------------------------------------------------

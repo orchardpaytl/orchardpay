@@ -489,14 +489,20 @@ pub fn add_contract_chooser_panel(
                                             }
                                         });
 
-                                        // Right‐aligned Remove button
+                                        // Right‐aligned Remove button. Gated by
+                                        // `is_system_contract_id` — the same
+                                        // authoritative check `remove_contract`
+                                        // enforces on the backend — rather than a
+                                        // hand-maintained alias-string list, which
+                                        // previously omitted "dashpay" entirely
+                                        // and could be defeated by any contract
+                                        // whose alias didn't happen to match the
+                                        // exact string checked for (e.g. OrchardPay
+                                        // registered under a custom alias via the
+                                        // generic Register Contract screen).
                                         ui.horizontal(|ui| {
                                             ui.add_space(8.0);
-                                            if contract.alias != Some("dpns".to_string())
-                                                && contract.alias != Some("token_history".to_string())
-                                                && contract.alias != Some("withdrawals".to_string())
-                                                && contract.alias != Some("keyword_search".to_string())
-                                                && contract.alias != Some("orchardpay".to_string())
+                                            if !app_context.is_system_contract_id(&contract.contract.id())
                                                 && ui.add(
                                                     egui::Button::new("Remove")
                                                         .min_size(egui::Vec2::new(60.0, 20.0))
