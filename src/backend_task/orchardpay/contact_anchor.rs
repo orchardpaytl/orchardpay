@@ -35,7 +35,9 @@ use crate::backend_task::{
     BackendTaskSuccessResult, NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout,
 };
 use crate::context::AppContext;
-use crate::model::orchardpay::{OrchardPayContactState, validate_send_amount};
+use crate::model::orchardpay::{
+    OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation, validate_send_amount,
+};
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::RngCore;
@@ -146,138 +148,191 @@ pub async fn initiate_contact(
             .await?
             .ok_or(OrchardPayError::CounterpartyKeyMissing)?;
 
-    let my_encryption_key = own_bounds_verified_key(
-        &qualified_identity,
-        orchardpay_contract.id(),
-        Purpose::ENCRYPTION,
-    )
-    .ok_or(OrchardPayError::OwnKeyMissing)?;
+    // Resume a previously-interrupted attempt instead of starting fresh, if
+    // one was left behind (document published and/or transfer sent, but the
+    // final local state write never landed) — see M-02 of
+    // `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`.
+    // Reusing the persisted `my_reference_id`/`document_id` instead of
+    // generating fresh ones is what prevents a naive retry from publishing a
+    // second, orphaned anchor.
+    let pending = backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?;
 
-    // Fetch both of the counterparty's keys up front: DECRYPTION drives
-    // `data`'s ECDH secret right now, ENCRYPTION gets cached in `anchorData`
-    // for reading their future messages — no reason to make that a second
-    // network trip once messaging actually needs it.
-    let (counterparty_decryption_key, counterparty_decryption_pubkey) =
-        fetch_counterparty_key_bytes(
-            sdk,
-            orchardpay_contract.id(),
-            counterparty_identity_id,
-            Purpose::DECRYPTION,
-        )
-        .await?;
-    let (_, counterparty_encryption_pubkey) = fetch_counterparty_key_bytes(
-        sdk,
-        orchardpay_contract.id(),
-        counterparty_identity_id,
-        Purpose::ENCRYPTION,
-    )
-    .await?;
+    let (my_reference_id, document_id, needs_transfer, mut broadcast_result) = match pending {
+        Some(PendingOrchardPayOperation::ContactAnchor {
+            my_reference_id,
+            my_anchor_document_id,
+            step,
+        }) => (
+            my_reference_id,
+            Identifier::from(my_anchor_document_id),
+            matches!(step, PendingOperationStep::DocumentPublished),
+            None,
+        ),
+        _ => {
+            let my_encryption_key = own_bounds_verified_key(
+                &qualified_identity,
+                orchardpay_contract.id(),
+                Purpose::ENCRYPTION,
+            )
+            .ok_or(OrchardPayError::OwnKeyMissing)?;
 
-    let shared_secret = compute_shared_secret_from_key(
-        app_context,
-        &qualified_identity,
-        &my_encryption_key,
-        &counterparty_decryption_key,
-        seed_hash,
-    )
-    .await?;
+            // Fetch both of the counterparty's keys up front: DECRYPTION
+            // drives `data`'s ECDH secret right now, ENCRYPTION gets cached
+            // in `anchorData` for reading their future messages — no reason
+            // to make that a second network trip once messaging actually
+            // needs it.
+            let (counterparty_decryption_key, counterparty_decryption_pubkey) =
+                fetch_counterparty_key_bytes(
+                    sdk,
+                    orchardpay_contract.id(),
+                    counterparty_identity_id,
+                    Purpose::DECRYPTION,
+                )
+                .await?;
+            let (_, counterparty_encryption_pubkey) = fetch_counterparty_key_bytes(
+                sdk,
+                orchardpay_contract.id(),
+                counterparty_identity_id,
+                Purpose::ENCRYPTION,
+            )
+            .await?;
 
-    let mut my_reference_id = [0u8; 32];
-    OsRng.fill_bytes(&mut my_reference_id);
+            let shared_secret = compute_shared_secret_from_key(
+                app_context,
+                &qualified_identity,
+                &my_encryption_key,
+                &counterparty_decryption_key,
+                seed_hash,
+            )
+            .await?;
 
-    let my_payload = ContactAnchorPayload {
-        reference_id: my_reference_id,
-        core_payment_xpub: None,
-        dedicated_shielded_address: None,
-        initial_message: None,
+            let mut my_reference_id = [0u8; 32];
+            OsRng.fill_bytes(&mut my_reference_id);
+
+            let my_payload = ContactAnchorPayload {
+                reference_id: my_reference_id,
+                core_payment_xpub: None,
+                dedicated_shielded_address: None,
+                initial_message: None,
+            };
+            let data_bytes = my_payload
+                .encrypt(&shared_secret)
+                .map_err(OrchardPayError::Crypto)?;
+
+            let anchor_data_key = backend
+                .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+                .await?;
+            let anchor_record = AnchorDataRecord {
+                counterparty_identity_id: counterparty_identity_id.to_buffer(),
+                counterparty_name_snapshot: Some(counterparty_name.clone()),
+                my_reference_id,
+                their_reference_id: None,
+                my_initial_message: None,
+                my_core_payment_xpub: None,
+                my_dedicated_shielded_address: None,
+                counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
+                counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey),
+            };
+            let anchor_data_bytes = anchor_record
+                .encrypt(&anchor_data_key)
+                .map_err(OrchardPayError::Crypto)?;
+
+            let document_type = orchardpay_contract
+                .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
+                .expect(
+                    "contactAnchor document type is part of the checked-in OrchardPay contract schema",
+                );
+
+            let mut rng = StdRng::from_entropy();
+            let entropy = Bytes32::random_with_rng(&mut rng);
+            let document_id = DppDocument::generate_document_id_v0(
+                &orchardpay_contract.id(),
+                &owner_id,
+                CONTACT_ANCHOR_DOCUMENT_TYPE,
+                entropy.as_slice(),
+            );
+
+            let mut properties = BTreeMap::new();
+            properties.insert(DATA_FIELD.to_string(), Value::Bytes(data_bytes));
+            properties.insert(
+                ANCHOR_DATA_FIELD.to_string(),
+                Value::Bytes(anchor_data_bytes),
+            );
+            properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
+
+            let document = DppDocument::V0(DocumentV0 {
+                id: document_id,
+                owner_id,
+                creator_id: None,
+                properties,
+                revision: Some(1),
+                created_at: None,
+                updated_at: None,
+                transferred_at: None,
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                transferred_at_block_height: None,
+                created_at_core_block_height: None,
+                updated_at_core_block_height: None,
+                transferred_at_core_block_height: None,
+            });
+
+            // Persist intent *before* the first network side effect — if the
+            // broadcast or transfer below fails, a retry finds this marker
+            // and resumes instead of generating a second anchor.
+            backend.orchardpay_set_pending_operation(
+                &owner_id,
+                &counterparty_identity_id,
+                &PendingOrchardPayOperation::ContactAnchor {
+                    my_reference_id,
+                    my_anchor_document_id: document_id.to_buffer(),
+                    step: PendingOperationStep::DocumentPublished,
+                },
+            )?;
+
+            let task = DocumentTask::BroadcastDocument {
+                document,
+                token_payment_info: None,
+                entropy: entropy
+                    .as_slice()
+                    .try_into()
+                    .expect("Bytes32 is always 32 bytes"),
+                document_type,
+                data_contract: orchardpay_contract,
+                qualified_identity,
+                identity_key,
+            };
+            let result = app_context.run_document_task(task, sdk).await?;
+
+            (my_reference_id, document_id, true, Some(result))
+        }
     };
-    let data_bytes = my_payload
-        .encrypt(&shared_secret)
-        .map_err(OrchardPayError::Crypto)?;
 
-    let anchor_data_key = backend
-        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
-        .await?;
-    let anchor_record = AnchorDataRecord {
-        counterparty_identity_id: counterparty_identity_id.to_buffer(),
-        counterparty_name_snapshot: Some(counterparty_name.clone()),
-        my_reference_id,
-        their_reference_id: None,
-        my_initial_message: None,
-        my_core_payment_xpub: None,
-        my_dedicated_shielded_address: None,
-        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
-        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey),
-    };
-    let anchor_data_bytes = anchor_record
-        .encrypt(&anchor_data_key)
-        .map_err(OrchardPayError::Crypto)?;
+    if needs_transfer {
+        let mut memo = [0u8; 36];
+        memo[..4].copy_from_slice(&MEMO_TAG_ANCHOR);
+        memo[4..].copy_from_slice(&document_id.to_buffer());
 
-    let document_type = orchardpay_contract
-        .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
-        .expect("contactAnchor document type is part of the checked-in OrchardPay contract schema");
+        backend
+            .shielded_transfer(
+                &seed_hash,
+                0,
+                &counterparty_shielded_address,
+                amount_credits,
+                memo,
+            )
+            .await?;
 
-    let mut rng = StdRng::from_entropy();
-    let entropy = Bytes32::random_with_rng(&mut rng);
-    let document_id = DppDocument::generate_document_id_v0(
-        &orchardpay_contract.id(),
-        &owner_id,
-        CONTACT_ANCHOR_DOCUMENT_TYPE,
-        entropy.as_slice(),
-    );
-
-    let mut properties = BTreeMap::new();
-    properties.insert(DATA_FIELD.to_string(), Value::Bytes(data_bytes));
-    properties.insert(
-        ANCHOR_DATA_FIELD.to_string(),
-        Value::Bytes(anchor_data_bytes),
-    );
-    properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
-
-    let document = DppDocument::V0(DocumentV0 {
-        id: document_id,
-        owner_id,
-        creator_id: None,
-        properties,
-        revision: Some(1),
-        created_at: None,
-        updated_at: None,
-        transferred_at: None,
-        created_at_block_height: None,
-        updated_at_block_height: None,
-        transferred_at_block_height: None,
-        created_at_core_block_height: None,
-        updated_at_core_block_height: None,
-        transferred_at_core_block_height: None,
-    });
-
-    let task = DocumentTask::BroadcastDocument {
-        document,
-        token_payment_info: None,
-        entropy: entropy
-            .as_slice()
-            .try_into()
-            .expect("Bytes32 is always 32 bytes"),
-        document_type,
-        data_contract: orchardpay_contract,
-        qualified_identity,
-        identity_key,
-    };
-    let result = app_context.run_document_task(task, sdk).await?;
-
-    let mut memo = [0u8; 36];
-    memo[..4].copy_from_slice(&MEMO_TAG_ANCHOR);
-    memo[4..].copy_from_slice(&document_id.to_buffer());
-
-    backend
-        .shielded_transfer(
-            &seed_hash,
-            0,
-            &counterparty_shielded_address,
-            amount_credits,
-            memo,
-        )
-        .await?;
+        backend.orchardpay_set_pending_operation(
+            &owner_id,
+            &counterparty_identity_id,
+            &PendingOrchardPayOperation::ContactAnchor {
+                my_reference_id,
+                my_anchor_document_id: document_id.to_buffer(),
+                step: PendingOperationStep::TransferSent,
+            },
+        )?;
+    }
 
     backend.orchardpay_set_contact_state(
         &owner_id,
@@ -286,11 +341,16 @@ pub async fn initiate_contact(
             my_reference_id,
             my_anchor_document_id: document_id.to_buffer(),
             name: Some(counterparty_name),
-            created_at: broadcast_document_created_at(&result),
+            created_at: broadcast_result
+                .as_ref()
+                .and_then(broadcast_document_created_at),
         },
     )?;
+    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
 
-    Ok(result)
+    Ok(broadcast_result
+        .take()
+        .unwrap_or(BackendTaskSuccessResult::None))
 }
 
 /// Complete a relationship already recorded as
@@ -322,13 +382,9 @@ pub async fn accept_contact(
             .await?
             .ok_or(OrchardPayError::CounterpartyKeyMissing)?;
 
-    let my_encryption_key = own_bounds_verified_key(
-        &qualified_identity,
-        orchardpay_contract.id(),
-        Purpose::ENCRYPTION,
-    )
-    .ok_or(OrchardPayError::OwnKeyMissing)?;
-
+    // Needed for the final `Established` state regardless of whether this
+    // call ends up publishing fresh or resuming an interrupted attempt —
+    // cheap, read-only lookups, safe to repeat on a resume.
     let (counterparty_decryption_key, counterparty_decryption_pubkey) =
         fetch_counterparty_key_bytes(
             sdk,
@@ -344,29 +400,6 @@ pub async fn accept_contact(
         Purpose::ENCRYPTION,
     )
     .await?;
-
-    let shared_secret = compute_shared_secret_from_key(
-        app_context,
-        &qualified_identity,
-        &my_encryption_key,
-        &counterparty_decryption_key,
-        seed_hash,
-    )
-    .await?;
-
-    let mut my_reference_id = [0u8; 32];
-    OsRng.fill_bytes(&mut my_reference_id);
-
-    let my_payload = ContactAnchorPayload {
-        reference_id: my_reference_id,
-        core_payment_xpub: None,
-        dedicated_shielded_address: None,
-        initial_message: None,
-    };
-    let data_bytes = my_payload
-        .encrypt(&shared_secret)
-        .map_err(OrchardPayError::Crypto)?;
-
     // Best-effort: a DPNS lookup failure shouldn't block accepting the
     // contact, it just means the local recovery record won't carry a name
     // snapshot yet.
@@ -376,89 +409,166 @@ pub async fn accept_contact(
             .ok()
             .flatten();
 
-    let anchor_data_key = backend
-        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
-        .await?;
-    let anchor_record = AnchorDataRecord {
-        counterparty_identity_id: counterparty_identity_id.to_buffer(),
-        counterparty_name_snapshot: counterparty_name.clone(),
-        my_reference_id,
-        their_reference_id: Some(their_reference_id),
-        my_initial_message: None,
-        my_core_payment_xpub: None,
-        my_dedicated_shielded_address: None,
-        counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey.clone()),
-        counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey.clone()),
+    // Resume a previously-interrupted attempt instead of starting fresh, if
+    // one was left behind — see M-02 of
+    // `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`
+    // and `initiate_contact`'s identical treatment above.
+    let pending = backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?;
+
+    let (my_reference_id, document_id, needs_transfer, mut broadcast_result) = match pending {
+        Some(PendingOrchardPayOperation::ContactAnchor {
+            my_reference_id,
+            my_anchor_document_id,
+            step,
+        }) => (
+            my_reference_id,
+            Identifier::from(my_anchor_document_id),
+            matches!(step, PendingOperationStep::DocumentPublished),
+            None,
+        ),
+        _ => {
+            let my_encryption_key = own_bounds_verified_key(
+                &qualified_identity,
+                orchardpay_contract.id(),
+                Purpose::ENCRYPTION,
+            )
+            .ok_or(OrchardPayError::OwnKeyMissing)?;
+
+            let shared_secret = compute_shared_secret_from_key(
+                app_context,
+                &qualified_identity,
+                &my_encryption_key,
+                &counterparty_decryption_key,
+                seed_hash,
+            )
+            .await?;
+
+            let mut my_reference_id = [0u8; 32];
+            OsRng.fill_bytes(&mut my_reference_id);
+
+            let my_payload = ContactAnchorPayload {
+                reference_id: my_reference_id,
+                core_payment_xpub: None,
+                dedicated_shielded_address: None,
+                initial_message: None,
+            };
+            let data_bytes = my_payload
+                .encrypt(&shared_secret)
+                .map_err(OrchardPayError::Crypto)?;
+
+            let anchor_data_key = backend
+                .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+                .await?;
+            let anchor_record = AnchorDataRecord {
+                counterparty_identity_id: counterparty_identity_id.to_buffer(),
+                counterparty_name_snapshot: counterparty_name.clone(),
+                my_reference_id,
+                their_reference_id: Some(their_reference_id),
+                my_initial_message: None,
+                my_core_payment_xpub: None,
+                my_dedicated_shielded_address: None,
+                counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey.clone()),
+                counterparty_decryption_pubkey: Some(counterparty_decryption_pubkey.clone()),
+            };
+            let anchor_data_bytes = anchor_record
+                .encrypt(&anchor_data_key)
+                .map_err(OrchardPayError::Crypto)?;
+
+            let document_type = orchardpay_contract
+                .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
+                .expect(
+                    "contactAnchor document type is part of the checked-in OrchardPay contract schema",
+                );
+
+            let mut rng = StdRng::from_entropy();
+            let entropy = Bytes32::random_with_rng(&mut rng);
+            let document_id = DppDocument::generate_document_id_v0(
+                &orchardpay_contract.id(),
+                &owner_id,
+                CONTACT_ANCHOR_DOCUMENT_TYPE,
+                entropy.as_slice(),
+            );
+
+            let mut properties = BTreeMap::new();
+            properties.insert(DATA_FIELD.to_string(), Value::Bytes(data_bytes));
+            properties.insert(
+                ANCHOR_DATA_FIELD.to_string(),
+                Value::Bytes(anchor_data_bytes),
+            );
+            properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
+
+            let document = DppDocument::V0(DocumentV0 {
+                id: document_id,
+                owner_id,
+                creator_id: None,
+                properties,
+                revision: Some(1),
+                created_at: None,
+                updated_at: None,
+                transferred_at: None,
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                transferred_at_block_height: None,
+                created_at_core_block_height: None,
+                updated_at_core_block_height: None,
+                transferred_at_core_block_height: None,
+            });
+
+            // Persist intent *before* the first network side effect, same
+            // reasoning as `initiate_contact`.
+            backend.orchardpay_set_pending_operation(
+                &owner_id,
+                &counterparty_identity_id,
+                &PendingOrchardPayOperation::ContactAnchor {
+                    my_reference_id,
+                    my_anchor_document_id: document_id.to_buffer(),
+                    step: PendingOperationStep::DocumentPublished,
+                },
+            )?;
+
+            let task = DocumentTask::BroadcastDocument {
+                document,
+                token_payment_info: None,
+                entropy: entropy
+                    .as_slice()
+                    .try_into()
+                    .expect("Bytes32 is always 32 bytes"),
+                document_type,
+                data_contract: orchardpay_contract,
+                qualified_identity,
+                identity_key,
+            };
+            let result = app_context.run_document_task(task, sdk).await?;
+
+            (my_reference_id, document_id, true, Some(result))
+        }
     };
-    let anchor_data_bytes = anchor_record
-        .encrypt(&anchor_data_key)
-        .map_err(OrchardPayError::Crypto)?;
 
-    let document_type = orchardpay_contract
-        .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
-        .expect("contactAnchor document type is part of the checked-in OrchardPay contract schema");
+    if needs_transfer {
+        let mut memo = [0u8; 36];
+        memo[..4].copy_from_slice(&MEMO_TAG_ANCHOR);
+        memo[4..].copy_from_slice(&document_id.to_buffer());
 
-    let mut rng = StdRng::from_entropy();
-    let entropy = Bytes32::random_with_rng(&mut rng);
-    let document_id = DppDocument::generate_document_id_v0(
-        &orchardpay_contract.id(),
-        &owner_id,
-        CONTACT_ANCHOR_DOCUMENT_TYPE,
-        entropy.as_slice(),
-    );
+        backend
+            .shielded_transfer(
+                &seed_hash,
+                0,
+                &counterparty_shielded_address,
+                ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                memo,
+            )
+            .await?;
 
-    let mut properties = BTreeMap::new();
-    properties.insert(DATA_FIELD.to_string(), Value::Bytes(data_bytes));
-    properties.insert(
-        ANCHOR_DATA_FIELD.to_string(),
-        Value::Bytes(anchor_data_bytes),
-    );
-    properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
-
-    let document = DppDocument::V0(DocumentV0 {
-        id: document_id,
-        owner_id,
-        creator_id: None,
-        properties,
-        revision: Some(1),
-        created_at: None,
-        updated_at: None,
-        transferred_at: None,
-        created_at_block_height: None,
-        updated_at_block_height: None,
-        transferred_at_block_height: None,
-        created_at_core_block_height: None,
-        updated_at_core_block_height: None,
-        transferred_at_core_block_height: None,
-    });
-
-    let task = DocumentTask::BroadcastDocument {
-        document,
-        token_payment_info: None,
-        entropy: entropy
-            .as_slice()
-            .try_into()
-            .expect("Bytes32 is always 32 bytes"),
-        document_type,
-        data_contract: orchardpay_contract,
-        qualified_identity,
-        identity_key,
-    };
-    let result = app_context.run_document_task(task, sdk).await?;
-
-    let mut memo = [0u8; 36];
-    memo[..4].copy_from_slice(&MEMO_TAG_ANCHOR);
-    memo[4..].copy_from_slice(&document_id.to_buffer());
-
-    backend
-        .shielded_transfer(
-            &seed_hash,
-            0,
-            &counterparty_shielded_address,
-            ANCHOR_SIGNAL_AMOUNT_CREDITS,
-            memo,
-        )
-        .await?;
+        backend.orchardpay_set_pending_operation(
+            &owner_id,
+            &counterparty_identity_id,
+            &PendingOrchardPayOperation::ContactAnchor {
+                my_reference_id,
+                my_anchor_document_id: document_id.to_buffer(),
+                step: PendingOperationStep::TransferSent,
+            },
+        )?;
+    }
 
     backend.orchardpay_set_contact_state(
         &owner_id,
@@ -470,11 +580,16 @@ pub async fn accept_contact(
             counterparty_encryption_pubkey,
             counterparty_decryption_pubkey,
             name: counterparty_name,
-            created_at: broadcast_document_created_at(&result),
+            created_at: broadcast_result
+                .as_ref()
+                .and_then(broadcast_document_created_at),
         },
     )?;
+    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
 
-    Ok(result)
+    Ok(broadcast_result
+        .take()
+        .unwrap_or(BackendTaskSuccessResult::None))
 }
 
 /// Called by the incoming-memo scan when it detects a transfer memo tagged

@@ -28,7 +28,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
-use crate::model::orchardpay::OrchardPayContactState;
+use crate::model::orchardpay::{OrchardPayContactState, PendingOrchardPayOperation};
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
 
@@ -223,6 +223,19 @@ const KV_PREFIX_MEMO_SCAN_RETRY_COUNT: &str = "det:orchardpay:memo_scan_retry_co
 /// [`KV_PREFIX_MEMO_SCAN_RETRY_COUNT`].
 pub const MEMO_SCAN_ERROR_RETRY_CAP: u32 = 5;
 
+/// Value: bincode-encoded [`PendingOrchardPayOperation`]. A local, resumable
+/// marker for an in-flight `initiate_contact`/`accept_contact`/`send_payment`
+/// call, written *before* the first network side effect so a crash or a
+/// failed transfer never leaves an orphaned duplicate Platform document
+/// behind on retry — see M-02 of
+/// `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`.
+/// Cleared once the operation reaches a consistent end state. Scope:
+/// [`DetScope::Identity`] of the owner, matching [`KV_PREFIX_CONTACT`]'s own
+/// reasoning (per-relationship state, private to the acting identity,
+/// cascades on identity removal). Key shape:
+/// `det:orchardpay:pending_op:<counterparty_b58>`.
+const KV_PREFIX_PENDING_OPERATION: &str = "det:orchardpay:pending_op:";
+
 fn contact_key(counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_CONTACT}{}",
@@ -246,6 +259,13 @@ fn unresolved_anchor_key(anchor_document_id: &Identifier) -> String {
 
 fn memo_scan_retry_count_key(note_index: u64) -> String {
     format!("{KV_PREFIX_MEMO_SCAN_RETRY_COUNT}{note_index}")
+}
+
+fn pending_operation_key(counterparty: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_PENDING_OPERATION}{}",
+        counterparty.to_string(Encoding::Base58)
+    )
 }
 
 impl WalletBackend {
@@ -276,6 +296,52 @@ impl WalletBackend {
         let key = contact_key(counterparty);
         self.kv()
             .put::<OrchardPayContactState>(DetScope::Identity(&owner_buf), &key, state)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Read the local resumable marker for an in-flight publish-then-transfer
+    /// operation with `counterparty`, if one exists. `Ok(None)` means no
+    /// operation is in flight — callers should treat this as "safe to start
+    /// fresh." See [`KV_PREFIX_PENDING_OPERATION`].
+    pub fn orchardpay_get_pending_operation(
+        &self,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<Option<PendingOrchardPayOperation>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = pending_operation_key(counterparty);
+        self.kv()
+            .get::<PendingOrchardPayOperation>(DetScope::Identity(&owner_buf), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Upsert the local resumable marker for an in-flight operation with
+    /// `counterparty`.
+    pub fn orchardpay_set_pending_operation(
+        &self,
+        owner: &Identifier,
+        counterparty: &Identifier,
+        operation: &PendingOrchardPayOperation,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = pending_operation_key(counterparty);
+        self.kv()
+            .put::<PendingOrchardPayOperation>(DetScope::Identity(&owner_buf), &key, operation)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Clear the local pending-operation marker for `counterparty` — called
+    /// once the operation reaches a consistent end state (local contact
+    /// state written, or a payment transfer confirmed).
+    pub fn orchardpay_clear_pending_operation(
+        &self,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = pending_operation_key(counterparty);
+        self.kv()
+            .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
@@ -496,10 +562,11 @@ impl WalletBackend {
     }
 
     /// Drop every OrchardPay sidecar entry for `owner` — the per-counterparty
-    /// contact-state records and the cached "has published a
-    /// shieldedAddress" flag. Mirrors `dashpay_clear_owner_overlays` for the
-    /// network-clear path. The memo-scan cursor and verified-payment cache
-    /// are wallet-scoped, not owner-scoped, so neither is covered here — see
+    /// contact-state records, the pending-operation recovery markers, and
+    /// the cached "has published a shieldedAddress" flag. Mirrors
+    /// `dashpay_clear_owner_overlays` for the network-clear path. The
+    /// memo-scan cursor and verified-payment cache are wallet-scoped, not
+    /// owner-scoped, so neither is covered here — see
     /// [`Self::orchardpay_clear_wallet_overlays`], called from wallet
     /// removal instead of identity removal.
     pub fn orchardpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
@@ -507,12 +574,14 @@ impl WalletBackend {
         let scope = DetScope::Identity(&owner_buf);
         let kv = self.kv();
 
-        let contact_keys = kv
-            .list(scope, Some(KV_PREFIX_CONTACT))
-            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
-        for key in contact_keys {
-            kv.delete(scope, &key)
+        for prefix in [KV_PREFIX_CONTACT, KV_PREFIX_PENDING_OPERATION] {
+            let keys = kv
+                .list(scope, Some(prefix))
                 .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+            for key in keys {
+                kv.delete(scope, &key)
+                    .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+            }
         }
 
         kv.delete(scope, KV_PREFIX_HAS_SHIELDED_ADDRESS)
@@ -866,6 +935,7 @@ impl WalletBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::orchardpay::PendingOperationStep;
     use crate::wallet_backend::kv::DetKv;
 
     const TEST_SEED: [u8; 64] = [0x42u8; 64];
@@ -1093,6 +1163,140 @@ mod tests {
                 .len(),
             1,
             "owner_b's contact overlays must be untouched"
+        );
+    }
+
+    /// A pending `ContactAnchor` operation round-trips through get/set/clear
+    /// — the exact sequence `initiate_contact`/`accept_contact` rely on to
+    /// detect and resume an interrupted attempt. Mirrors
+    /// `orchardpay_get/set/clear_pending_operation`'s logic directly against
+    /// a `DetKv` test double, same style as the contact-state tests above.
+    #[test]
+    fn pending_contact_anchor_operation_round_trips() {
+        let kv = empty_kv();
+        let owner = [0x66u8; 32];
+        let counterparty = Identifier::new([0x77u8; 32]);
+        let scope = DetScope::Identity(&owner);
+        let key = pending_operation_key(&counterparty);
+
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &key).unwrap(),
+            None,
+            "nothing pending yet"
+        );
+
+        let op = PendingOrchardPayOperation::ContactAnchor {
+            my_reference_id: [1u8; 32],
+            my_anchor_document_id: [2u8; 32],
+            step: PendingOperationStep::DocumentPublished,
+        };
+        kv.put::<PendingOrchardPayOperation>(scope, &key, &op)
+            .unwrap();
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &key).unwrap(),
+            Some(op),
+            "recorded operation must read back unchanged"
+        );
+
+        kv.delete(scope, &key).unwrap();
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &key).unwrap(),
+            None,
+            "cleared operation must no longer be present"
+        );
+    }
+
+    /// A pending `Payment` operation round-trips the same way — the shape
+    /// `send_payment` relies on to detect a prior unconfirmed send.
+    #[test]
+    fn pending_payment_operation_round_trips() {
+        let kv = empty_kv();
+        let owner = [0x88u8; 32];
+        let counterparty = Identifier::new([0x99u8; 32]);
+        let scope = DetScope::Identity(&owner);
+        let key = pending_operation_key(&counterparty);
+
+        let op = PendingOrchardPayOperation::Payment {
+            document_id: [3u8; 32],
+            step: PendingOperationStep::DocumentPublished,
+        };
+        kv.put::<PendingOrchardPayOperation>(scope, &key, &op)
+            .unwrap();
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &key).unwrap(),
+            Some(op)
+        );
+    }
+
+    /// Two counterparties under the same owner never collide — each has its
+    /// own independent pending-operation slot.
+    #[test]
+    fn pending_operations_are_scoped_per_counterparty() {
+        let kv = empty_kv();
+        let owner = [0xaau8; 32];
+        let counterparty_a = Identifier::new([0xbbu8; 32]);
+        let counterparty_b = Identifier::new([0xccu8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        let op = PendingOrchardPayOperation::ContactAnchor {
+            my_reference_id: [4u8; 32],
+            my_anchor_document_id: [5u8; 32],
+            step: PendingOperationStep::TransferSent,
+        };
+        kv.put::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_a), &op)
+            .unwrap();
+
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_a))
+                .unwrap(),
+            Some(op),
+            "counterparty_a's marker must be present"
+        );
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(scope, &pending_operation_key(&counterparty_b))
+                .unwrap(),
+            None,
+            "counterparty_b must not see counterparty_a's marker"
+        );
+    }
+
+    /// `orchardpay_clear_owner_overlays`'s sweep loop must also clear
+    /// pending-operation markers, leaving other owners untouched — extends
+    /// `owner_overlays_sweep_clears_only_that_owners_contact_entries`.
+    #[test]
+    fn owner_overlays_sweep_clears_pending_operations_too() {
+        let kv = empty_kv();
+        let owner_a = [0xddu8; 32];
+        let owner_b = [0xeeu8; 32];
+        let counterparty = Identifier::new([0xffu8; 32]);
+        let key = pending_operation_key(&counterparty);
+        let op = PendingOrchardPayOperation::Payment {
+            document_id: [6u8; 32],
+            step: PendingOperationStep::DocumentPublished,
+        };
+
+        kv.put::<PendingOrchardPayOperation>(DetScope::Identity(&owner_a), &key, &op)
+            .unwrap();
+        kv.put::<PendingOrchardPayOperation>(DetScope::Identity(&owner_b), &key, &op)
+            .unwrap();
+
+        for prefix in [KV_PREFIX_CONTACT, KV_PREFIX_PENDING_OPERATION] {
+            for k in kv.list(DetScope::Identity(&owner_a), Some(prefix)).unwrap() {
+                kv.delete(DetScope::Identity(&owner_a), &k).unwrap();
+            }
+        }
+
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(DetScope::Identity(&owner_a), &key)
+                .unwrap(),
+            None,
+            "owner_a's pending operation must be gone"
+        );
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(DetScope::Identity(&owner_b), &key)
+                .unwrap(),
+            Some(op),
+            "owner_b's pending operation must be untouched"
         );
     }
 

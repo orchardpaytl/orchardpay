@@ -107,10 +107,17 @@ correctness isn't independently test-covered yet.
 
 ## M-02 — multi-step contact/payment flows aren't atomic
 
-**Open.** Confirmed unchanged: `initiate_contact`/`accept_contact` still
-publish the `contactAnchor` document before sending the signaling transfer
-before writing local state; `send_payment` still publishes the `Payment`
-document before the shielded transfer. See the separate design doc:
+**Resolved.** `initiate_contact`/`accept_contact` still publish-then-transfer-
+then-write-local-state, but now persist a local recovery marker before the
+first network side effect and reuse it on retry — no more orphaned
+duplicate anchors, and no risk of double-sending the signaling transfer.
+`send_payment`'s standalone path does the same for the `Payment` document,
+but deliberately does not auto-resume (returns a distinct
+`OrchardPayPaymentRecoveryNeeded` error instead) since silently resending
+real funds is a different risk profile than a free-to-retry contact
+handshake. A fully modeled per-document lifecycle (the review's original
+ask) remains out of scope — this is the narrower local-recovery fix. See
+the design doc for the full implementation:
 `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`.
 
 ## M-03 — Tier-1 unprotected wallet storage is the default
@@ -209,7 +216,7 @@ schema/MCP paths the review specifically recommended.
 | H-01 | Resolved (owner check); index-vs-drop decided (no new index); envelope redesign → M-05; adversarial tests still missing |
 | H-02 | Resolved |
 | M-01 | Resolved; boundary/collision tests still missing |
-| M-02 | Open — see linked design doc |
+| M-02 | Resolved — see linked design doc |
 | M-03 | Out of scope (DET-wide) |
 | M-04 | Out of scope (DET-wide) |
 | M-05 | Open — see linked design doc |

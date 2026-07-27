@@ -1291,6 +1291,20 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// `send_payment` found a pending-operation marker already recorded for
+    /// this counterparty — a previous payment message was broadcast but its
+    /// transfer never confirmed. The send is not silently retried (that
+    /// would risk sending real funds twice without the user noticing); the
+    /// caller must explicitly retry. `document_id` is kept for diagnostics,
+    /// not shown in this message. See M-02 of
+    /// `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`.
+    #[error(
+        "A previous payment message to this contact was saved, but it's not clear the funds were sent. Please try sending again."
+    )]
+    OrchardPayPaymentRecoveryNeeded {
+        document_id: dash_sdk::platform::Identifier,
+    },
+
     /// A searchable contract keyword fell outside the shared character range.
     #[error("A contract keyword has an invalid length. Use 3 to 50 characters and try again.")]
     InvalidContractKeywordLength {

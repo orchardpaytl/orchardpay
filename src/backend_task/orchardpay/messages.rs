@@ -30,7 +30,8 @@ use crate::backend_task::{
 };
 use crate::context::AppContext;
 use crate::model::orchardpay::{
-    OrchardPayContactState, validate_message_text, validate_payment_memo, validate_send_amount,
+    OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation,
+    validate_message_text, validate_payment_memo, validate_send_amount,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
@@ -302,6 +303,95 @@ async fn broadcast_encrypted_message(
         ENCRYPTED_MESSAGE_DOCUMENT_TYPE,
         entropy.as_slice(),
     );
+
+    let mut properties = BTreeMap::new();
+    properties.insert(REF_ID_FIELD.to_string(), Value::Bytes(ref_id.to_vec()));
+    properties.insert(MSG_DATA_FIELD.to_string(), Value::Bytes(msg_data));
+    properties.insert(EXTRA_FIELD.to_string(), Value::Bytes(Vec::new()));
+
+    let document = DppDocument::V0(DocumentV0 {
+        id: document_id,
+        owner_id,
+        creator_id: None,
+        properties,
+        revision: Some(1),
+        created_at: None,
+        updated_at: None,
+        transferred_at: None,
+        created_at_block_height: None,
+        updated_at_block_height: None,
+        transferred_at_block_height: None,
+        created_at_core_block_height: None,
+        updated_at_core_block_height: None,
+        transferred_at_core_block_height: None,
+    });
+
+    let task = DocumentTask::BroadcastDocument {
+        document,
+        token_payment_info: None,
+        entropy: entropy
+            .as_slice()
+            .try_into()
+            .expect("Bytes32 is always 32 bytes"),
+        document_type,
+        data_contract: orchardpay_contract.clone(),
+        qualified_identity,
+        identity_key,
+    };
+    let result = app_context.run_document_task(task, sdk).await?;
+    Ok((result, document_id))
+}
+
+/// Build and broadcast a fresh, unprompted `Payment` document, persisting a
+/// local recovery marker *before* the broadcast — see M-02 of
+/// `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`.
+/// If the subsequent shielded transfer fails, a retry finds the marker
+/// (checked by `send_payment` before calling this) and is told to
+/// explicitly recover rather than silently publishing a second, orphaned
+/// `Payment` document. Only used by `send_payment`'s standalone
+/// (non-request-fulfilling) path — every other `encryptedMessage` broadcast
+/// (`send_message`, `send_payment_request`, receipts) has no follow-up
+/// network side effect, so nothing can be left inconsistent for them.
+#[allow(clippy::too_many_arguments)]
+async fn broadcast_new_payment_message(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    orchardpay_contract: &Arc<DataContract>,
+    owner_id: Identifier,
+    counterparty_identity_id: Identifier,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    ref_id: [u8; 32],
+    msg_data: Vec<u8>,
+) -> Result<(BackendTaskSuccessResult, Identifier), TaskError> {
+    let backend = app_context.wallet_backend()?;
+
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(ENCRYPTED_MESSAGE_DOCUMENT_TYPE)
+        .expect(
+            "encryptedMessage document type is part of the checked-in OrchardPay contract schema",
+        );
+
+    let mut rng = StdRng::from_entropy();
+    let entropy = Bytes32::random_with_rng(&mut rng);
+    let document_id = DppDocument::generate_document_id_v0(
+        &orchardpay_contract.id(),
+        &owner_id,
+        ENCRYPTED_MESSAGE_DOCUMENT_TYPE,
+        entropy.as_slice(),
+    );
+
+    // Persist intent *before* the first network side effect — the id is
+    // already deterministic at this point, so a retry that finds this
+    // marker (see `send_payment`) always refers to the same document.
+    backend.orchardpay_set_pending_operation(
+        &owner_id,
+        &counterparty_identity_id,
+        &PendingOrchardPayOperation::Payment {
+            document_id: document_id.to_buffer(),
+            step: PendingOperationStep::DocumentPublished,
+        },
+    )?;
 
     let mut properties = BTreeMap::new();
     properties.insert(REF_ID_FIELD.to_string(), Value::Bytes(ref_id.to_vec()));
@@ -858,6 +948,19 @@ pub async fn send_payment(
             request_document_id
         }
         None => {
+            // M-02: a pending marker here means a previous attempt already
+            // published a `Payment` document but its transfer never
+            // confirmed — don't silently start a fresh send (which would
+            // publish a second, orphaned document); surface a distinct
+            // error instead so the caller can decide how to recover.
+            if let Some(PendingOrchardPayOperation::Payment { document_id, .. }) =
+                backend.orchardpay_get_pending_operation(&owner_id, &counterparty_identity_id)?
+            {
+                return Err(TaskError::OrchardPayPaymentRecoveryNeeded {
+                    document_id: Identifier::from(document_id),
+                });
+            }
+
             let shared_secret = outbound_shared_secret(
                 app_context,
                 &qualified_identity,
@@ -873,11 +976,12 @@ pub async fn send_payment(
             .encrypt(&shared_secret)
             .map_err(OrchardPayError::Crypto)?;
 
-            let (_result, document_id) = broadcast_encrypted_message(
+            let (_result, document_id) = broadcast_new_payment_message(
                 app_context,
                 sdk,
                 &orchardpay_contract,
                 owner_id,
+                counterparty_identity_id,
                 qualified_identity.clone(),
                 identity_key,
                 my_reference_id,
@@ -901,6 +1005,12 @@ pub async fn send_payment(
             transfer_memo,
         )
         .await?;
+
+    // Whatever the path above, the operation is now consistent — clear any
+    // pending-operation marker (a no-op if the `Some(...)` branch never set
+    // one, since it targets an already-durable `PaymentRequest`, not a
+    // freshly-created document).
+    backend.orchardpay_clear_pending_operation(&owner_id, &counterparty_identity_id)?;
 
     if fulfilling_request_document_id.is_some() {
         // Optimistic local "paid" record so this wallet's own copy of the

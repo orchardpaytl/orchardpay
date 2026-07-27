@@ -69,6 +69,51 @@ pub enum OrchardPayContactState {
     },
 }
 
+/// Which side of a publish-then-transfer flow a
+/// [`PendingOrchardPayOperation`] has reached. See M-02 of
+/// `docs/ORCHARDPAY_COMPREHENSIVE_REVIEW_2026-07-25.md` and
+/// `docs/ai-design/2026-07-26-m02-atomic-contact-payment-flows/README.md`
+/// for the recovery design this supports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PendingOperationStep {
+    /// The Platform document (a `contactAnchor` or a `Payment`) broadcast
+    /// successfully; the shielded signaling/value transfer has not been
+    /// confirmed sent yet.
+    DocumentPublished,
+    /// The transfer also succeeded; only the final local state write
+    /// (`OrchardPayContactState`, or the verified-payment cache) is still
+    /// outstanding.
+    TransferSent,
+}
+
+/// A local, resumable marker for an in-flight publish-then-transfer
+/// operation, persisted *before* the first network side effect so a crash
+/// or a failed transfer never leaves an orphaned duplicate Platform
+/// document behind on retry. Cleared once the operation reaches a
+/// consistent end state (`OrchardPayContactState` written, or the payment
+/// transfer confirmed). See
+/// `WalletBackend::orchardpay_get_pending_operation` for the k/v sidecar
+/// this backs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PendingOrchardPayOperation {
+    /// An in-flight `initiate_contact`/`accept_contact` call. `my_reference_id`
+    /// and `my_anchor_document_id` are generated once, before the first
+    /// network call, and reused verbatim on any resume — never regenerated,
+    /// or the resumed transfer's memo would point at the wrong document.
+    ContactAnchor {
+        my_reference_id: [u8; 32],
+        my_anchor_document_id: [u8; 32],
+        step: PendingOperationStep,
+    },
+    /// An in-flight `send_payment` call. `document_id` is the broadcast
+    /// `Payment` document's own id (already deterministic before broadcast,
+    /// same reasoning as `ContactAnchor` above).
+    Payment {
+        document_id: [u8; 32],
+        step: PendingOperationStep,
+    },
+}
+
 /// What a [`ShieldedActivityRow`] represents: a received note (still
 /// spendable or already consumed) or an outgoing send recovered via OVK.
 /// A typed discriminant instead of matching on the display label, since the
