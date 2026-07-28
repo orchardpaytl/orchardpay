@@ -1655,6 +1655,44 @@ impl OrchardPayScreen {
             }
         }
     }
+
+    /// Release the contact-send in-flight guard for a completed
+    /// `InitiateContact`/`SendDirect` task. Takes `result` by reference (unlike
+    /// `display_task_result`, which owns it) so it can also be called from
+    /// `app.rs`'s hidden-screen router when this screen isn't the visible one
+    /// — mirrors `IdentityHubScreen::handle_contact_request_result`. Called
+    /// from `display_task_result` below too, so the release logic lives in
+    /// exactly one place regardless of which path reaches it. Returns `true`
+    /// if `result` was one of the variants handled here.
+    pub(crate) fn handle_contact_send_result(&mut self, result: &BackendTaskSuccessResult) -> bool {
+        match result {
+            // A contact request (initiate/accept) publish — both spend
+            // identity credits, so the top-panel readout and the low-credit
+            // action gates need a fresh balance. This is also the only
+            // result type those two tasks produce on this screen, so it
+            // doubles as the in-flight-guard reconciliation signal.
+            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+                self.pending_identity_refresh = true;
+                self.reconcile_contact_actions();
+            }
+            BackendTaskSuccessResult::OrchardPayDirectSendCompleted {
+                counterparty_identity_id,
+                ..
+            } => {
+                // No OrchardPayContactState changed — this branch never
+                // creates a document, so reconcile_contact_actions (which
+                // only releases a guard once real contact state shows it
+                // landed) has nothing to reconcile against. Release the
+                // guard directly, same-frame, on this branch's own
+                // dedicated success variant instead.
+                self.contact_actions.release(counterparty_identity_id);
+                self.direct_send_amount = None;
+                self.direct_send_amount_input = None;
+            }
+            _ => return false,
+        }
+        true
+    }
 }
 
 impl ScreenLike for OrchardPayScreen {
@@ -1703,6 +1741,7 @@ impl ScreenLike for OrchardPayScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        self.handle_contact_send_result(&result);
         match &result {
             BackendTaskSuccessResult::OrchardPayContactSearchResults(results) => {
                 self.search_results = results.clone();
@@ -1724,29 +1763,6 @@ impl ScreenLike for OrchardPayScreen {
             }
             BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned { .. } => {
                 self.checking_new_requests = false;
-            }
-            // A contact request (initiate/accept) publish — both spend
-            // identity credits, so the top-panel readout and the
-            // low-credit action gates need a fresh balance. This is also
-            // the only result type those two tasks produce on this screen,
-            // so it doubles as the in-flight-guard reconciliation signal.
-            BackendTaskSuccessResult::BroadcastedDocument(_) => {
-                self.pending_identity_refresh = true;
-                self.reconcile_contact_actions();
-            }
-            BackendTaskSuccessResult::OrchardPayDirectSendCompleted {
-                counterparty_identity_id,
-                ..
-            } => {
-                // No OrchardPayContactState changed — this branch never
-                // creates a document, so reconcile_contact_actions (which
-                // only releases a guard once real contact state shows it
-                // landed) has nothing to reconcile against. Release the
-                // guard directly, same-frame, on this branch's own
-                // dedicated success variant instead.
-                self.contact_actions.release(counterparty_identity_id);
-                self.direct_send_amount = None;
-                self.direct_send_amount_input = None;
             }
             _ => {}
         }

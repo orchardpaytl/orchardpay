@@ -265,6 +265,10 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
+fn orchardpay_screen_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
+    selected == RootScreenType::RootScreenOrchardPay && screen_stack_is_empty
+}
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -2145,6 +2149,25 @@ impl AppState {
         }
     }
 
+    /// OrchardPay counterpart to `route_contact_request_result_to_hidden_hub`.
+    /// `InitiateContact`/`SendDirect` results release
+    /// `OrchardPayScreen::contact_actions`'s in-flight guard, but that only
+    /// happens if the result reaches the `OrchardPayScreen` instance — the
+    /// generic poll loop below otherwise delivers it to whichever root
+    /// screen is currently visible, stranding the "Sending…" button on a
+    /// hidden OrchardPay tab indefinitely.
+    fn route_orchardpay_result_to_hidden_screen(&mut self, result: &BackendTaskSuccessResult) {
+        if orchardpay_screen_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+            return;
+        }
+        if let Some(Screen::OrchardPayScreen(screen)) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenOrchardPay)
+        {
+            screen.handle_contact_send_result(result);
+        }
+    }
+
     /// Promote at most one queued passphrase request before overlay handling.
     fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
@@ -2528,6 +2551,7 @@ impl App for AppState {
                     let unboxed_message = *message;
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
+                    self.route_orchardpay_result_to_hidden_screen(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
