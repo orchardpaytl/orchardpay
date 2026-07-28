@@ -104,8 +104,11 @@ pub async fn scan_for_incoming_anchors(
         .await?;
 
     let mut anything_changed = false;
+    let mut anchor_signals_seen = 0usize;
+    let mut anchor_signals_claimed = 0usize;
 
     for anchor_document_id in backend.orchardpay_list_unresolved_anchor_signals(&seed_hash)? {
+        anchor_signals_seen += 1;
         let (applied, _had_error) = try_anchor_against_identities(
             app_context,
             sdk,
@@ -117,6 +120,7 @@ pub async fn scan_for_incoming_anchors(
         if applied {
             backend.orchardpay_clear_unresolved_anchor_signal(&seed_hash, &anchor_document_id)?;
             anything_changed = true;
+            anchor_signals_claimed += 1;
         }
         // Still unresolved (whether from a clean "not mine" or a transient
         // error) simply stays recorded — retried again next pass. It's off
@@ -133,6 +137,7 @@ pub async fn scan_for_incoming_anchors(
     for (note_index, signal) in found {
         match signal {
             IncomingMemoSignal::Anchor(anchor_document_id) => {
+                anchor_signals_seen += 1;
                 let (applied, had_error) = try_anchor_against_identities(
                     app_context,
                     sdk,
@@ -143,6 +148,7 @@ pub async fn scan_for_incoming_anchors(
                 .await;
                 if applied {
                     anything_changed = true;
+                    anchor_signals_claimed += 1;
                     backend.orchardpay_clear_memo_scan_retry_count(&seed_hash, note_index)?;
                 } else if had_error {
                     let attempts = backend
@@ -206,7 +212,24 @@ pub async fn scan_for_incoming_anchors(
 
     backend.orchardpay_set_memo_scan_cursor(&seed_hash, retry_from.unwrap_or(next_start_index))?;
 
-    Ok(BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned { anything_changed })
+    let anchor_signals_still_unresolved = backend
+        .orchardpay_list_unresolved_anchor_signals(&seed_hash)?
+        .len();
+
+    tracing::info!(
+        wallet = %hex::encode(seed_hash),
+        anchor_signals_seen,
+        anchor_signals_claimed,
+        anchor_signals_still_unresolved,
+        "OrchardPay: incoming anchor scan pass complete"
+    );
+
+    Ok(BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned {
+        anything_changed,
+        anchor_signals_seen,
+        anchor_signals_claimed,
+        anchor_signals_still_unresolved,
+    })
 }
 
 /// Convenience for callers that only have a `BackendTask` handle (e.g. the

@@ -1020,7 +1020,12 @@ pub(crate) fn own_bounds_verified_key(
         .identity
         .public_keys()
         .values()
-        .find(|key| key.purpose() == purpose && key.contract_bounds() == Some(&expected_bounds))
+        .filter(|key| {
+            key.purpose() == purpose
+                && key.contract_bounds() == Some(&expected_bounds)
+                && !key.is_disabled()
+        })
+        .max_by_key(|key| key.id())
         .cloned()
 }
 

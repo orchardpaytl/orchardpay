@@ -652,9 +652,22 @@ pub enum BackendTaskSuccessResult {
     /// fire-and-forget tasks, this needs a dedicated variant (not the generic
     /// `Refresh`/`None`) so the Contacts tab's "Check for New Requests"
     /// button always gets a completion callback to clear its own in-flight
-    /// state, even on the common "nothing new" outcome.
+    /// state, even on the common "nothing new" outcome. Also carries counts
+    /// (mirroring `OrchardPayContactsRecovered`) so the click gets a real
+    /// banner instead of silence in every outcome — including the two that
+    /// used to be indistinguishable from the outside: "nothing decrypted
+    /// yet" vs "decrypted, but doesn't match any of my identities."
     OrchardPayIncomingAnchorsScanned {
         anything_changed: bool,
+        /// Anchor signals processed this pass — previously-unresolved ones
+        /// retried plus any freshly decrypted from the note stream.
+        anchor_signals_seen: usize,
+        /// Of those, how many matched a local identity and were recorded.
+        anchor_signals_claimed: usize,
+        /// Total anchor signals still sitting in the unresolved list after
+        /// this pass (decrypted fine, but claimed by none of the identities
+        /// tried so far).
+        anchor_signals_still_unresolved: usize,
     },
     /// Result of `OrchardPayTask::LoadRecentActivity` — every established
     /// contact, sorted by their conversation's most recent activity (newest
