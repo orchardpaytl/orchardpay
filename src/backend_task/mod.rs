@@ -611,6 +611,11 @@ pub enum BackendTaskSuccessResult {
         /// the "See more conversation history" button. See
         /// `messages::HistoryCursor`.
         history_cursor: crate::backend_task::orchardpay::messages::HistoryCursor,
+        /// Whether some documents may not have made it into `all_decoded` —
+        /// see `messages::LoadedThread::may_be_incomplete`. Round-tripped
+        /// back into `OrchardPayTask::LoadMoreHistory` like `all_decoded`/
+        /// `history_cursor`, so a gap already known stays known.
+        may_be_incomplete: bool,
     },
     /// Result of `OrchardPayTask::SendPayment` — a real shielded transfer to
     /// `counterparty_identity_id` completed (either an unprompted `Payment`

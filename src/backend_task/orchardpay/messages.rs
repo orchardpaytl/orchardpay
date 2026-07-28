@@ -34,6 +34,7 @@ use crate::model::orchardpay::{
     validate_message_text, validate_payment_memo, validate_send_amount,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::validation::strip_unsafe_display_characters;
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
@@ -164,6 +165,13 @@ pub struct LoadedThread {
     pub messages: Vec<ThreadMessage>,
     pub receipt_alerts: Vec<ReceiptAlert>,
     pub history_cursor: HistoryCursor,
+    /// Whether some documents may not have made it into `all_decoded` —
+    /// either [`trim_ambiguous_tail`]'s pathological fallback fired for a
+    /// page on either side, or a document failed to decode. Once true for
+    /// this thread, stays true across later [`load_more_history`] calls
+    /// (round-tripped like `all_decoded`/`history_cursor`) — a gap already
+    /// known doesn't un-happen just because a later page came back clean.
+    pub may_be_incomplete: bool,
 }
 
 /// Build a synthetic `IdentityPublicKey` wrapping raw ECDH public key bytes
@@ -529,6 +537,7 @@ pub async fn edit_message(
     new_text: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let new_text = strip_unsafe_display_characters(&new_text);
     validate_message_text(&new_text)
         .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
 
@@ -660,6 +669,7 @@ pub async fn edit_payment_memo(
     new_memo: Option<String>,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let new_memo = new_memo.map(|memo| strip_unsafe_display_characters(&memo));
     if let Some(memo) = &new_memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -798,6 +808,7 @@ pub async fn send_message(
     text: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let text = strip_unsafe_display_characters(&text);
     validate_message_text(&text)
         .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
 
@@ -855,6 +866,7 @@ pub async fn send_payment_request(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
+    let memo = memo.map(|memo| strip_unsafe_display_characters(&memo));
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -922,6 +934,7 @@ pub async fn send_payment(
     original_request_created_at: Option<u64>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
+    let memo = memo.map(|memo| strip_unsafe_display_characters(&memo));
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -1111,6 +1124,11 @@ struct MessagePage {
     /// so this is not always literally the oldest timestamp originally
     /// fetched. `None` only when `documents` ended up empty.
     oldest_created_at: Option<u64>,
+    /// Whether [`trim_ambiguous_tail`]'s pathological (entire-page-tied)
+    /// fallback fired for this page — see its doc comment. Signals that
+    /// some of this side's documents at the boundary timestamp may not
+    /// have made it into `documents`.
+    may_be_incomplete: bool,
 }
 
 /// Fetch one page of `encryptedMessage` documents tagged `ref_id` and
@@ -1202,12 +1220,13 @@ async fn fetch_messages_by_ref_id(
 
     let mut documents: Vec<Document> = results.into_values().flatten().collect();
     let has_more = documents.len() as u32 >= MESSAGE_PAGE_SIZE;
-    let oldest_created_at = trim_ambiguous_tail(&mut documents, has_more);
+    let (oldest_created_at, may_be_incomplete) = trim_ambiguous_tail(&mut documents, has_more);
 
     Ok(MessagePage {
         documents,
         has_more,
         oldest_created_at,
+        may_be_incomplete,
     })
 }
 
@@ -1248,17 +1267,30 @@ async fn fetch_messages_by_ref_id(
 /// same timestamp (would require [`MESSAGE_PAGE_SIZE`]-or-more documents
 /// from one identity landing in one block), there's no safe boundary to
 /// trim to without emptying the page while still claiming more exists.
-/// Falls back to the pre-fix behavior (accept the rare loss risk, log it)
-/// rather than risk an infinite loop (an unchanged cursor re-fetching the
-/// same page forever) or falsely reporting the thread fully loaded (an
-/// empty cursor) — mirrors `recover_own_anchors`'s existing warn-and-accept
-/// precedent for its own analogous page-cap edge case.
-fn trim_ambiguous_tail(documents: &mut Vec<Document>, has_more: bool) -> Option<u64> {
+///
+/// This is treated as an accepted design tradeoff, not a residual gap to
+/// keep chasing: engineering that many same-block documents from one
+/// identity costs a rogue contact real Platform fees for a griefing-only
+/// outcome (permanently hiding one of *their own* earlier messages from the
+/// victim), and OrchardPay's P2P model treats a counterparty behaving this
+/// way as a social problem — block/walk away — not something the
+/// pagination layer owes a perfect technical defense against. See the
+/// 2026-07-27 adversarial audit's finding 2. Falls back to the pre-fix
+/// behavior (accept the rare loss risk) rather than risk an infinite loop
+/// (an unchanged cursor re-fetching the same page forever) or falsely
+/// reporting the thread fully loaded (an empty cursor) — mirrors
+/// `recover_own_anchors`'s existing warn-and-accept precedent for its own
+/// analogous page-cap edge case. The second return value reports whether
+/// this branch fired, so the caller can surface a visible notice instead of
+/// only the `tracing::warn!` below.
+fn trim_ambiguous_tail(documents: &mut Vec<Document>, has_more: bool) -> (Option<u64>, bool) {
     if !has_more || documents.is_empty() {
-        return documents.iter().filter_map(|d| d.created_at()).min();
+        return (documents.iter().filter_map(|d| d.created_at()).min(), false);
     }
 
-    let boundary = documents.last().and_then(|d| d.created_at())?;
+    let Some(boundary) = documents.last().and_then(|d| d.created_at()) else {
+        return (None, false);
+    };
 
     match documents
         .iter()
@@ -1266,7 +1298,7 @@ fn trim_ambiguous_tail(documents: &mut Vec<Document>, has_more: bool) -> Option<
     {
         Some(last_distinct_index) => {
             documents.truncate(last_distinct_index + 1);
-            documents.last().and_then(|d| d.created_at())
+            (documents.last().and_then(|d| d.created_at()), false)
         }
         None => {
             // Entire page shares one timestamp.
@@ -1277,7 +1309,7 @@ fn trim_ambiguous_tail(documents: &mut Vec<Document>, has_more: bool) -> Option<
                  (block-time collision) — pagination can't safely trim it; \
                  accepting the rare loss risk for this page rather than stalling"
             );
-            Some(boundary)
+            (Some(boundary), true)
         }
     }
 }
@@ -1598,7 +1630,7 @@ pub async fn load_thread(
 
     let mut all_decoded =
         Vec::with_capacity(mine_page.documents.len() + their_page.documents.len());
-    decode_page(
+    let mine_decode_failed = decode_page(
         &backend,
         &seed_hash,
         &mine_page.documents,
@@ -1608,7 +1640,7 @@ pub async fn load_thread(
         &incoming_payments,
         &mut all_decoded,
     );
-    decode_page(
+    let their_decode_failed = decode_page(
         &backend,
         &seed_hash,
         &their_page.documents,
@@ -1630,18 +1662,27 @@ pub async fn load_thread(
             .flatten(),
     };
     let (messages, receipt_alerts) = assemble_thread(&all_decoded, &history_cursor);
+    let may_be_incomplete = mine_page.may_be_incomplete
+        || their_page.may_be_incomplete
+        || mine_decode_failed
+        || their_decode_failed;
 
     Ok(LoadedThread {
         all_decoded,
         messages,
         receipt_alerts,
         history_cursor,
+        may_be_incomplete,
     })
 }
 
 /// Decode a fetched page's documents into `out`, one directional secret at a
 /// time — the shared per-page body of both [`load_thread`] and
-/// [`load_more_history`].
+/// [`load_more_history`]. Returns whether any document in this page failed
+/// to decode (wrong-key/tampered ciphertext, or bytes that don't parse as
+/// [`MessageContent`]) — those are silently dropped from `out`, so the
+/// caller can surface a "some messages may not have loaded" notice instead
+/// of the loss being invisible.
 #[allow(clippy::too_many_arguments)]
 fn decode_page(
     backend: &crate::wallet_backend::WalletBackend,
@@ -1652,9 +1693,10 @@ fn decode_page(
     outgoing_payments: &BTreeMap<Identifier, u64>,
     incoming_payments: &BTreeMap<Identifier, u64>,
     out: &mut Vec<ThreadMessage>,
-) {
+) -> bool {
+    let mut any_decode_failure = false;
     for document in documents {
-        if let Some(message) = decode_thread_message(
+        match decode_thread_message(
             backend,
             seed_hash,
             document,
@@ -1663,9 +1705,11 @@ fn decode_page(
             outgoing_payments,
             incoming_payments,
         ) {
-            out.push(message);
+            Some(message) => out.push(message),
+            None => any_decode_failure = true,
         }
     }
+    any_decode_failure
 }
 
 /// Split a decoded, accumulated batch of `encryptedMessage` documents (both
@@ -1757,6 +1801,7 @@ fn assemble_thread(
 /// [`load_more_history`] result), and re-run [`assemble_thread`] over the
 /// complete accumulated set. No document already held is re-fetched; only
 /// the new page costs a query, one per side that isn't already exhausted.
+#[allow(clippy::too_many_arguments)]
 pub async fn load_more_history(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -1765,6 +1810,7 @@ pub async fn load_more_history(
     seed_hash: WalletSeedHash,
     mut all_decoded: Vec<ThreadMessage>,
     history_cursor: HistoryCursor,
+    mut may_be_incomplete: bool,
 ) -> Result<LoadedThread, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
@@ -1814,7 +1860,7 @@ pub async fn load_more_history(
             Some(before),
         )
         .await?;
-        decode_page(
+        let decode_failed = decode_page(
             &backend,
             &seed_hash,
             &page.documents,
@@ -1824,6 +1870,7 @@ pub async fn load_more_history(
             &incoming_payments,
             &mut all_decoded,
         );
+        may_be_incomplete = may_be_incomplete || page.may_be_incomplete || decode_failed;
         new_mine_before = page.has_more.then_some(page.oldest_created_at).flatten();
     }
 
@@ -1837,7 +1884,7 @@ pub async fn load_more_history(
             Some(before),
         )
         .await?;
-        decode_page(
+        let decode_failed = decode_page(
             &backend,
             &seed_hash,
             &page.documents,
@@ -1847,6 +1894,7 @@ pub async fn load_more_history(
             &incoming_payments,
             &mut all_decoded,
         );
+        may_be_incomplete = may_be_incomplete || page.may_be_incomplete || decode_failed;
         new_their_before = page.has_more.then_some(page.oldest_created_at).flatten();
     }
 
@@ -1861,6 +1909,7 @@ pub async fn load_more_history(
         messages,
         receipt_alerts,
         history_cursor,
+        may_be_incomplete,
     })
 }
 
@@ -1925,7 +1974,7 @@ mod tests {
             .map(|i| doc_with_created_at(i, 1_000 - u64::from(i)))
             .collect();
 
-        let cursor = trim_ambiguous_tail(&mut documents, true);
+        let (cursor, may_be_incomplete) = trim_ambiguous_tail(&mut documents, true);
 
         assert_eq!(
             created_ats(&documents),
@@ -1936,6 +1985,10 @@ mod tests {
             cursor,
             Some(997),
             "cursor must be the last kept document's timestamp"
+        );
+        assert!(
+            !may_be_incomplete,
+            "a normal trim isn't the pathological fallback"
         );
     }
 
@@ -1955,7 +2008,7 @@ mod tests {
             doc_with_created_at(5, 997), // tied with #4 above
         ];
 
-        let cursor = trim_ambiguous_tail(&mut documents, true);
+        let (cursor, may_be_incomplete) = trim_ambiguous_tail(&mut documents, true);
 
         assert_eq!(
             created_ats(&documents),
@@ -1966,6 +2019,10 @@ mod tests {
             cursor,
             Some(998),
             "cursor must be the last kept document's timestamp, not the trimmed tie's"
+        );
+        assert!(
+            !may_be_incomplete,
+            "a normal trim isn't the pathological fallback"
         );
     }
 
@@ -1984,7 +2041,7 @@ mod tests {
             doc_with_created_at(4, 998), // the lone trailing document — must be deferred
         ];
 
-        let cursor = trim_ambiguous_tail(&mut documents, true);
+        let (cursor, may_be_incomplete) = trim_ambiguous_tail(&mut documents, true);
 
         assert_eq!(
             created_ats(&documents),
@@ -1993,6 +2050,10 @@ mod tests {
              singleton (998) is deferred"
         );
         assert_eq!(cursor, Some(999));
+        assert!(
+            !may_be_incomplete,
+            "a normal trim isn't the pathological fallback"
+        );
     }
 
     /// Pathological fallback: every document in a full page shares the same
@@ -2004,7 +2065,7 @@ mod tests {
     fn trim_ambiguous_tail_falls_back_when_the_entire_page_is_tied() {
         let mut documents: Vec<Document> = (0..5).map(|i| doc_with_created_at(i, 1_000)).collect();
 
-        let cursor = trim_ambiguous_tail(&mut documents, true);
+        let (cursor, may_be_incomplete) = trim_ambiguous_tail(&mut documents, true);
 
         assert_eq!(
             created_ats(&documents),
@@ -2012,6 +2073,10 @@ mod tests {
             "nothing can be safely trimmed, so the full page is kept as-is"
         );
         assert_eq!(cursor, Some(1_000));
+        assert!(
+            may_be_incomplete,
+            "the pathological fallback must report itself so the UI can surface a notice"
+        );
     }
 
     /// A non-full page (`has_more = false`) means nothing was cut off by
@@ -2025,7 +2090,7 @@ mod tests {
             doc_with_created_at(3, 999),
         ];
 
-        let cursor = trim_ambiguous_tail(&mut documents, false);
+        let (cursor, may_be_incomplete) = trim_ambiguous_tail(&mut documents, false);
 
         assert_eq!(
             created_ats(&documents),
@@ -2033,5 +2098,6 @@ mod tests {
             "an already-complete last page must never be trimmed"
         );
         assert_eq!(cursor, Some(999));
+        assert!(!may_be_incomplete);
     }
 }

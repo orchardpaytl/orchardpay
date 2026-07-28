@@ -52,6 +52,11 @@ pub enum OrchardPayCryptoError {
     /// [`ContactAnchorPayload`] (or whatever type the caller expected).
     #[error("This contact request appears to be damaged and could not be read.")]
     Malformed,
+    /// The plaintext exceeds [`MAX_MESSAGE_PLAINTEXT_LEN`] — a defensive
+    /// ceiling checked before encryption, independent of (and a backstop
+    /// for) the model-layer character-count validators.
+    #[error("This message is too large to send.")]
+    PayloadTooLarge,
 }
 
 /// Encrypt `plaintext` under a 32-byte ECDH shared secret, returning
@@ -240,17 +245,52 @@ pub enum MessageContent {
     },
 }
 
+/// Defensive ceiling on a [`MessageContent`]'s serialized plaintext, checked
+/// before encryption. Every current call site already validates via
+/// `validate_message_text`/`validate_payment_memo` first, so this is a
+/// backstop for a future caller (an MCP tool, a bulk-import path) that might
+/// construct `MessageContent` directly and skip that layer — not a limit
+/// reachable through the UI today. Comfortably below Platform's
+/// `max_field_value_size` (5120 bytes) once the 28-byte nonce+tag overhead
+/// is added back (5000 + 28 = 5028 < 5120).
+const MAX_MESSAGE_PLAINTEXT_LEN: usize = 5000;
+
+/// Padding floor for a [`MessageContent`] payload before encryption. Small
+/// structured payloads (`Payment`/`PaymentRequest`/`PaymentRequestReceipt`
+/// with no memo) are padded up to this many bytes so their ciphertext
+/// length can't be told apart from a short `Message` — closing a
+/// size-based kind-classification side channel for an outside Platform
+/// observer. 64 bytes comfortably covers all four variants' memo-less/
+/// shortest form, verified against bincode 2.0.1's actual varint encoding:
+/// `PaymentRequestReceipt` has the tightest natural fit at ~49 bytes
+/// (its mandatory 32-byte `original_document_id` plus an
+/// `original_created_at` field that always needs the largest varint
+/// encoding, since a millisecond Unix timestamp already exceeds
+/// `u32::MAX`). See the 2026-07-27 adversarial audit's finding 7.
+///
+/// No decrypt-side change is needed for this: `bincode::serde::decode_from_slice`
+/// returns `(value, bytes_consumed)` and already ignores trailing bytes
+/// beyond what the decoded value needs, so the padding is a pure
+/// encrypt-side addition.
+const MESSAGE_PADDING_FLOOR: usize = 64;
+
 impl MessageContent {
     /// Serialize with bincode (matching `src/wallet_backend/kv.rs`'s
-    /// convention), then AES-256-GCM encrypt under this relationship's
-    /// ECDH shared secret.
+    /// convention), pad to [`MESSAGE_PADDING_FLOOR`], then AES-256-GCM
+    /// encrypt under this relationship's ECDH shared secret.
     pub fn encrypt(&self, shared_key: &[u8; 32]) -> Result<Vec<u8>, OrchardPayCryptoError> {
-        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
+        let mut plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        if plaintext.len() > MAX_MESSAGE_PLAINTEXT_LEN {
+            return Err(OrchardPayCryptoError::PayloadTooLarge);
+        }
+        plaintext.resize(plaintext.len().max(MESSAGE_PADDING_FLOOR), 0);
         encrypt(shared_key, &plaintext)
     }
 
     /// Decrypt and deserialize a payload produced by [`Self::encrypt`].
+    /// Any padding [`Self::encrypt`] added is silently ignored — bincode
+    /// only reads as many bytes as the decoded value needs.
     pub fn decrypt(shared_key: &[u8; 32], data: &[u8]) -> Result<Self, OrchardPayCryptoError> {
         let plaintext = decrypt(shared_key, data)?;
         let (content, _) =
@@ -408,5 +448,72 @@ mod tests {
 
         let result = MessageContent::decrypt(&[15u8; 32], &encrypted);
         assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
+    }
+
+    /// Ciphertext = nonce (12) + plaintext + AEAD tag (16). Padding every
+    /// short variant up to the same floor means their ciphertexts land at
+    /// the same length regardless of kind — this is finding 7's actual
+    /// defense, so assert it directly rather than just checking round trip.
+    #[test]
+    fn short_payloads_of_every_kind_pad_to_the_same_ciphertext_length() {
+        let shared_key = [20u8; 32];
+        let expected_len = NONCE_SIZE + MESSAGE_PADDING_FLOOR + 16;
+
+        let message = MessageContent::Message {
+            data: "hi".to_string(),
+        };
+        let payment = MessageContent::Payment {
+            amount: 100_000,
+            memo: None,
+        };
+        let payment_request = MessageContent::PaymentRequest {
+            amount: 100_000,
+            memo: None,
+        };
+        let receipt = MessageContent::PaymentRequestReceipt {
+            original_document_id: [1u8; 32],
+            amount: 100_000,
+            memo: None,
+            original_created_at: Some(1_700_000_000_000),
+        };
+
+        for content in [message, payment, payment_request, receipt] {
+            let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+            assert_eq!(
+                encrypted.len(),
+                expected_len,
+                "{content:?} did not pad to the shared floor"
+            );
+            let decrypted =
+                MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+            assert_eq!(content, decrypted, "padding corrupted the round trip");
+        }
+    }
+
+    #[test]
+    fn long_payload_is_not_truncated_by_padding_logic() {
+        let shared_key = [21u8; 32];
+        let content = MessageContent::Message {
+            data: "m".repeat(1000),
+        };
+
+        let encrypted = content.encrypt(&shared_key).expect("encrypt succeeds");
+        assert!(
+            encrypted.len() > NONCE_SIZE + MESSAGE_PADDING_FLOOR + 16,
+            "a long message should exceed the padding floor, not be cut down to it"
+        );
+        let decrypted = MessageContent::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+        assert_eq!(content, decrypted);
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected_before_encryption() {
+        let shared_key = [22u8; 32];
+        let content = MessageContent::Message {
+            data: "m".repeat(MAX_MESSAGE_PLAINTEXT_LEN),
+        };
+
+        let result = content.encrypt(&shared_key);
+        assert_eq!(result, Err(OrchardPayCryptoError::PayloadTooLarge));
     }
 }

@@ -213,6 +213,7 @@ pub enum OrchardPayTask {
         seed_hash: WalletSeedHash,
         all_decoded: Vec<messages::ThreadMessage>,
         history_cursor: messages::HistoryCursor,
+        may_be_incomplete: bool,
     },
     /// Rebuild local contact state from every `contactAnchor` this identity
     /// has published — the "my published anchors" recovery path for a
@@ -492,6 +493,7 @@ impl AppContext {
                     messages,
                     receipt_alerts,
                     history_cursor,
+                    may_be_incomplete,
                 } = messages::load_thread(
                     self,
                     sdk,
@@ -506,6 +508,7 @@ impl AppContext {
                     messages,
                     receipt_alerts,
                     history_cursor,
+                    may_be_incomplete,
                 })
             }
             OrchardPayTask::LoadMoreHistory {
@@ -514,12 +517,14 @@ impl AppContext {
                 seed_hash,
                 all_decoded,
                 history_cursor,
+                may_be_incomplete,
             } => {
                 let messages::LoadedThread {
                     all_decoded,
                     messages,
                     receipt_alerts,
                     history_cursor,
+                    may_be_incomplete,
                 } = messages::load_more_history(
                     self,
                     sdk,
@@ -528,6 +533,7 @@ impl AppContext {
                     seed_hash,
                     all_decoded,
                     history_cursor,
+                    may_be_incomplete,
                 )
                 .await?;
                 Ok(BackendTaskSuccessResult::OrchardPayThreadLoaded {
@@ -536,6 +542,7 @@ impl AppContext {
                     messages,
                     receipt_alerts,
                     history_cursor,
+                    may_be_incomplete,
                 })
             }
             OrchardPayTask::RecoverContacts {

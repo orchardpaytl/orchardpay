@@ -24,6 +24,7 @@ use crate::model::orchardpay::{
     validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::validation::strip_unsafe_display_characters;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -109,6 +110,11 @@ pub struct MessageThreadScreen {
     /// `OrchardPayThreadLoaded` result reports, whether that came from a
     /// full reload or a "load more" fetch.
     history_cursor: HistoryCursor,
+    /// Whether some documents may not have made it into `all_decoded_thread`
+    /// — see `messages::LoadedThread::may_be_incomplete`. Sticky across
+    /// "load more" fetches like `history_cursor`; surfaced as a notice at
+    /// the top of the thread rather than silently dropped.
+    may_be_incomplete: bool,
     /// An `OrchardPayTask::LoadMoreHistory` fetch is in flight — distinct
     /// from `loading` (which gates the initial "Loading conversation…"
     /// state) so the already-loaded thread stays visible while more history
@@ -270,6 +276,7 @@ impl MessageThreadScreen {
             receipt_alerts: Vec::new(),
             all_decoded_thread: Vec::new(),
             history_cursor: HistoryCursor::default(),
+            may_be_incomplete: false,
             loading_more: false,
             load_dispatched: false,
             loading: false,
@@ -392,6 +399,7 @@ impl MessageThreadScreen {
                 seed_hash,
                 all_decoded: self.all_decoded_thread.clone(),
                 history_cursor: self.history_cursor,
+                may_be_incomplete: self.may_be_incomplete,
             },
         )))
     }
@@ -803,13 +811,22 @@ impl MessageThreadScreen {
         // string content. The bubble's own container fill/border, by
         // contrast, is chrome this rendering code controls directly and no
         // message content can ever reach — so only `Payment`/`PaymentRequest`
-        // get this tinted frame, applied uniformly regardless of direction
-        // or status, and a plain `Message` always keeps the neutral look.
-        let money_bubble_color = matches!(
-            message.content,
-            MessageContent::Payment { .. } | MessageContent::PaymentRequest { .. }
-        )
-        .then(|| DashColors::info_color(dark_mode));
+        // ever get this tinted frame, and a plain `Message` always keeps the
+        // neutral look. `PaymentRequest` gets it unconditionally (it never
+        // claims funds moved, so there's nothing to mislabel). An unverified
+        // `Payment` (`verified_amount: None`) deliberately keeps the neutral
+        // `Message` look instead — a rogue contact's bare claim that money
+        // moved shouldn't get the same trusted chrome as a real one; see the
+        // 2026-07-27 adversarial audit's finding 1. `verified_amount` is
+        // computed server-side from this wallet's own shielded-note lookup,
+        // never from message content, so this can't be spoofed the same way.
+        let money_bubble_color = match &message.content {
+            MessageContent::PaymentRequest { .. } => Some(DashColors::info_color(dark_mode)),
+            MessageContent::Payment { .. } if message.verified_amount.is_some() => {
+                Some(DashColors::info_color(dark_mode))
+            }
+            _ => None,
+        };
         let bubble_frame = match money_bubble_color {
             Some(color) => egui::Frame::group(ui.style())
                 .fill(color.gamma_multiply(0.08))
@@ -885,16 +902,18 @@ impl MessageThreadScreen {
 
                     match &message.content {
                         MessageContent::Message { data } => {
+                            let sanitized_data = strip_unsafe_display_characters(data);
                             if message.from_me {
-                                let response = ui
-                                    .add(egui::Label::new(data).sense(egui::Sense::click()));
+                                let response = ui.add(
+                                    egui::Label::new(&sanitized_data).sense(egui::Sense::click()),
+                                );
                                 if response.clicked() {
                                     bubble_action = Some(BubbleAction::ToggleExpanded {
                                         document_id: message.document_id,
                                     });
                                 }
                             } else {
-                                ui.label(data);
+                                ui.label(&sanitized_data);
                             }
                             show_edited_tag(ui);
                             if message.from_me && is_expanded {
@@ -944,21 +963,28 @@ impl MessageThreadScreen {
                             }
                         }
                         MessageContent::Payment { amount, memo } => {
-                            let display_amount = message.verified_amount.unwrap_or(*amount);
+                            // Unverified (`None`) shows a "Pending…" headline
+                            // instead of the sender's claimed amount — see
+                            // the comment on `money_bubble_color` above. Once
+                            // verified, this always shows the real verified
+                            // amount, not the claim, matching a mismatch's
+                            // own warning label just below.
+                            let headline = match message.verified_amount {
+                                Some(verified) => format!(
+                                    "Payment: {}",
+                                    format_credits_as_dash(verified)
+                                ),
+                                None => "Payment: Pending…".to_string(),
+                            };
                             ui.vertical_centered(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "Payment: {}",
-                                        format_credits_as_dash(display_amount)
-                                    ))
-                                    .strong(),
-                                );
+                                ui.label(RichText::new(headline).strong());
                             });
                             match memo {
                                 Some(memo_text) => {
+                                    let sanitized_memo = strip_unsafe_display_characters(memo_text);
                                     if message.from_me {
                                         let response = ui.add(
-                                            egui::Label::new(memo_text)
+                                            egui::Label::new(&sanitized_memo)
                                                 .sense(egui::Sense::click()),
                                         );
                                         if response.clicked() {
@@ -967,7 +993,7 @@ impl MessageThreadScreen {
                                             });
                                         }
                                     } else {
-                                        ui.label(memo_text);
+                                        ui.label(&sanitized_memo);
                                     }
                                     if message.from_me && is_expanded {
                                         let label = if busy_here { LABEL_SAVING } else { "Edit Memo" };
@@ -1061,7 +1087,7 @@ impl MessageThreadScreen {
                                 );
                             });
                             if let Some(memo) = memo {
-                                ui.label(memo);
+                                ui.label(strip_unsafe_display_characters(memo));
                             }
                             // A `PaymentRequest`'s amount/memo are never
                             // editable through any other path, so this
@@ -1206,7 +1232,7 @@ impl MessageThreadScreen {
                             .strong(),
                     );
                     if let Some(memo) = &alert.memo {
-                        ui.label(memo);
+                        ui.label(strip_unsafe_display_characters(memo));
                     }
                     if let Some(timestamp) =
                         alert.original_created_at.and_then(format_relative_time)
@@ -1367,11 +1393,13 @@ impl ScreenLike for MessageThreadScreen {
                 messages,
                 receipt_alerts,
                 history_cursor,
+                may_be_incomplete,
             } if counterparty_identity_id == self.counterparty_identity_id => {
                 self.messages = messages;
                 self.receipt_alerts = receipt_alerts;
                 self.all_decoded_thread = all_decoded;
                 self.history_cursor = history_cursor;
+                self.may_be_incomplete = may_be_incomplete;
                 self.loading = false;
                 self.loading_more = false;
             }
@@ -1586,6 +1614,21 @@ impl ScreenLike for MessageThreadScreen {
             };
             ui.heading(RichText::new(heading));
             ui.add_space(8.0);
+
+            if self.may_be_incomplete {
+                let color = DashColors::warning_color(dark_mode);
+                egui::Frame::new()
+                    .fill(color.gamma_multiply(0.1))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("Some messages from this contact may not have loaded.")
+                                .color(color),
+                        );
+                    });
+                ui.add_space(8.0);
+            }
 
             if self.loading && self.messages.is_empty() {
                 ui.label("Loading conversation…");
