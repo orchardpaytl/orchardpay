@@ -804,9 +804,16 @@ impl WalletBackend {
                 let ivk = keys.prepared_ivk();
 
                 let mut found = Vec::new();
-                let mut next_start_index = start_index;
                 let mut notes_examined = 0u64;
                 let mut notes_decrypted = 0u64;
+                // Track the last *non-empty* batch's position, mirroring the
+                // SDK's own `sync_shielded_notes` one-shot wrapper around this
+                // same stream (rs-sdk/src/platform/shielded/notes_sync/
+                // sync_shielded_notes.rs) — trailing empty batches from the
+                // still-draining sliding window must be ignored when deciding
+                // where to resume, or the persisted cursor can jump past the
+                // real notes and never come back (only ever moves forward).
+                let mut last_nonempty: Option<(u64, bool)> = None;
                 let mut stream =
                     std::pin::pin!(sync_shielded_notes_stream(sdk, &ivk, start_index, None));
                 while let Some(batch) = stream.next().await {
@@ -816,6 +823,9 @@ impl WalletBackend {
                         })
                     })?;
                     notes_examined += batch.notes.len() as u64;
+                    if !batch.notes.is_empty() {
+                        last_nonempty = Some((batch.start_index, batch.is_partial));
+                    }
 
                     for (offset, note) in batch.notes.iter().enumerate() {
                         let Some((decrypted_note, _, memo)) =
@@ -860,13 +870,16 @@ impl WalletBackend {
                             ));
                         }
                     }
-
-                    next_start_index = if batch.is_partial {
-                        batch.start_index
-                    } else {
-                        batch.start_index + batch.notes.len() as u64
-                    };
                 }
+
+                // Same rule as `sync_shielded_notes`: if the last non-empty
+                // chunk was itself partial (short — may still grow before the
+                // next sync), rewind to its start so it gets re-scanned;
+                // otherwise resume past everything scanned this pass.
+                let next_start_index = match last_nonempty {
+                    Some((s, true)) => s,
+                    _ => start_index + notes_examined,
+                };
 
                 tracing::info!(
                     wallet = %hex::encode(seed_hash),
