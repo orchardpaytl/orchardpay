@@ -805,6 +805,8 @@ impl WalletBackend {
 
                 let mut found = Vec::new();
                 let mut next_start_index = start_index;
+                let mut notes_examined = 0u64;
+                let mut notes_decrypted = 0u64;
                 let mut stream =
                     std::pin::pin!(sync_shielded_notes_stream(sdk, &ivk, start_index, None));
                 while let Some(batch) = stream.next().await {
@@ -813,6 +815,7 @@ impl WalletBackend {
                             source: Box::new(e),
                         })
                     })?;
+                    notes_examined += batch.notes.len() as u64;
 
                     for (offset, note) in batch.notes.iter().enumerate() {
                         let Some((decrypted_note, _, memo)) =
@@ -820,6 +823,7 @@ impl WalletBackend {
                         else {
                             continue;
                         };
+                        notes_decrypted += 1;
                         let note_index = batch.start_index + offset as u64;
                         let tag: [u8; 4] = memo[..4].try_into().expect("memo is 36 bytes");
                         let doc_id_bytes: [u8; 32] =
@@ -863,6 +867,16 @@ impl WalletBackend {
                         batch.start_index + batch.notes.len() as u64
                     };
                 }
+
+                tracing::info!(
+                    wallet = %hex::encode(seed_hash),
+                    start_index,
+                    next_start_index,
+                    notes_examined,
+                    notes_decrypted,
+                    anchor_or_payment_signals_found = found.len(),
+                    "OrchardPay: incoming memo scan (note-level) pass complete"
+                );
 
                 Ok((found, next_start_index))
             })
