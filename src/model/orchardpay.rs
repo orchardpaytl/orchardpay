@@ -114,6 +114,106 @@ pub enum PendingOrchardPayOperation {
     },
 }
 
+/// Which role this identity played when a `contactAnchor` was created —
+/// determines what a [`ScheduledAnchorReplace`]'s delayed action does. See
+/// the 2026-07-27 adversarial audit's finding 5 (the pending-vs-established
+/// pairing-signal mitigation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AnchorRole {
+    /// Created the anchor first, without yet knowing the counterparty's
+    /// real `reference_id` — seeded `anchorData.their_reference_id` with a
+    /// self-recognizable filler (own identity ID) instead of `None`, to
+    /// remove the create-vs-replace timing asymmetry an outside Platform
+    /// observer could otherwise use to tell initiator and acceptor apart.
+    /// The delayed action swaps the filler for the real value, once both
+    /// known and due.
+    Initiator,
+    /// Created the anchor second, already knowing the counterparty's real
+    /// `reference_id` from the start — no filler needed. The delayed action
+    /// is a pure re-seal (decrypt, re-encrypt the unchanged content — a
+    /// fresh AEAD nonce alone produces a different ciphertext at the
+    /// identical length), purely so this side's `contactAnchor` also shows
+    /// exactly one replace after some delay, matching the initiator's side
+    /// and removing the "acceptor's anchor is never replaced" signal.
+    Acceptor,
+}
+
+/// How long a `contactAnchor`'s deferred `anchorData` replace waits before
+/// it's allowed to fire, in milliseconds — see [`ScheduledAnchorReplace`].
+/// Deliberately coarse and checked opportunistically (not a precise timer):
+/// long enough that a user waiting for a handshake to complete is never
+/// sitting around watching for it, and imprecise enough (fires on next app
+/// use *after* the threshold, not exactly at it) that there's no clustering
+/// artifact right at the 10-hour mark either.
+pub const ANCHOR_REPLACE_DELAY_MS: u64 = 10 * 60 * 60 * 1000;
+
+/// A local marker scheduling a `contactAnchor`'s deferred `anchorData`
+/// replace. Both roles wait for the same [`ANCHOR_REPLACE_DELAY_MS`] — the
+/// initiator's real replace is deliberately held to this threshold too
+/// (even though they may learn the true value sooner), so both sides'
+/// delay distributions are genuinely identical, not just their ciphertext
+/// sizes. See `WalletBackend::orchardpay_get_scheduled_anchor_replace` for
+/// the k/v sidecar this backs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledAnchorReplace {
+    pub anchor_document_id: [u8; 32],
+    /// The anchor document's own `$createdAt`, captured once at scheduling
+    /// time — not re-read later, so the threshold is stable even if the
+    /// document itself is re-fetched.
+    pub anchor_created_at: u64,
+    pub role: AnchorRole,
+}
+
+impl ScheduledAnchorReplace {
+    /// Whether this marker is due to fire, given the current time (Unix
+    /// milliseconds). Takes `now_ms` as a parameter rather than reading the
+    /// clock internally so the threshold logic is unit-testable without
+    /// waiting.
+    pub fn is_due(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.anchor_created_at) >= ANCHOR_REPLACE_DELAY_MS
+    }
+}
+
+#[cfg(test)]
+mod scheduled_anchor_replace_tests {
+    use super::*;
+
+    fn marker(anchor_created_at: u64) -> ScheduledAnchorReplace {
+        ScheduledAnchorReplace {
+            anchor_document_id: [1u8; 32],
+            anchor_created_at,
+            role: AnchorRole::Initiator,
+        }
+    }
+
+    #[test]
+    fn not_due_before_the_threshold() {
+        let m = marker(1_000_000);
+        assert!(!m.is_due(1_000_000 + ANCHOR_REPLACE_DELAY_MS - 1));
+    }
+
+    #[test]
+    fn due_exactly_at_the_threshold() {
+        let m = marker(1_000_000);
+        assert!(m.is_due(1_000_000 + ANCHOR_REPLACE_DELAY_MS));
+    }
+
+    #[test]
+    fn due_well_past_the_threshold() {
+        let m = marker(1_000_000);
+        assert!(m.is_due(1_000_000 + ANCHOR_REPLACE_DELAY_MS * 3));
+    }
+
+    #[test]
+    fn not_due_when_now_is_before_creation_somehow() {
+        // Defensive: `saturating_sub` must not panic/underflow if a clock
+        // skew ever made `now_ms` look earlier than the anchor's own
+        // `created_at`.
+        let m = marker(1_000_000);
+        assert!(!m.is_due(0));
+    }
+}
+
 /// What a [`ShieldedActivityRow`] represents: a received note (still
 /// spendable or already consumed) or an outgoing send recovered via OVK.
 /// A typed discriminant instead of matching on the display label, since the

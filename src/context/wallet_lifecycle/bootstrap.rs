@@ -152,6 +152,15 @@ impl AppContext {
                     // accounts in runtime state only.
                     self.register_established_contact_accounts(&backend, &seed_hash, seed)
                         .await;
+                    // OrchardPay: fire any due ScheduledAnchorReplace markers
+                    // (finding 5 of the 2026-07-27 adversarial audit) — the
+                    // "on next app use" trigger for the deferred anchorData
+                    // replace. Not seed-bearing itself, but runs alongside
+                    // the other best-effort catch-up passes in this same
+                    // cold-boot/unlock scope, which is exactly the "app is
+                    // actually being used" moment the delay is designed
+                    // around. Best-effort; re-checked every boot/unlock.
+                    self.fire_due_scheduled_anchor_replaces(&seed_hash).await;
                     // D4b lazy warm: populate the identity-auth public-key
                     // cache for the identities this wallet already knows, in
                     // the same prompt-free seed scope, so the steady-state
@@ -303,6 +312,73 @@ impl AppContext {
                 %error,
                 "Contact receiving-account registration deferred; will retry next unlock"
             ),
+        }
+    }
+
+    /// For every OrchardPay contact of every identity on `seed_hash`, fire
+    /// a due `ScheduledAnchorReplace` marker if one exists — see the
+    /// 2026-07-27 adversarial audit's finding 5 and
+    /// `contact_anchor::fire_due_scheduled_anchor_replace`'s doc comment
+    /// for the full mechanism. Best-effort per contact; a failure is logged
+    /// and never blocks the rest of this pass or the caller's own scope.
+    /// Not seed-bearing itself (the marker check needs no secret), but runs
+    /// here anyway since this is exactly the "app is being used" moment the
+    /// delay is designed around, and `orchardpay_list_contacts` is cheapest
+    /// to call once per identity already in hand.
+    async fn fire_due_scheduled_anchor_replaces(&self, seed_hash: &WalletSeedHash) {
+        use crate::backend_task::orchardpay::contact_anchor::fire_due_scheduled_anchor_replace;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let Some(contract_id) = self.orchardpay_contract_id() else {
+            return;
+        };
+        let identities = match self.load_local_qualified_identities_for_wallet(seed_hash) {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::debug!(
+                    wallet = %hex::encode(seed_hash),
+                    %error,
+                    "Scheduled anchor-replace sweep: sidecar read failed; will retry next boot/unlock"
+                );
+                return;
+            }
+        };
+
+        let sdk = self.sdk.load().as_ref().clone();
+        for qualified_identity in &identities {
+            let owner_id = qualified_identity.identity.id();
+            let counterparties = match backend.orchardpay_list_contacts(&contract_id, &owner_id) {
+                Ok(counterparties) => counterparties,
+                Err(error) => {
+                    tracing::debug!(
+                        identity = %owner_id,
+                        %error,
+                        "Scheduled anchor-replace sweep: contact list read failed for this identity"
+                    );
+                    continue;
+                }
+            };
+            for counterparty_identity_id in counterparties {
+                if let Err(error) = fire_due_scheduled_anchor_replace(
+                    self,
+                    &sdk,
+                    qualified_identity,
+                    counterparty_identity_id,
+                    *seed_hash,
+                )
+                .await
+                {
+                    tracing::debug!(
+                        identity = %owner_id,
+                        counterparty = %counterparty_identity_id,
+                        %error,
+                        "Scheduled anchor-replace deferred; will retry next boot/unlock"
+                    );
+                }
+            }
         }
     }
 

@@ -36,7 +36,8 @@ use crate::backend_task::{
 };
 use crate::context::AppContext;
 use crate::model::orchardpay::{
-    OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation, validate_send_amount,
+    AnchorRole, OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation,
+    ScheduledAnchorReplace, validate_send_amount,
 };
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
@@ -227,11 +228,21 @@ pub async fn initiate_contact(
             let anchor_data_key = backend
                 .orchardpay_anchor_data_key(&seed_hash, app_context.network)
                 .await?;
+            // `their_reference_id` is seeded with a self-recognizable filler
+            // (this identity's own ID — negligible collision risk against a
+            // genuine random 32-byte `reference_id`) rather than left `None`.
+            // Both this and the acceptor's anchor now look "complete" from
+            // creation; a deferred `ScheduledAnchorReplace` (written below,
+            // once the real on-chain `$createdAt` is known) swaps the filler
+            // for the real value later, removing the create-vs-replace
+            // timing asymmetry an outside observer could otherwise use to
+            // tell initiator and acceptor apart. See the 2026-07-27
+            // adversarial audit's finding 5.
             let anchor_record = AnchorDataRecord {
                 counterparty_identity_id: counterparty_identity_id.to_buffer(),
                 counterparty_name_snapshot: Some(counterparty_name.clone()),
                 my_reference_id,
-                their_reference_id: None,
+                their_reference_id: Some(owner_id.to_buffer()),
                 my_initial_message: None,
                 my_core_payment_xpub: None,
                 my_dedicated_shielded_address: None,
@@ -309,6 +320,26 @@ pub async fn initiate_contact(
                 identity_key,
             };
             let result = app_context.run_document_task(task, sdk).await?;
+
+            // Best-effort: if this write is somehow missed (a crash in this
+            // exact narrow window), the filler simply never gets swapped for
+            // the real value — local functionality (messaging, etc.) is
+            // entirely unaffected, since it never depends on `anchorData`.
+            // Only this one relationship's anchor-based recovery record
+            // stays incomplete, the same accepted cost finding 5 already
+            // takes on for the normal (non-crash) case.
+            if let Some(created_at) = broadcast_document_created_at(&result) {
+                backend.orchardpay_set_scheduled_anchor_replace(
+                    &contract_id,
+                    &owner_id,
+                    &counterparty_identity_id,
+                    &ScheduledAnchorReplace {
+                        anchor_document_id: document_id.to_buffer(),
+                        anchor_created_at: created_at,
+                        role: AnchorRole::Initiator,
+                    },
+                )?;
+            }
 
             (my_reference_id, document_id, true, Some(result))
         }
@@ -561,6 +592,26 @@ pub async fn accept_contact(
             };
             let result = app_context.run_document_task(task, sdk).await?;
 
+            // Unlike the initiator, this anchor already carries the real
+            // `their_reference_id` from creation (see the `AnchorDataRecord`
+            // literal above) — this marker's delayed action is a pure
+            // re-seal (fresh nonce, unchanged content), purely so this side
+            // also shows exactly one replace after some delay, matching the
+            // initiator's side. Best-effort, same crash-window reasoning as
+            // `initiate_contact`'s own write.
+            if let Some(created_at) = broadcast_document_created_at(&result) {
+                backend.orchardpay_set_scheduled_anchor_replace(
+                    &contract_id,
+                    &owner_id,
+                    &counterparty_identity_id,
+                    &ScheduledAnchorReplace {
+                        anchor_document_id: document_id.to_buffer(),
+                        anchor_created_at: created_at,
+                        role: AnchorRole::Acceptor,
+                    },
+                )?;
+            }
+
             (my_reference_id, document_id, true, Some(result))
         }
     };
@@ -728,11 +779,20 @@ pub async fn handle_incoming_anchor_signal(
             name,
             created_at,
         }) => {
-            // This is the counterparty's return signal — complete my own
-            // anchor's anchorData: decrypt the partial record I wrote at
-            // initiate time, fill in what I've just learned, re-encrypt.
+            // This is the counterparty's return signal. Read (not write)
+            // my own anchor's `anchorData` to recover the counterparty
+            // pubkeys already cached there from initiate time — enough to
+            // complete local state below. The Platform document itself is
+            // **not** replaced here: `their_reference_id` was already
+            // seeded with a self-recognizable filler at creation (see
+            // `initiate_contact`), and the real value only gets published
+            // once `ScheduledAnchorReplace`'s delayed check (10h, checked
+            // opportunistically on app use — see finding 5 of the
+            // 2026-07-27 adversarial audit) fires, so an outside observer
+            // can't use "was this anchor ever replaced, and how soon" as a
+            // pending-vs-established / initiator-vs-acceptor signal.
             let my_anchor_document_identifier = Identifier::from(my_anchor_document_id);
-            let mut my_document = fetch_anchor_document_by_id(
+            let my_document = fetch_anchor_document_by_id(
                 &orchardpay_contract,
                 sdk,
                 my_anchor_document_identifier,
@@ -775,31 +835,6 @@ pub async fn handle_incoming_anchor_signal(
                 anchor_record.counterparty_decryption_pubkey = Some(sender_decryption_pubkey);
             }
 
-            let anchor_data_bytes = anchor_record
-                .encrypt(&anchor_data_key)
-                .map_err(OrchardPayError::Crypto)?;
-
-            my_document.set(ANCHOR_DATA_FIELD, Value::Bytes(anchor_data_bytes));
-            my_document.bump_revision();
-
-            let document_type = orchardpay_contract
-                .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
-                .expect(
-                    "contactAnchor document type is part of the checked-in OrchardPay contract schema",
-                );
-            let identity_key =
-                own_signing_key(qualified_identity).ok_or(OrchardPayError::OwnKeyMissing)?;
-
-            let task = DocumentTask::ReplaceDocument {
-                document: my_document,
-                document_type,
-                data_contract: orchardpay_contract,
-                qualified_identity: qualified_identity.clone(),
-                identity_key,
-                token_payment_info: None,
-            };
-            app_context.run_document_task(task, sdk).await?;
-
             backend.orchardpay_set_contact_state(
                 &contract_id,
                 &owner_id,
@@ -836,6 +871,133 @@ pub async fn handle_incoming_anchor_signal(
     }
 }
 
+/// Check for and fire `counterparty`'s due [`ScheduledAnchorReplace`]
+/// marker, if any — see the 2026-07-27 adversarial audit's finding 5 (the
+/// pending-vs-established pairing-signal mitigation). Called
+/// opportunistically from the cold-boot/unlock catch-up pass
+/// (`AppContext::bootstrap_wallet_addresses_jit`'s seed scope), not a
+/// dedicated timer — see [`crate::model::orchardpay::ANCHOR_REPLACE_DELAY_MS`]'s
+/// doc comment for why that's deliberate.
+///
+/// A no-op (`Ok(())`) if: nothing is scheduled for this counterparty; the
+/// marker exists but isn't due yet; or (for [`AnchorRole::Initiator`]
+/// specifically) the real `their_reference_id` isn't known locally yet —
+/// the counterparty hasn't completed the handshake, so there's nothing
+/// real to publish over the filler. In all these cases the marker is left
+/// in place, checked again next time this pass runs.
+///
+/// Takes `&AppContext` rather than the `&Arc<AppContext>` its sibling
+/// entry points ([`initiate_contact`], [`accept_contact`],
+/// [`handle_incoming_anchor_signal`]) take: this is called from
+/// `bootstrap_wallet_addresses_jit`, a plain `&self` method with no `Arc`
+/// of its own to hand down. Everything this function needs
+/// (`orchardpay_contract()`, `run_document_task`, `network`) works the same
+/// either way.
+pub async fn fire_due_scheduled_anchor_replace(
+    app_context: &AppContext,
+    sdk: &Sdk,
+    qualified_identity: &QualifiedIdentity,
+    counterparty_identity_id: Identifier,
+    seed_hash: WalletSeedHash,
+) -> Result<(), TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let Some(orchardpay_contract) = app_context.orchardpay_contract() else {
+        return Ok(());
+    };
+    let contract_id = orchardpay_contract.id();
+    let backend = app_context.wallet_backend()?;
+
+    let Some(marker) = backend.orchardpay_get_scheduled_anchor_replace(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?
+    else {
+        return Ok(());
+    };
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    if !marker.is_due(now_ms) {
+        return Ok(());
+    }
+
+    // For the initiator role, the real value must actually be known
+    // locally (the counterparty must have completed the handshake) before
+    // there's anything real to publish over the filler.
+    let real_their_reference_id = if matches!(marker.role, AnchorRole::Initiator) {
+        match backend.orchardpay_get_contact_state(
+            &contract_id,
+            &owner_id,
+            &counterparty_identity_id,
+        )? {
+            Some(OrchardPayContactState::Established {
+                their_reference_id, ..
+            }) => Some(their_reference_id),
+            _ => return Ok(()),
+        }
+    } else {
+        None
+    };
+
+    let anchor_document_identifier = Identifier::from(marker.anchor_document_id);
+    let mut document =
+        fetch_anchor_document_by_id(&orchardpay_contract, sdk, anchor_document_identifier)
+            .await?
+            .ok_or(OrchardPayError::AnchorNotFound)?;
+
+    let anchor_data_key = backend
+        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+        .await?;
+    let Some(Value::Bytes(bytes)) = document.properties().get(ANCHOR_DATA_FIELD) else {
+        return Err(OrchardPayError::AnchorNotFound.into());
+    };
+    let mut anchor_record =
+        AnchorDataRecord::decrypt(&anchor_data_key, bytes).map_err(OrchardPayError::Crypto)?;
+
+    if let Some(real_their_reference_id) = real_their_reference_id {
+        // Initiator: swap the filler for the real value. Fixed-size field,
+        // so this is a same-length ciphertext change, not a size-changing
+        // transition.
+        anchor_record.their_reference_id = Some(real_their_reference_id);
+    }
+    // Acceptor (or initiator with nothing new to change): re-encrypting the
+    // unchanged record still produces a different ciphertext — `encrypt()`
+    // draws a fresh AEAD nonce on every call (`encryption.rs`) — at the
+    // identical total length, with no content change required.
+
+    let anchor_data_bytes = anchor_record
+        .encrypt(&anchor_data_key)
+        .map_err(OrchardPayError::Crypto)?;
+    document.set(ANCHOR_DATA_FIELD, Value::Bytes(anchor_data_bytes));
+    document.bump_revision();
+
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
+        .expect("contactAnchor document type is part of the checked-in OrchardPay contract schema");
+    let identity_key = own_signing_key(qualified_identity).ok_or(OrchardPayError::OwnKeyMissing)?;
+
+    let task = DocumentTask::ReplaceDocument {
+        document,
+        document_type,
+        data_contract: Arc::new(orchardpay_contract),
+        qualified_identity: qualified_identity.clone(),
+        identity_key,
+        token_payment_info: None,
+    };
+    app_context.run_document_task(task, sdk).await?;
+
+    backend.orchardpay_clear_scheduled_anchor_replace(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
+
+    Ok(())
+}
+
 /// Find `identity`'s own key for `purpose`, bounded via
 /// `ContractBounds::SingleContractDocumentType` to OrchardPay's contract +
 /// `contactAnchor`. Unlike DashPay's `get_first_public_key_matching` (which
@@ -864,7 +1026,7 @@ pub(crate) fn own_bounds_verified_key(
 
 /// Find a key suitable for signing a document state transition (an
 /// AUTHENTICATION key at MEDIUM security or higher — MASTER cannot sign
-/// document operations). Used only by [`handle_incoming_anchor_signal`],
+/// document operations). Used only by [`fire_due_scheduled_anchor_replace`],
 /// which runs unattended (no UI to let the user pick a key), unlike
 /// [`initiate_contact`]/[`accept_contact`] which take the caller's chosen
 /// `identity_key` directly.
@@ -1214,6 +1376,21 @@ pub async fn recover_own_anchors(
         let name = anchor_record.counterparty_name_snapshot.clone();
         let created_at = document.created_at();
         let state = match anchor_record.their_reference_id {
+            // Filler (this identity's own ID, seeded at creation — see
+            // `initiate_contact`/finding 5 of the 2026-07-27 adversarial
+            // audit) — the real value hasn't been published yet, whether
+            // because the counterparty hasn't completed the handshake or
+            // `ScheduledAnchorReplace`'s delayed check just hasn't fired
+            // yet. Recovers the same as a pre-fix anchor's genuine `None`
+            // below: pending, not yet established.
+            Some(their_reference_id) if their_reference_id == owner_id.to_buffer() => {
+                OrchardPayContactState::PendingOutbound {
+                    my_reference_id: anchor_record.my_reference_id,
+                    my_anchor_document_id: document.id().to_buffer(),
+                    name,
+                    created_at,
+                }
+            }
             Some(their_reference_id) => {
                 let counterparty_encryption_pubkey =
                     match anchor_record.counterparty_encryption_pubkey {

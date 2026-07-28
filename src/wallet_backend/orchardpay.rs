@@ -28,7 +28,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
-use crate::model::orchardpay::{OrchardPayContactState, PendingOrchardPayOperation};
+use crate::model::orchardpay::{
+    OrchardPayContactState, PendingOrchardPayOperation, ScheduledAnchorReplace,
+};
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
 
@@ -253,6 +255,21 @@ pub const MEMO_SCAN_ERROR_RETRY_CAP: u32 = 5;
 /// `det:orchardpay:pending_op:<contract_id_b58>:<counterparty_b58>`.
 const KV_PREFIX_PENDING_OPERATION: &str = "det:orchardpay:pending_op:";
 
+/// Value: bincode-encoded `ScheduledAnchorReplace`. A local marker for a
+/// `contactAnchor`'s deferred `anchorData` replace — see the 2026-07-27
+/// adversarial audit's finding 5 (the pending-vs-established pairing-signal
+/// mitigation). Deliberately **not** stored under [`KV_PREFIX_PENDING_OPERATION`]:
+/// that key is a single overwrite-only slot shared with contact-anchor
+/// creation and M-02's atomic payment-flow marker, and this scheduling
+/// marker can legitimately need to sit for up to ~10 hours — long enough
+/// that an unrelated in-flight `Payment`/`PaymentRequest` to the same
+/// counterparty would otherwise clobber it (or be clobbered by it). Scope:
+/// [`DetScope::Identity`] of the owner, matching [`KV_PREFIX_PENDING_OPERATION`]'s
+/// own reasoning (per-relationship, private to the acting identity, cascades
+/// on identity removal, contract-ID-scoped). Key shape:
+/// `det:orchardpay:scheduled_anchor_replace:<contract_id_b58>:<counterparty_b58>`.
+const KV_PREFIX_SCHEDULED_ANCHOR_REPLACE: &str = "det:orchardpay:scheduled_anchor_replace:";
+
 fn contact_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_CONTACT}{}:{}",
@@ -296,6 +313,14 @@ fn memo_scan_retry_count_key(note_index: u64) -> String {
 fn pending_operation_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
     format!(
         "{KV_PREFIX_PENDING_OPERATION}{}:{}",
+        contract_id.to_string(Encoding::Base58),
+        counterparty.to_string(Encoding::Base58)
+    )
+}
+
+fn scheduled_anchor_replace_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_SCHEDULED_ANCHOR_REPLACE}{}:{}",
         contract_id.to_string(Encoding::Base58),
         counterparty.to_string(Encoding::Base58)
     )
@@ -380,6 +405,54 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let key = pending_operation_key(contract_id, counterparty);
+        self.kv()
+            .delete(DetScope::Identity(&owner_buf), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Read the local scheduling marker for `counterparty` under
+    /// `contract_id`'s deferred `contactAnchor` replace, if one exists.
+    /// `Ok(None)` means either no replace is scheduled, or it already fired
+    /// and was cleared. See [`KV_PREFIX_SCHEDULED_ANCHOR_REPLACE`].
+    pub fn orchardpay_get_scheduled_anchor_replace(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<Option<ScheduledAnchorReplace>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = scheduled_anchor_replace_key(contract_id, counterparty);
+        self.kv()
+            .get::<ScheduledAnchorReplace>(DetScope::Identity(&owner_buf), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Upsert the local scheduling marker for `counterparty` under
+    /// `contract_id`'s deferred `contactAnchor` replace.
+    pub fn orchardpay_set_scheduled_anchor_replace(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+        marker: &ScheduledAnchorReplace,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = scheduled_anchor_replace_key(contract_id, counterparty);
+        self.kv()
+            .put::<ScheduledAnchorReplace>(DetScope::Identity(&owner_buf), &key, marker)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// Clear the local scheduling marker for `counterparty` under
+    /// `contract_id` — called once the deferred replace has actually fired.
+    pub fn orchardpay_clear_scheduled_anchor_replace(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = scheduled_anchor_replace_key(contract_id, counterparty);
         self.kv()
             .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
@@ -625,6 +698,7 @@ impl WalletBackend {
             KV_PREFIX_CONTACT,
             KV_PREFIX_PENDING_OPERATION,
             KV_PREFIX_HAS_SHIELDED_ADDRESS,
+            KV_PREFIX_SCHEDULED_ANCHOR_REPLACE,
         ] {
             let keys = kv
                 .list(scope, Some(prefix))
@@ -983,7 +1057,7 @@ impl WalletBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::orchardpay::PendingOperationStep;
+    use crate::model::orchardpay::{AnchorRole, PendingOperationStep};
     use crate::wallet_backend::kv::DetKv;
 
     const TEST_SEED: [u8; 64] = [0x42u8; 64];
@@ -1321,6 +1395,102 @@ mod tests {
         );
     }
 
+    /// A scheduled anchor-replace marker round-trips through get/set/clear
+    /// — the sequence the delayed-replace pass (see the 2026-07-27
+    /// adversarial audit's finding 5) relies on.
+    #[test]
+    fn scheduled_anchor_replace_round_trips() {
+        let kv = empty_kv();
+        let owner = [0xd1u8; 32];
+        let contract_id = Identifier::new([0x21u8; 32]);
+        let counterparty = Identifier::new([0x22u8; 32]);
+        let scope = DetScope::Identity(&owner);
+        let key = scheduled_anchor_replace_key(&contract_id, &counterparty);
+
+        assert_eq!(
+            kv.get::<ScheduledAnchorReplace>(scope, &key).unwrap(),
+            None,
+            "nothing scheduled yet"
+        );
+
+        let marker = ScheduledAnchorReplace {
+            anchor_document_id: [1u8; 32],
+            anchor_created_at: 1_700_000_000_000,
+            role: AnchorRole::Initiator,
+        };
+        kv.put::<ScheduledAnchorReplace>(scope, &key, &marker)
+            .unwrap();
+        assert_eq!(
+            kv.get::<ScheduledAnchorReplace>(scope, &key).unwrap(),
+            Some(marker),
+            "recorded marker must read back unchanged"
+        );
+
+        kv.delete(scope, &key).unwrap();
+        assert_eq!(
+            kv.get::<ScheduledAnchorReplace>(scope, &key).unwrap(),
+            None,
+            "cleared marker must no longer be present"
+        );
+    }
+
+    /// The exact conflict the holistic cross-check found: a
+    /// `ScheduledAnchorReplace` marker and a `PendingOrchardPayOperation`
+    /// for the *same* `(contract_id, counterparty)` must not collide —
+    /// they need independent keys, since a payment to the same counterparty
+    /// can legitimately be in flight while a replace is still pending.
+    #[test]
+    fn scheduled_anchor_replace_does_not_collide_with_pending_operation() {
+        let kv = empty_kv();
+        let owner = [0xd2u8; 32];
+        let contract_id = Identifier::new([0x23u8; 32]);
+        let counterparty = Identifier::new([0x24u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        let marker = ScheduledAnchorReplace {
+            anchor_document_id: [2u8; 32],
+            anchor_created_at: 1_700_000_000_000,
+            role: AnchorRole::Acceptor,
+        };
+        kv.put::<ScheduledAnchorReplace>(
+            scope,
+            &scheduled_anchor_replace_key(&contract_id, &counterparty),
+            &marker,
+        )
+        .unwrap();
+
+        let payment_op = PendingOrchardPayOperation::Payment {
+            document_id: [3u8; 32],
+            step: PendingOperationStep::DocumentPublished,
+        };
+        kv.put::<PendingOrchardPayOperation>(
+            scope,
+            &pending_operation_key(&contract_id, &counterparty),
+            &payment_op,
+        )
+        .unwrap();
+
+        assert_eq!(
+            kv.get::<ScheduledAnchorReplace>(
+                scope,
+                &scheduled_anchor_replace_key(&contract_id, &counterparty)
+            )
+            .unwrap(),
+            Some(marker),
+            "the scheduled-replace marker must survive an in-flight payment op to the same \
+             counterparty"
+        );
+        assert_eq!(
+            kv.get::<PendingOrchardPayOperation>(
+                scope,
+                &pending_operation_key(&contract_id, &counterparty)
+            )
+            .unwrap(),
+            Some(payment_op),
+            "the payment op must survive a scheduled-replace marker to the same counterparty"
+        );
+    }
+
     /// The same `(owner, counterparty)` pair under two different contract
     /// IDs never collides — the exact scenario a contract re-registration
     /// creates: a stale entry under a retired contract ID must not be read
@@ -1549,6 +1719,7 @@ mod tests {
             KV_PREFIX_CONTACT,
             KV_PREFIX_PENDING_OPERATION,
             KV_PREFIX_HAS_SHIELDED_ADDRESS,
+            KV_PREFIX_SCHEDULED_ANCHOR_REPLACE,
         ] {
             for k in kv.list(DetScope::Identity(&owner_a), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner_a), &k).unwrap();
