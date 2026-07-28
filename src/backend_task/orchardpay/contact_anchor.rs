@@ -693,6 +693,12 @@ pub async fn handle_incoming_anchor_signal(
     let Some(document) =
         fetch_anchor_document_by_id(&orchardpay_contract, sdk, anchor_document_id).await?
     else {
+        tracing::debug!(
+            identity = %owner_id,
+            anchor = %anchor_document_id,
+            reason = "document_not_found",
+            "OrchardPay: incoming anchor signal not applicable"
+        );
         return Ok(false);
     };
 
@@ -700,12 +706,26 @@ pub async fn handle_incoming_anchor_signal(
     if sender_id == owner_id {
         // My own anchor's signal, observed via my own outgoing OVK
         // recovery or similar — nothing to react to.
+        tracing::debug!(
+            identity = %owner_id,
+            anchor = %anchor_document_id,
+            reason = "own_anchor",
+            "OrchardPay: incoming anchor signal not applicable"
+        );
         return Ok(false);
     }
 
     let data_bytes = match document.properties().get(DATA_FIELD) {
         Some(Value::Bytes(bytes)) => bytes.clone(),
-        _ => return Ok(false),
+        _ => {
+            tracing::debug!(
+                identity = %owner_id,
+                anchor = %anchor_document_id,
+                reason = "data_field_missing",
+                "OrchardPay: incoming anchor signal not applicable"
+            );
+            return Ok(false);
+        }
     };
 
     // No OrchardPay DECRYPTION key at all means this identity hasn't set up
@@ -718,6 +738,12 @@ pub async fn handle_incoming_anchor_signal(
         orchardpay_contract.id(),
         Purpose::DECRYPTION,
     ) else {
+        tracing::debug!(
+            identity = %owner_id,
+            anchor = %anchor_document_id,
+            reason = "no_bound_decryption_key",
+            "OrchardPay: incoming anchor signal not applicable"
+        );
         return Ok(false);
     };
 
@@ -747,6 +773,13 @@ pub async fn handle_incoming_anchor_signal(
     // (retrying re-decrypts the same bytes with the same key), so treat both
     // as "not applicable" rather than a processing error.
     let Ok(their_payload) = ContactAnchorPayload::decrypt(&shared_secret, &data_bytes) else {
+        tracing::debug!(
+            identity = %owner_id,
+            anchor = %anchor_document_id,
+            sender = %sender_id,
+            reason = "aead_decrypt_failed",
+            "OrchardPay: incoming anchor signal not applicable"
+        );
         return Ok(false);
     };
 
@@ -866,6 +899,13 @@ pub async fn handle_incoming_anchor_signal(
             // Already tracked in a phase this signal doesn't advance
             // (a duplicate/replayed memo, or an established relationship
             // resending). Nothing to do — not an error.
+            tracing::debug!(
+                identity = %owner_id,
+                anchor = %anchor_document_id,
+                sender = %sender_id,
+                reason = "already_tracked",
+                "OrchardPay: incoming anchor signal not applicable"
+            );
             Ok(false)
         }
     }
