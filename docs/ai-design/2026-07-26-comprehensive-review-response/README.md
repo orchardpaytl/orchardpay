@@ -176,9 +176,23 @@ immune, since document IDs can't collide. 5 new deterministic unit tests
 list), covering the exact collision case plus the pathological "entire page
 tied" fallback.
 
-**Gap, 99/100/101/200-count boundary tests — still open.** A distinct,
-lower-severity concern (a potential off-by-one in the `has_more`/limit
-check itself, not data loss) for either pagination path. Not yet written.
+**Gap, 99/100/101/200-count boundary tests — resolved by inspection
+(2026-07-28), no test added.** Re-examined whether an off-by-one is
+actually possible in the `has_more`/limit check for either pagination
+path: `messages.rs`'s `query.limit = MESSAGE_PAGE_SIZE` /
+`has_more = documents.len() as u32 >= MESSAGE_PAGE_SIZE`, and
+`contact_anchor.rs`'s `query.limit = OWN_ANCHOR_PAGE_SIZE` / loop-stop
+`page_len < OWN_ANCHOR_PAGE_SIZE` (capped at `MAX_OWN_ANCHOR_PAGES = 4`,
+i.e. exactly 400) both compare the fetched count against the *same
+constant* used as the query's own `limit`. Platform enforces that a query
+can never return more documents than its `limit`, so `documents.len() <=
+LIMIT` always holds and the `>=`/`<` comparison is equivalent to `==` —
+there's no daylight for the limit and the boundary check to drift apart,
+unlike the classic off-by-one shape (two independently-maintained
+numbers). Dedicated 99/100/101/200-count tests would mostly re-confirm the
+Platform SDK's own limit contract rather than catch a plausible local bug,
+so none were added; closed as accepted-by-construction rather than
+deferred.
 
 ## M-02 — multi-step contact/payment flows aren't atomic
 
@@ -326,7 +340,7 @@ schema/MCP paths the review specifically recommended.
 |---|---|
 | H-01 | Resolved (owner check, now query-side via a compound index — see 2026-07-27 addendum, reversing the earlier no-new-index decision); envelope redesign → M-05; adversarial tests explicitly declined (2026-07-27) — query-side fix already closes the exercised mechanism |
 | H-02 | Resolved |
-| M-01 | Resolved; same-`$createdAt` collision confirmed real and fixed (2026-07-27, `trim_ambiguous_tail`); 99/100/101/200-count boundary tests still missing |
+| M-01 | Resolved; same-`$createdAt` collision confirmed real and fixed (2026-07-27, `trim_ambiguous_tail`); `has_more`/limit boundary concern closed by inspection (2026-07-28) — both pagination paths compare the fetched count against the same constant used as the query's own limit, so no off-by-one is possible |
 | M-02 | Resolved — see linked design doc |
 | M-03 | Out of scope (DET-wide) |
 | M-04 | Out of scope (DET-wide) |

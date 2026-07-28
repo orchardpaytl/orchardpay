@@ -1,12 +1,19 @@
 # OrchardPay — Adversarial Conversation Audit (2026-07-27)
 
-Status: **all seven confirmed-exploitable findings and four low-severity
-findings have agreed remediation designs as of 2026-07-28 (see the
-`Resolution` block under each) — not yet implemented.** This started as a
-findings-only snapshot; the resolutions below were worked out one finding at
-a time, then cross-checked holistically (see the bottom section) before any
-code was touched. Implementation is the next phase. Follow-up work should be
-tracked as further dated addendums to this file or new entries in
+Status: **implemented (2026-07-28).** All seven confirmed-exploitable
+findings and four low-severity findings reached agreed remediation designs
+(see the `Resolution` block under each), then were cross-checked
+holistically (see the bottom section) before any code was touched. Of the
+seven confirmed-exploitable findings, five (1, 2, 3, 5, 7) shipped as code
+fixes in `7aa61dbc` (spoofed-payment headline, flood-tolerant message
+loading, bidi/zero-width sanitization, ciphertext-length padding) and
+`2a7b8a78` (pending-vs-established anchor timing signal); two (4, 6) were
+accepted as architectural limitations with no code fix, per their own
+`Resolution` sections. Of the four low-severity items, two shipped in
+`7aa61dbc` (defensive encrypt-layer size cap, reused flood/decode-failure
+notice) and two were deliberately left as-is, per their own `Resolution`
+sections. Follow-up work should be tracked as further dated addendums to
+this file or new entries in
 `docs/ai-design/2026-07-26-comprehensive-review-response/README.md`, per this
 repo's established convention (see that doc for the H-01/L-01/M-01/M-05
 findings this audit builds on).
