@@ -156,10 +156,6 @@ pub struct MessageThreadScreen {
     /// immediately; only `render_pending_confirmation`'s `Confirmed` arm
     /// actually returns it.
     pending_confirmation: Option<PendingConfirmation>,
-    /// The document ID of the bubble whose "Edit"/"Add Memo" button is
-    /// currently shown, toggled by clicking its text — ORP-010's edit
-    /// affordance. `None` means no bubble is expanded.
-    expanded_message: Option<Identifier>,
     /// The one edit-in-progress modal, if any — ORP-010's Message/Payment-
     /// memo edit flow. Unlike `pending_confirmation`, saving from here
     /// dispatches directly (no second confirmation), per the design
@@ -180,6 +176,15 @@ pub struct MessageThreadScreen {
     /// Message, which otherwise target the same document ID and would
     /// relabel identically.
     pending_bubble_action_label: Option<&'static str>,
+    /// Set right before dispatching a composer send (Message/Payment
+    /// Request/direct Payment) — lets `display_task_result`'s
+    /// `BroadcastedDocument` arm confirm a broadcast result actually belongs
+    /// to *this* screen's own composer dispatch. `BroadcastedDocument` is a
+    /// generic, app-wide result type shared by several screens, so without
+    /// this an unrelated broadcast landing while this thread happens to be
+    /// open would incorrectly clear `sending` and re-enable this thread's
+    /// buttons while its own action (if any) is still genuinely in flight.
+    composer_send_pending: bool,
 }
 
 /// A pending action sitting behind a confirmation dialog — the dialog
@@ -204,8 +209,6 @@ enum BubbleAction {
         memo: Option<String>,
         created_at: Option<u64>,
     },
-    /// Toggle whether this bubble's Edit/Add-Memo button is shown.
-    ToggleExpanded { document_id: Identifier },
     /// Open the edit modal for a `Message` I sent.
     EditMessage {
         document_id: Identifier,
@@ -292,10 +295,10 @@ impl MessageThreadScreen {
             counterparty_name,
             pending_identity_refresh: true,
             pending_confirmation: None,
-            expanded_message: None,
             editing: None,
             pending_document_mutation_id: None,
             pending_bubble_action_label: None,
+            composer_send_pending: false,
         }
     }
 
@@ -754,6 +757,7 @@ impl MessageThreadScreen {
             }
         };
 
+        self.composer_send_pending = true;
         self.open_confirmation(
             title,
             message,
@@ -765,9 +769,15 @@ impl MessageThreadScreen {
 
     /// Renders one message bubble. Returns `Some(BubbleAction)` when the
     /// user clicked something that needs `&mut self` — Pay, Cancel Request,
-    /// the click-to-expand text, or an Edit/Add Memo button — since a
-    /// `ui.group` closure can't hold a `&mut self` borrow. The caller in
+    /// an Edit/Delete/Add Memo entry in a message's right-click menu — since
+    /// a `ui.group` closure can't hold a `&mut self` borrow. The caller in
     /// `ui()` applies the actual state change/dispatch outside the closure.
+    /// Message/memo text is deliberately a plain, non-interactive label —
+    /// left-click affordances that reveal new buttons right under the
+    /// cursor invite mis-clicks, and previously masked a real bug where an
+    /// unrelated document broadcast could clear this screen's busy-action
+    /// guard early (see `composer_send_pending`'s doc comment). Edit/Delete
+    /// live behind a right-click context menu instead.
     fn render_message_bubble(&self, ui: &mut Ui, message: &ThreadMessage) -> Option<BubbleAction> {
         let dark_mode = ui.style().visuals.dark_mode;
         let sender_label = if message.from_me {
@@ -776,7 +786,6 @@ impl MessageThreadScreen {
             self.counterparty_name.as_deref().unwrap_or("Them")
         };
         let mut bubble_action: Option<BubbleAction> = None;
-        let is_expanded = self.expanded_message == Some(message.document_id);
         // Whether at least one shielded sync pass has completed this
         // session — `PaymentRequest`'s "paid" check reads the shielded
         // store directly (see `decode_thread_message`), so before this a
@@ -900,66 +909,55 @@ impl MessageThreadScreen {
                         }
                     };
 
+                    // Delete/Edit Message/Edit Memo now live behind a
+                    // right-click context menu on the text (see
+                    // `render_message_bubble`'s doc comment on why plain
+                    // text left-click was removed), so there's no longer an
+                    // always-visible button to relabel with a progress verb
+                    // while the menu is closed. This keeps that feedback
+                    // visible independent of the menu's open state.
+                    let show_busy_label = |ui: &mut Ui| {
+                        if busy_here && let Some(label) = self.pending_bubble_action_label {
+                            ui.label(
+                                RichText::new(label)
+                                    .italics()
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        }
+                    };
+
                     match &message.content {
                         MessageContent::Message { data } => {
                             let sanitized_data = strip_unsafe_display_characters(data);
-                            if message.from_me {
-                                let response = ui.add(
-                                    egui::Label::new(&sanitized_data).sense(egui::Sense::click()),
-                                );
-                                if response.clicked() {
-                                    bubble_action = Some(BubbleAction::ToggleExpanded {
-                                        document_id: message.document_id,
-                                    });
-                                }
-                            } else {
-                                ui.label(&sanitized_data);
-                            }
+                            let text_response = ui.label(&sanitized_data);
                             show_edited_tag(ui);
-                            if message.from_me && is_expanded {
-                                // Delete and Edit Message target the same
-                                // document_id, so `busy_here` alone can't
-                                // tell them apart — only relabel the one
-                                // whose own label matches what's pending.
-                                let delete_label =
-                                    if busy_here && self.pending_bubble_action_label == Some(LABEL_DELETING) {
-                                        LABEL_DELETING
-                                    } else {
-                                        "Delete"
-                                    };
-                                let edit_label =
-                                    if busy_here && self.pending_bubble_action_label == Some(LABEL_SAVING) {
-                                        LABEL_SAVING
-                                    } else {
-                                        "Edit Message"
-                                    };
-                                let (delete_clicked, edit_clicked) = egui::Sides::new().show(
-                                    ui,
-                                    |ui| {
-                                        ui.add_enabled(
+                            show_busy_label(ui);
+                            if message.from_me {
+                                text_response.context_menu(|ui| {
+                                    ui.set_min_width(140.0);
+                                    if ui
+                                        .add_enabled(!action_disabled, egui::Button::new("Delete"))
+                                        .clicked()
+                                    {
+                                        bubble_action = Some(BubbleAction::DeleteMessage {
+                                            document_id: message.document_id,
+                                        });
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(
                                             !action_disabled,
-                                            egui::Button::new(delete_label),
+                                            egui::Button::new("Edit Message"),
                                         )
                                         .clicked()
-                                    },
-                                    |ui| {
-                                        ui.add_enabled(
-                                            !action_disabled,
-                                            egui::Button::new(edit_label),
-                                        )
-                                        .clicked()
-                                    },
-                                );
-                                if delete_clicked {
-                                    bubble_action = Some(BubbleAction::DeleteMessage {
-                                        document_id: message.document_id,
-                                    });
-                                } else if edit_clicked {
-                                    bubble_action = Some(BubbleAction::EditMessage {
-                                        document_id: message.document_id,
-                                        current_text: data.clone(),
-                                    });
-                                }
+                                    {
+                                        bubble_action = Some(BubbleAction::EditMessage {
+                                            document_id: message.document_id,
+                                            current_text: data.clone(),
+                                        });
+                                        ui.close();
+                                    }
+                                });
                             }
                         }
                         MessageContent::Payment { amount, memo } => {
@@ -982,39 +980,26 @@ impl MessageThreadScreen {
                             match memo {
                                 Some(memo_text) => {
                                     let sanitized_memo = strip_unsafe_display_characters(memo_text);
+                                    let memo_response = ui.label(&sanitized_memo);
                                     if message.from_me {
-                                        let response = ui.add(
-                                            egui::Label::new(&sanitized_memo)
-                                                .sense(egui::Sense::click()),
-                                        );
-                                        if response.clicked() {
-                                            bubble_action = Some(BubbleAction::ToggleExpanded {
-                                                document_id: message.document_id,
-                                            });
-                                        }
-                                    } else {
-                                        ui.label(&sanitized_memo);
-                                    }
-                                    if message.from_me && is_expanded {
-                                        let label = if busy_here { LABEL_SAVING } else { "Edit Memo" };
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if ui
-                                                    .add_enabled(
-                                                        !action_disabled,
-                                                        egui::Button::new(label),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    bubble_action =
-                                                        Some(BubbleAction::EditPaymentMemo {
-                                                            document_id: message.document_id,
-                                                            current_memo: Some(memo_text.clone()),
-                                                        });
-                                                }
-                                            },
-                                        );
+                                        memo_response.context_menu(|ui| {
+                                            ui.set_min_width(140.0);
+                                            if ui
+                                                .add_enabled(
+                                                    !action_disabled,
+                                                    egui::Button::new("Edit Memo"),
+                                                )
+                                                .clicked()
+                                            {
+                                                bubble_action =
+                                                    Some(BubbleAction::EditPaymentMemo {
+                                                        document_id: message.document_id,
+                                                        current_memo: Some(memo_text.clone()),
+                                                    });
+                                                ui.close();
+                                            }
+                                        });
+                                        show_busy_label(ui);
                                     }
                                 }
                                 None if message.from_me => {
@@ -1379,6 +1364,7 @@ impl ScreenLike for MessageThreadScreen {
             self.sending = false;
             self.pending_document_mutation_id = None;
             self.pending_bubble_action_label = None;
+            self.composer_send_pending = false;
             self.loading = false;
             self.loading_more = false;
             self.refresh_banner.take_and_clear();
@@ -1411,7 +1397,16 @@ impl ScreenLike for MessageThreadScreen {
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
             }
-            BackendTaskSuccessResult::BroadcastedDocument(_) => {
+            // `BroadcastedDocument` is a generic, app-wide result type (any
+            // document creation, not just this thread's own) — only treat
+            // it as "my composer send finished" when this screen actually
+            // set `composer_send_pending` before dispatch. Otherwise it
+            // belongs to some unrelated broadcast that happened to arrive
+            // while this thread is the visible/hidden-routed screen, and
+            // must not clear a guard it didn't set (see
+            // `composer_send_pending`'s doc comment).
+            BackendTaskSuccessResult::BroadcastedDocument(_) if self.composer_send_pending => {
+                self.composer_send_pending = false;
                 self.sending = false;
                 self.pending_document_mutation_id = None;
                 self.pending_bubble_action_label = None;
@@ -1425,7 +1420,6 @@ impl ScreenLike for MessageThreadScreen {
                 self.pending_document_mutation_id = None;
                 self.pending_bubble_action_label = None;
                 self.sending = false;
-                self.expanded_message = None;
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
             }
@@ -1435,7 +1429,6 @@ impl ScreenLike for MessageThreadScreen {
                 self.pending_document_mutation_id = None;
                 self.pending_bubble_action_label = None;
                 self.sending = false;
-                self.expanded_message = None;
                 self.pending_reload = true;
                 self.pending_identity_refresh = true;
             }
@@ -1714,13 +1707,6 @@ impl ScreenLike for MessageThreadScreen {
                     created_at,
                 }) => {
                     self.open_pay_confirmation(document_id, amount, memo, created_at);
-                }
-                Some(BubbleAction::ToggleExpanded { document_id }) => {
-                    self.expanded_message = if self.expanded_message == Some(document_id) {
-                        None
-                    } else {
-                        Some(document_id)
-                    };
                 }
                 Some(BubbleAction::EditMessage {
                     document_id,
