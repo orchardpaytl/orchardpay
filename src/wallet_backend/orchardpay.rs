@@ -267,8 +267,17 @@ const KV_PREFIX_PENDING_OPERATION: &str = "det:orchardpay:pending_op:";
 /// [`DetScope::Identity`] of the owner, matching [`KV_PREFIX_PENDING_OPERATION`]'s
 /// own reasoning (per-relationship, private to the acting identity, cascades
 /// on identity removal, contract-ID-scoped). Key shape:
-/// `det:orchardpay:scheduled_anchor_replace:<contract_id_b58>:<counterparty_b58>`.
-const KV_PREFIX_SCHEDULED_ANCHOR_REPLACE: &str = "det:orchardpay:scheduled_anchor_replace:";
+/// `det:orchardpay:anchor_replace:<contract_id_b58>:<counterparty_b58>`.
+///
+/// The prefix is deliberately short: a 32-byte `Identifier` base58-encodes to
+/// up to 44 chars (the common case, not an edge case), so this key already
+/// carries `<44 chars>:<44 chars>` = 89 chars before the prefix. A prefix
+/// longer than ~39 chars pushes the worst case past the upstream
+/// [`platform_wallet_storage::kv::MAX_KEY_LEN`] of 128 — this happened for
+/// real with the original `det:orchardpay:scheduled_anchor_replace:` prefix
+/// (40 chars, worst case 129, `KvError::KeyTooLong`). See the
+/// `*_key_stays_within_kv_max_len` test below.
+const KV_PREFIX_SCHEDULED_ANCHOR_REPLACE: &str = "det:orchardpay:anchor_replace:";
 
 fn contact_key(contract_id: &Identifier, counterparty: &Identifier) -> String {
     format!(
@@ -1392,6 +1401,44 @@ mod tests {
             .unwrap(),
             None,
             "counterparty_b must not see counterparty_a's marker"
+        );
+    }
+
+    /// Regression test for the real `KeyTooLong { len: 129 }` failure hit in
+    /// production: `scheduled_anchor_replace_key`'s prefix used to be long
+    /// enough that two worst-case (44-char base58) `Identifier`s pushed the
+    /// key one char past the upstream store's `MAX_KEY_LEN`. `[0xff; 32]` is
+    /// the numerically largest 32-byte value, so it deterministically
+    /// produces base58's longest encoding (44 chars) — not just a likely
+    /// case. Covers every builder in this file that concatenates two full
+    /// `Identifier`s into one key, since `scheduled_anchor_replace_key` was
+    /// not the only one structurally capable of this, only the one whose
+    /// prefix happened to be long enough to overflow.
+    #[test]
+    fn two_identifier_keys_stay_within_kv_max_len() {
+        let contract_id = Identifier::new([0xffu8; 32]);
+        let counterparty = Identifier::new([0xffu8; 32]);
+
+        for key in [
+            scheduled_anchor_replace_key(&contract_id, &counterparty),
+            contact_key(&contract_id, &counterparty),
+            pending_operation_key(&contract_id, &counterparty),
+        ] {
+            assert!(
+                key.chars().count() <= platform_wallet_storage::kv::MAX_KEY_LEN,
+                "key {key:?} ({} chars) exceeds MAX_KEY_LEN ({})",
+                key.chars().count(),
+                platform_wallet_storage::kv::MAX_KEY_LEN
+            );
+        }
+
+        assert_eq!(
+            scheduled_anchor_replace_key(&contract_id, &counterparty)
+                .chars()
+                .count(),
+            119,
+            "worst-case length should match the prefix's documented budget; update the doc \
+             comment on KV_PREFIX_SCHEDULED_ANCHOR_REPLACE if this changes"
         );
     }
 
