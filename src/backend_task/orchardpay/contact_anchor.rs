@@ -57,7 +57,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{
-    DataContract, Document, DocumentQuery, FetchMany, Identifier, IdentityPublicKey,
+    DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1219,26 +1219,29 @@ async fn fetch_anchor_document_by_id(
     sdk: &Sdk,
     document_id: Identifier,
 ) -> Result<Option<Document>, TaskError> {
-    let mut query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
+    // Use the SDK's own `with_document_id` rather than a hand-built `$id`
+    // WhereClause: it encodes the id via `platform_value!` (a non-human-
+    // readable serde pass, which for exactly 32 bytes produces
+    // `Value::Bytes32`), not `Value::Identifier`. Drive's query engine
+    // routes `$id`-equality clauses into a separate `primary_key_equal_clause`
+    // bucket (unlike e.g. `$ownerId`, which lands in the generic
+    // `equal_clauses` path) that doesn't treat the two `Value` variants as
+    // equivalent — a hand-built `Value::Identifier(..)` clause here silently
+    // never matches, even for a document that genuinely exists.
+    let query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
         .map_err(|e| OrchardPayError::QueryCreation {
-        query_target: "contactAnchor fetch by id",
-        source: Box::new(e),
-    })?;
-    query = query.with_where(WhereClause {
-        field: "$id".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(document_id.to_buffer()),
-    });
+            query_target: "contactAnchor fetch by id",
+            source: Box::new(e),
+        })?
+        .with_document_id(&document_id);
 
-    let results = await_network_request_with_timeout(
+    await_network_request_with_timeout(
         NETWORK_REQUEST_TIMEOUT,
-        Document::fetch_many(sdk, query),
+        Document::fetch(sdk, query),
         |source| TaskError::DocumentFetchTimeout { source },
     )
     .await?
-    .map_err(TaskError::from)?;
-
-    Ok(results.into_values().flatten().next())
+    .map_err(TaskError::from)
 }
 
 /// One page's worth of [`fetch_own_anchors`] — Platform's own
