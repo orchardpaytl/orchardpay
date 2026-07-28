@@ -2559,34 +2559,19 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::OrchardPayIncomingAnchorsScanned {
                             anything_changed,
-                            anchor_signals_seen,
-                            anchor_signals_claimed,
+                            anchor_signals_seen: _,
+                            anchor_signals_claimed: _,
                             anchor_signals_still_unresolved: _,
                         } => {
                             if anything_changed {
                                 self.visible_screen_mut().refresh();
                             }
-                            let (msg, message_type) = if anchor_signals_seen == 0 {
-                                (
-                                    "Checked for new requests — nothing new since last check."
-                                        .to_string(),
-                                    MessageType::Info,
-                                )
-                            } else if anchor_signals_claimed > 0 {
-                                let msg = if anchor_signals_claimed == 1 {
-                                    "Found 1 new contact request.".to_string()
-                                } else {
-                                    format!("Found {anchor_signals_claimed} new contact requests.")
-                                };
-                                (msg, MessageType::Success)
-                            } else {
-                                (
-                                    "Found a contact request that doesn't match any of your identities yet. It will keep being checked automatically."
-                                        .to_string(),
-                                    MessageType::Info,
-                                )
-                            };
-                            MessageBanner::set_global(ctx, &msg, message_type);
+                            // Banner intentionally disabled for now (kept the
+                            // counts + tracing::info! summary log in
+                            // scan_for_incoming_anchors, still the useful part
+                            // for debugging) — see
+                            // docs/ai-design/2026-07-28-orchardpay-incoming-contact-request-bug-hunt/
+                            // for why this existed and how to bring it back.
                             self.visible_screen_mut()
                                 .display_backend_task_result(&context, unboxed_message);
                         }
