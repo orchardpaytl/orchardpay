@@ -809,8 +809,10 @@ impl MessageThreadScreen {
         // Conversation-wide, deliberately: `sending` is one flag for the
         // whole thread, not per-message, so any one action in flight
         // (including sending a new message from the composer) disables
-        // every mutating button here until it resolves.
-        let action_disabled = self.sending;
+        // every mutating button here until it resolves. Also folds in
+        // `loading`/`loading_more` so a manual refresh or "load more" keeps
+        // these mutually exclusive with every other conversation action too.
+        let action_disabled = self.sending || self.loading || self.loading_more;
 
         // A `Message`'s text is entirely attacker-controlled — nothing
         // stops someone from typing "Payment: 50 DASH" as plain text to
@@ -1332,9 +1334,13 @@ impl MessageThreadScreen {
                     // mutation.
                     let composer_busy = self.sending && self.pending_document_mutation_id.is_none();
                     let send_label = if composer_busy { LABEL_SENDING } else { "Send" };
+                    // Mirrors `render_message_bubble`'s `action_disabled`: a
+                    // manual refresh or "load more" keeps Send mutually
+                    // exclusive with every other conversation action too.
+                    let thread_busy = self.sending || self.loading || self.loading_more;
                     if ui
                         .add_enabled(
-                            !self.sending && !credit_blocked,
+                            !thread_busy && !credit_blocked,
                             egui::Button::new(send_label),
                         )
                         .disabled_tooltip(CREDIT_BLOCKED_TOOLTIP)
@@ -1609,7 +1615,28 @@ impl ScreenLike for MessageThreadScreen {
                     self.counterparty_identity_id.to_string(Encoding::Base58)
                 ),
             };
-            ui.heading(RichText::new(heading));
+            // Any one of these already means some conversation action is in
+            // flight — a manual refresh, a "load more", or a
+            // send/pay/cancel/edit/delete via `sending`. Used to keep the
+            // Refresh button and every other conversation action button
+            // mutually exclusive, so at most one is ever running at a time.
+            let thread_busy = self.loading || self.loading_more || self.sending;
+            ui.horizontal(|ui| {
+                ui.heading(RichText::new(heading));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let refresh_label = if self.loading {
+                        "Refreshing…"
+                    } else {
+                        "Refresh"
+                    };
+                    if ui
+                        .add_enabled(!thread_busy, egui::Button::new(refresh_label))
+                        .clicked()
+                    {
+                        inner_action |= self.dispatch_load();
+                    }
+                });
+            });
             ui.add_space(8.0);
 
             if self.may_be_incomplete {
@@ -1679,7 +1706,13 @@ impl ScreenLike for MessageThreadScreen {
                     if has_more_history {
                         if loading_more {
                             ui.label("Loading more…");
-                        } else if ui.button("See more conversation history").clicked() {
+                        } else if ui
+                            .add_enabled(
+                                !thread_busy,
+                                egui::Button::new("See more conversation history"),
+                            )
+                            .clicked()
+                        {
                             load_more_clicked = true;
                         }
                         ui.add_space(6.0);
