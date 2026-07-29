@@ -69,6 +69,26 @@ const MY_MESSAGE_INDENT: f32 = 48.0;
 /// might otherwise want for exactly that reason.
 const MESSAGE_BUBBLE_MAX_WIDTH: f32 = 340.0;
 
+/// Fixed width of the "Recent Payments" side table, so it reads as a
+/// consistent column regardless of how wide its own content is.
+const RECENT_PAYMENTS_PANEL_WIDTH: f32 = 500.0;
+
+/// Cap on how many rows the "Recent Payments" side table shows.
+const RECENT_PAYMENTS_MAX_ROWS: usize = 6;
+
+/// Fixed width of the "Sent/Received" column in the "Recent Payments" table.
+const RECENT_PAYMENTS_COL1_WIDTH: f32 = 110.0;
+
+/// Fixed width of the "Amount (DASH)" column in the "Recent Payments" table.
+const RECENT_PAYMENTS_COL2_WIDTH: f32 = 150.0;
+
+/// Row height (header and data rows alike) in the "Recent Payments" table.
+const RECENT_PAYMENTS_ROW_HEIGHT: f32 = 22.0;
+
+/// Gap between the conversation column and the "Recent Payments" column —
+/// plain spacing, deliberately not a `ui.separator()` line.
+const RECENT_PAYMENTS_COLUMN_GAP: f32 = 24.0;
+
 /// Progress-verb labels shown on a bubble's own button while its action is
 /// the one in flight (`pending_bubble_action_label`) — shared constants
 /// between the "set" call sites and `render_message_bubble`'s "is this the
@@ -84,6 +104,17 @@ enum ComposeKind {
     Message,
     Payment,
     PaymentRequest,
+}
+
+/// One row of the "Recent Payments" side table — a verified real-money
+/// movement between the two parties. See
+/// [`MessageThreadScreen::recent_verified_payments`].
+struct PaymentRow {
+    /// `true` if the thread owner received this payment, `false` if they
+    /// sent it.
+    received: bool,
+    credits: u64,
+    created_at: Option<u64>,
 }
 
 pub struct MessageThreadScreen {
@@ -1199,6 +1230,331 @@ impl MessageThreadScreen {
         bubble_action
     }
 
+    /// The up-to-6 most recent verified money movements between the two
+    /// parties, newest first, for the "Recent Payments" side table. Mirrors
+    /// `render_message_bubble`'s own `verified_amount`-gated match (only a
+    /// `Payment`/`PaymentRequest` with a wallet-confirmed amount counts —
+    /// never the sender's bare claim) but flattens it into rows instead of
+    /// a bubble tint. A paid `PaymentRequest` counts too, with direction
+    /// inverted from its own `from_me`: money moves opposite to who asked
+    /// for it (`verified_amount.is_some()` on a `PaymentRequest` means
+    /// "paid", per `ThreadMessage::verified_amount`'s doc comment).
+    fn recent_verified_payments(&self) -> Vec<PaymentRow> {
+        let mut rows: Vec<PaymentRow> = self
+            .messages
+            .iter()
+            .filter_map(|message| {
+                let credits = message.verified_amount?;
+                let received = match &message.content {
+                    MessageContent::Payment { .. } => !message.from_me,
+                    MessageContent::PaymentRequest { .. } => message.from_me,
+                    MessageContent::Message { .. }
+                    | MessageContent::PaymentRequestReceipt { .. } => {
+                        return None;
+                    }
+                };
+                Some(PaymentRow {
+                    received,
+                    credits,
+                    created_at: message.created_at,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.created_at.unwrap_or(0)));
+        rows.truncate(RECENT_PAYMENTS_MAX_ROWS);
+        rows
+    }
+
+    /// Renders the "Recent Payments" side table — up to
+    /// [`RECENT_PAYMENTS_MAX_ROWS`] verified payments between the two
+    /// parties, newest first. Row tint mirrors `render_message_bubble`'s own
+    /// color language (green/`success_color` for money received, blue/
+    /// `info_color` for money sent) so the table reads as an extension of
+    /// the thread's own bubbles rather than a separately-styled widget.
+    fn render_recent_payments_table(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.set_width(RECENT_PAYMENTS_PANEL_WIDTH);
+        ui.heading(RichText::new("Recent Payments"));
+        ui.add_space(8.0);
+
+        let rows = self.recent_verified_payments();
+        if rows.is_empty() {
+            ui.label(
+                RichText::new("No payments yet.").color(DashColors::text_secondary(dark_mode)),
+            );
+            return;
+        }
+
+        // Fixed-width "columns" laid out via `allocate_ui_with_layout` inside
+        // a single `Frame` per row — a `Frame`'s own `.fill()` covers its
+        // whole bounding rect in one paint call, so (unlike
+        // `egui_extras::TableRow`, which has no per-row fill and needs
+        // fragile per-cell painting) the tint always reads as one solid
+        // strip across the entire row.
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(RECENT_PAYMENTS_COL1_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(RichText::new("Sent/Received").strong());
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(RECENT_PAYMENTS_COL2_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(RichText::new("Amount (DASH)").strong());
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), RECENT_PAYMENTS_ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.label(RichText::new("Date").strong());
+                },
+            );
+        });
+        ui.add_space(4.0);
+
+        for row in &rows {
+            let color = if row.received {
+                DashColors::success_color(dark_mode)
+            } else {
+                DashColors::info_color(dark_mode)
+            };
+            egui::Frame::new()
+                .fill(color.gamma_multiply(0.08))
+                .stroke(egui::Stroke::new(1.0, color))
+                .corner_radius(Shape::RADIUS_MD)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(RECENT_PAYMENTS_COL1_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                let label = if row.received { "Received" } else { "Sent" };
+                                ui.label(RichText::new(label).strong().color(color));
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(RECENT_PAYMENTS_COL2_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.label(format_credits_as_dash(row.credits));
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), RECENT_PAYMENTS_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                if let Some(when) = row.created_at.and_then(format_relative_time) {
+                                    ui.label(
+                                        RichText::new(when)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                            },
+                        );
+                    });
+                });
+            ui.add_space(6.0);
+        }
+    }
+
+    /// Renders the conversation column (heading, warnings, message
+    /// timeline, composer) — split out of `ScreenLike::ui`'s single
+    /// `island_central_panel` closure so it can sit in a fixed-width
+    /// `ui.vertical` next to the "Recent Payments" column while still
+    /// formatting normally (a closure this large nested many levels deep
+    /// defeats rustfmt's own reformatting, so this content needs to be a
+    /// real method, not an inline closure).
+    fn render_conversation_column(&mut self, ui: &mut Ui, conversation_width: f32) -> AppAction {
+        let mut inner_action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.set_width(conversation_width);
+        let heading = match &self.counterparty_name {
+            Some(name) => format!("Conversation with {name}"),
+            None => format!(
+                "Conversation with {}",
+                self.counterparty_identity_id.to_string(Encoding::Base58)
+            ),
+        };
+        // Any one of these already means some conversation action is in
+        // flight — a manual refresh, a "load more", or a
+        // send/pay/cancel/edit/delete via `sending`. Used to keep the
+        // Refresh button and every other conversation action button
+        // mutually exclusive, so at most one is ever running at a time.
+        let thread_busy = self.loading || self.loading_more || self.sending;
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new(heading));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let refresh_label = if self.loading {
+                    "Refreshing…"
+                } else {
+                    "Refresh"
+                };
+                if ui
+                    .add_enabled(!thread_busy, egui::Button::new(refresh_label))
+                    .clicked()
+                {
+                    inner_action |= self.dispatch_load();
+                }
+            });
+        });
+        ui.add_space(8.0);
+
+        if self.may_be_incomplete {
+            let color = DashColors::warning_color(dark_mode);
+            egui::Frame::new()
+                .fill(color.gamma_multiply(0.1))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new("Some messages from this contact may not have loaded.")
+                            .color(color),
+                    );
+                });
+            ui.add_space(8.0);
+        }
+
+        if self.loading && self.messages.is_empty() {
+            ui.label("Loading conversation…");
+        }
+
+        // Receipt alerts merge into the same chronological position as
+        // everything else (sorted by `original_created_at`, captured at
+        // pay-time for exactly this purpose — see
+        // `MessageContent::PaymentRequestReceipt`), rather than a
+        // separate fixed list, so a surfaced alert reads as "this is
+        // where that request used to be."
+        enum TimelineItem {
+            Message(ThreadMessage),
+            ReceiptAlert(ReceiptAlert),
+        }
+        let mut timeline: Vec<TimelineItem> = self
+            .messages
+            .iter()
+            .cloned()
+            .map(TimelineItem::Message)
+            .chain(
+                self.receipt_alerts
+                    .iter()
+                    .cloned()
+                    .map(TimelineItem::ReceiptAlert),
+            )
+            .collect();
+        timeline.sort_by_key(|item| match item {
+            TimelineItem::Message(message) => message.created_at.unwrap_or(0),
+            TimelineItem::ReceiptAlert(alert) => alert.original_created_at.unwrap_or(0),
+        });
+
+        let mut bubble_action: Option<BubbleAction> = None;
+        let has_more_history = self.history_cursor.has_more();
+        let loading_more = self.loading_more;
+        let mut load_more_clicked = false;
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_height() * 0.6)
+            // Opens on the most recent messages (the bottom, since
+            // `timeline` is chronological oldest-first) and follows new
+            // messages/payments/requests as they're appended — unless
+            // the user has manually scrolled up to read history, in
+            // which case egui's own stuck-to-end tracking backs off and
+            // leaves them where they are.
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                // Sits above the oldest bubble, so it's what a user
+                // scrolling all the way up to read history runs into —
+                // no scroll-position tracking needed, it's just the
+                // first item in the same list.
+                if has_more_history {
+                    if loading_more {
+                        ui.label("Loading more…");
+                    } else if ui
+                        .add_enabled(
+                            !thread_busy,
+                            egui::Button::new("See more conversation history"),
+                        )
+                        .clicked()
+                    {
+                        load_more_clicked = true;
+                    }
+                    ui.add_space(6.0);
+                }
+                for item in timeline {
+                    match item {
+                        TimelineItem::Message(message) => {
+                            if let Some(action) = self.render_message_bubble(ui, &message) {
+                                bubble_action = Some(action);
+                            }
+                        }
+                        TimelineItem::ReceiptAlert(alert) => {
+                            self.render_receipt_alert(ui, &alert);
+                        }
+                    }
+                }
+            });
+
+        if load_more_clicked {
+            self.loading_more = true;
+            inner_action |= self.dispatch_load_more();
+        }
+
+        match bubble_action {
+            Some(BubbleAction::Pay {
+                document_id,
+                amount,
+                memo,
+                created_at,
+            }) => {
+                self.open_pay_confirmation(document_id, amount, memo, created_at);
+            }
+            Some(BubbleAction::EditMessage {
+                document_id,
+                current_text,
+            }) => {
+                self.editing = Some(EditingState::Message {
+                    document_id,
+                    dialog: TextEditDialog::new(
+                        "Edit Message",
+                        current_text,
+                        MAX_MESSAGE_CHARS,
+                        validate_message_text,
+                        "The message is too long. Use 1000 characters or fewer.",
+                    ),
+                });
+            }
+            Some(BubbleAction::EditPaymentMemo {
+                document_id,
+                current_memo,
+            }) => {
+                self.editing = Some(EditingState::PaymentMemo {
+                    document_id,
+                    dialog: TextEditDialog::new(
+                        "Edit Memo",
+                        current_memo.unwrap_or_default(),
+                        MAX_PAYMENT_MEMO_CHARS,
+                        validate_payment_memo,
+                        "The payment memo is too long. Use 1000 characters or fewer.",
+                    ),
+                });
+            }
+            Some(BubbleAction::CancelPaymentRequest { document_id }) => {
+                self.open_cancel_request_confirmation(document_id);
+            }
+            Some(BubbleAction::DeleteMessage { document_id }) => {
+                self.open_delete_message_confirmation(document_id);
+            }
+            None => {}
+        }
+
+        inner_action |= self.render_composer(ui);
+
+        inner_action
+    }
+
     /// Renders one [`ReceiptAlert`] as a warning-styled panel — never a
     /// normal bubble. A receipt only ever surfaces once its original
     /// `PaymentRequest` no longer checks out (deleted, changed kind, or a
@@ -1622,183 +1978,33 @@ impl ScreenLike for MessageThreadScreen {
                 }
             }
 
-            let heading = match &self.counterparty_name {
-                Some(name) => format!("Conversation with {name}"),
-                None => format!(
-                    "Conversation with {}",
-                    self.counterparty_identity_id.to_string(Encoding::Base58)
-                ),
-            };
-            // Any one of these already means some conversation action is in
-            // flight — a manual refresh, a "load more", or a
-            // send/pay/cancel/edit/delete via `sending`. Used to keep the
-            // Refresh button and every other conversation action button
-            // mutually exclusive, so at most one is ever running at a time.
-            let thread_busy = self.loading || self.loading_more || self.sending;
-            ui.horizontal(|ui| {
-                ui.heading(RichText::new(heading));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let refresh_label = if self.loading {
-                        "Refreshing…"
-                    } else {
-                        "Refresh"
-                    };
-                    if ui
-                        .add_enabled(!thread_busy, egui::Button::new(refresh_label))
-                        .clicked()
-                    {
-                        inner_action |= self.dispatch_load();
-                    }
+            // A horizontal split within the same island rather than a
+            // separate side panel — sharing one surface/border/shadow with
+            // the conversation itself, no divider line between the two
+            // columns, just spacing. `inner_action` is captured by both
+            // closures via `&mut`.
+            //
+            // `horizontal_top` (not plain `horizontal`, which only
+            // pre-allocates a single interactive-widget-sized row and grows
+            // from there) — it hands both child columns the island's full
+            // remaining height up front, so `render_conversation_column`'s
+            // own `ui.available_height()` (used to size the message
+            // scroll area) sees the real window height again instead of a
+            // sliver, which is also what was making the whole island
+            // shrink to fit that sliver.
+            ui.horizontal_top(|ui| {
+                let conversation_width = (ui.available_width()
+                    - RECENT_PAYMENTS_PANEL_WIDTH
+                    - RECENT_PAYMENTS_COLUMN_GAP)
+                    .max(0.0);
+                ui.vertical(|ui| {
+                    inner_action |= self.render_conversation_column(ui, conversation_width);
+                });
+                ui.add_space(RECENT_PAYMENTS_COLUMN_GAP);
+                ui.vertical(|ui| {
+                    self.render_recent_payments_table(ui);
                 });
             });
-            ui.add_space(8.0);
-
-            if self.may_be_incomplete {
-                let color = DashColors::warning_color(dark_mode);
-                egui::Frame::new()
-                    .fill(color.gamma_multiply(0.1))
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new("Some messages from this contact may not have loaded.")
-                                .color(color),
-                        );
-                    });
-                ui.add_space(8.0);
-            }
-
-            if self.loading && self.messages.is_empty() {
-                ui.label("Loading conversation…");
-            }
-
-            // Receipt alerts merge into the same chronological position as
-            // everything else (sorted by `original_created_at`, captured at
-            // pay-time for exactly this purpose — see
-            // `MessageContent::PaymentRequestReceipt`), rather than a
-            // separate fixed list, so a surfaced alert reads as "this is
-            // where that request used to be."
-            enum TimelineItem {
-                Message(ThreadMessage),
-                ReceiptAlert(ReceiptAlert),
-            }
-            let mut timeline: Vec<TimelineItem> = self
-                .messages
-                .iter()
-                .cloned()
-                .map(TimelineItem::Message)
-                .chain(
-                    self.receipt_alerts
-                        .iter()
-                        .cloned()
-                        .map(TimelineItem::ReceiptAlert),
-                )
-                .collect();
-            timeline.sort_by_key(|item| match item {
-                TimelineItem::Message(message) => message.created_at.unwrap_or(0),
-                TimelineItem::ReceiptAlert(alert) => alert.original_created_at.unwrap_or(0),
-            });
-
-            let mut bubble_action: Option<BubbleAction> = None;
-            let has_more_history = self.history_cursor.has_more();
-            let loading_more = self.loading_more;
-            let mut load_more_clicked = false;
-            egui::ScrollArea::vertical()
-                .max_height(ui.available_height() * 0.6)
-                // Opens on the most recent messages (the bottom, since
-                // `timeline` is chronological oldest-first) and follows new
-                // messages/payments/requests as they're appended — unless
-                // the user has manually scrolled up to read history, in
-                // which case egui's own stuck-to-end tracking backs off and
-                // leaves them where they are.
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    // Sits above the oldest bubble, so it's what a user
-                    // scrolling all the way up to read history runs into —
-                    // no scroll-position tracking needed, it's just the
-                    // first item in the same list.
-                    if has_more_history {
-                        if loading_more {
-                            ui.label("Loading more…");
-                        } else if ui
-                            .add_enabled(
-                                !thread_busy,
-                                egui::Button::new("See more conversation history"),
-                            )
-                            .clicked()
-                        {
-                            load_more_clicked = true;
-                        }
-                        ui.add_space(6.0);
-                    }
-                    for item in timeline {
-                        match item {
-                            TimelineItem::Message(message) => {
-                                if let Some(action) = self.render_message_bubble(ui, &message) {
-                                    bubble_action = Some(action);
-                                }
-                            }
-                            TimelineItem::ReceiptAlert(alert) => {
-                                self.render_receipt_alert(ui, &alert);
-                            }
-                        }
-                    }
-                });
-
-            if load_more_clicked {
-                self.loading_more = true;
-                inner_action |= self.dispatch_load_more();
-            }
-
-            match bubble_action {
-                Some(BubbleAction::Pay {
-                    document_id,
-                    amount,
-                    memo,
-                    created_at,
-                }) => {
-                    self.open_pay_confirmation(document_id, amount, memo, created_at);
-                }
-                Some(BubbleAction::EditMessage {
-                    document_id,
-                    current_text,
-                }) => {
-                    self.editing = Some(EditingState::Message {
-                        document_id,
-                        dialog: TextEditDialog::new(
-                            "Edit Message",
-                            current_text,
-                            MAX_MESSAGE_CHARS,
-                            validate_message_text,
-                            "The message is too long. Use 1000 characters or fewer.",
-                        ),
-                    });
-                }
-                Some(BubbleAction::EditPaymentMemo {
-                    document_id,
-                    current_memo,
-                }) => {
-                    self.editing = Some(EditingState::PaymentMemo {
-                        document_id,
-                        dialog: TextEditDialog::new(
-                            "Edit Memo",
-                            current_memo.unwrap_or_default(),
-                            MAX_PAYMENT_MEMO_CHARS,
-                            validate_payment_memo,
-                            "The payment memo is too long. Use 1000 characters or fewer.",
-                        ),
-                    });
-                }
-                Some(BubbleAction::CancelPaymentRequest { document_id }) => {
-                    self.open_cancel_request_confirmation(document_id);
-                }
-                Some(BubbleAction::DeleteMessage { document_id }) => {
-                    self.open_delete_message_confirmation(document_id);
-                }
-                None => {}
-            }
-
-            inner_action |= self.render_composer(ui);
             inner_action
         });
 

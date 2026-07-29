@@ -1040,6 +1040,16 @@ As a user in a long-running conversation, I want to load older messages on deman
 - Scrolling to the top of a conversation that has more history shows a "See more conversation history" button in place of the oldest loaded message; clicking it fetches the next older page and prepends it, with no change to querying cost for anyone who never needs it.
 - A saved `PaymentRequestReceipt`'s tamper check (ORP-014) only ever concludes its original request was deleted once all history on both sides has been loaded — a request just outside the currently-loaded window is never mistaken for a deleted one.
 
+### ORP-017: See recent verified payments at a glance next to a conversation [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want a quick-glance summary of the real money that's moved between me and a contact, without scrolling back through the whole conversation, so that I can sanity-check our recent payment activity at a glance.
+
+- A "Recent Payments" panel next to the conversation thread lists up to the 6 most recent verified payments between the two parties, newest first: direction (Sent/Received), amount in DASH, and a relative timestamp.
+- Only wallet-verified transfers count — a `Payment` whose amount hasn't been confirmed against this wallet's own decrypted shielded note, or an unfulfilled `PaymentRequest`, never appears, matching the same trust model the conversation bubbles themselves use (ORP-008, ORP-012).
+- A fulfilled `PaymentRequest` counts as a payment too, with direction inverted from who made the request — money moved opposite to who asked for it.
+- Rows are tinted the same green (received) / blue (sent) used for the conversation's own payment bubbles, so the panel reads as an extension of the thread rather than a separate concept.
+
 ---
 
 ## Token Operations (TOK)
