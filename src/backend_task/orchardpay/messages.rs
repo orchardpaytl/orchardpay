@@ -34,7 +34,7 @@ use crate::model::orchardpay::{
     validate_message_text, validate_payment_memo, validate_send_amount,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::validation::strip_unsafe_display_characters;
+use crate::model::validation::strip_unsafe_display_characters_allow_newlines;
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
@@ -537,7 +537,7 @@ pub async fn edit_message(
     new_text: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let new_text = strip_unsafe_display_characters(&new_text);
+    let new_text = strip_unsafe_display_characters_allow_newlines(&new_text);
     validate_message_text(&new_text)
         .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
 
@@ -669,7 +669,7 @@ pub async fn edit_payment_memo(
     new_memo: Option<String>,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let new_memo = new_memo.map(|memo| strip_unsafe_display_characters(&memo));
+    let new_memo = new_memo.map(|memo| strip_unsafe_display_characters_allow_newlines(&memo));
     if let Some(memo) = &new_memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -808,7 +808,7 @@ pub async fn send_message(
     text: String,
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let text = strip_unsafe_display_characters(&text);
+    let text = strip_unsafe_display_characters_allow_newlines(&text);
     validate_message_text(&text)
         .map_err(|source| TaskError::OrchardPayMessageTooLong { source })?;
 
@@ -866,7 +866,7 @@ pub async fn send_payment_request(
     seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
-    let memo = memo.map(|memo| strip_unsafe_display_characters(&memo));
+    let memo = memo.map(|memo| strip_unsafe_display_characters_allow_newlines(&memo));
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;
@@ -934,7 +934,7 @@ pub async fn send_payment(
     original_request_created_at: Option<u64>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     validate_send_amount(amount).map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
-    let memo = memo.map(|memo| strip_unsafe_display_characters(&memo));
+    let memo = memo.map(|memo| strip_unsafe_display_characters_allow_newlines(&memo));
     if let Some(memo) = &memo {
         validate_payment_memo(memo)
             .map_err(|source| TaskError::OrchardPayMemoTooLong { source })?;

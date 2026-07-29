@@ -24,7 +24,7 @@ use crate::model::orchardpay::{
     validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::validation::strip_unsafe_display_characters;
+use crate::model::validation::strip_unsafe_display_characters_allow_newlines;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -928,7 +928,7 @@ impl MessageThreadScreen {
 
                     match &message.content {
                         MessageContent::Message { data } => {
-                            let sanitized_data = strip_unsafe_display_characters(data);
+                            let sanitized_data = strip_unsafe_display_characters_allow_newlines(data);
                             let text_response = ui.label(&sanitized_data);
                             show_edited_tag(ui);
                             show_busy_label(ui);
@@ -979,7 +979,7 @@ impl MessageThreadScreen {
                             });
                             match memo {
                                 Some(memo_text) => {
-                                    let sanitized_memo = strip_unsafe_display_characters(memo_text);
+                                    let sanitized_memo = strip_unsafe_display_characters_allow_newlines(memo_text);
                                     let memo_response = ui.label(&sanitized_memo);
                                     if message.from_me {
                                         memo_response.context_menu(|ui| {
@@ -1072,7 +1072,7 @@ impl MessageThreadScreen {
                                 );
                             });
                             if let Some(memo) = memo {
-                                ui.label(strip_unsafe_display_characters(memo));
+                                ui.label(strip_unsafe_display_characters_allow_newlines(memo));
                             }
                             // A `PaymentRequest`'s amount/memo are never
                             // editable through any other path, so this
@@ -1217,7 +1217,7 @@ impl MessageThreadScreen {
                             .strong(),
                     );
                     if let Some(memo) = &alert.memo {
-                        ui.label(strip_unsafe_display_characters(memo));
+                        ui.label(strip_unsafe_display_characters_allow_newlines(memo));
                     }
                     if let Some(timestamp) =
                         alert.original_created_at.and_then(format_relative_time)
@@ -1314,7 +1314,11 @@ impl MessageThreadScreen {
                         response.inner.update(&mut self.compose_amount);
                         ui.horizontal(|ui| {
                             ui.label("Note (optional):");
-                            ui.text_edit_singleline(&mut self.compose_memo);
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.compose_memo)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(2),
+                            );
                         });
                     }
                 }

@@ -78,6 +78,26 @@ pub fn strip_unsafe_display_characters(text: &str) -> String {
         .collect()
 }
 
+/// Same as [`strip_unsafe_display_characters`], but keeps `\n` line breaks —
+/// for genuinely multi-line contexts (OrchardPay message/memo text) where a
+/// user-entered line break is expected content, not an attempt to
+/// misrepresent the text. Every other control character, plus bidi-override
+/// and zero-width characters, is still stripped identically. Line endings
+/// are normalized first (`\r\n` and lone `\r` both become `\n`) so pasted
+/// Windows-style text doesn't leave stray `\r` characters that can render
+/// oddly depending on font/platform.
+pub fn strip_unsafe_display_characters_allow_newlines(text: &str) -> String {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    normalized
+        .chars()
+        .filter(|character| {
+            (!character.is_control() || *character == '\n')
+                && !is_bidi_control(*character)
+                && !is_zero_width(*character)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod display_sanitizer_tests {
     use super::strip_unsafe_display_characters;
@@ -116,6 +136,54 @@ mod display_sanitizer_tests {
         assert_eq!(
             strip_unsafe_display_characters("héllo 日本語"),
             "héllo 日本語"
+        );
+    }
+}
+
+#[cfg(test)]
+mod multiline_display_sanitizer_tests {
+    use super::strip_unsafe_display_characters_allow_newlines;
+
+    #[test]
+    fn preserves_newlines() {
+        assert_eq!(
+            strip_unsafe_display_characters_allow_newlines("hello\nworld"),
+            "hello\nworld"
+        );
+    }
+
+    #[test]
+    fn normalizes_crlf_and_lone_cr_to_lf() {
+        assert_eq!(
+            strip_unsafe_display_characters_allow_newlines("hello\r\nworld\rthere"),
+            "hello\nworld\nthere"
+        );
+    }
+
+    #[test]
+    fn still_strips_bidi_override_characters() {
+        let input = "10\u{202e}HSAD 0000\u{202c} DASH";
+        assert_eq!(
+            strip_unsafe_display_characters_allow_newlines(input),
+            "10HSAD 0000 DASH"
+        );
+    }
+
+    #[test]
+    fn still_strips_zero_width_characters() {
+        let input = "he\u{200b}llo\u{200d}world\u{feff}";
+        assert_eq!(
+            strip_unsafe_display_characters_allow_newlines(input),
+            "helloworld"
+        );
+    }
+
+    #[test]
+    fn still_strips_other_control_characters() {
+        let input = "hello\u{0007}world\u{001b}";
+        assert_eq!(
+            strip_unsafe_display_characters_allow_newlines(input),
+            "helloworld"
         );
     }
 }
