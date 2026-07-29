@@ -831,10 +831,24 @@ impl MessageThreadScreen {
         // 2026-07-27 adversarial audit's finding 1. `verified_amount` is
         // computed server-side from this wallet's own shielded-note lookup,
         // never from message content, so this can't be spoofed the same way.
+        //
+        // The tint color itself encodes which way Dash is moving relative to
+        // the wallet owner: blue for outgoing (I sent a `Payment`, or the
+        // counterparty sent a `PaymentRequest` asking me to pay them), green
+        // for incoming (I received a `Payment`, or I sent a `PaymentRequest`
+        // asking the counterparty to pay me).
         let money_bubble_color = match &message.content {
-            MessageContent::PaymentRequest { .. } => Some(DashColors::info_color(dark_mode)),
+            MessageContent::PaymentRequest { .. } => Some(if message.from_me {
+                DashColors::success_color(dark_mode)
+            } else {
+                DashColors::info_color(dark_mode)
+            }),
             MessageContent::Payment { .. } if message.verified_amount.is_some() => {
-                Some(DashColors::info_color(dark_mode))
+                Some(if message.from_me {
+                    DashColors::info_color(dark_mode)
+                } else {
+                    DashColors::success_color(dark_mode)
+                })
             }
             _ => None,
         };
