@@ -3,15 +3,15 @@
 
 use std::sync::{Arc, Mutex};
 
-use dash_evo_tool::model::legacy_recovery::{
-    ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
-};
-use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-use dash_evo_tool::ui::components::legacy_recovery_section::LegacyRecoverySection;
-use dash_evo_tool::ui::components::{Component, ComponentResponse};
 use dash_sdk::dpp::identity::Purpose;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::model::legacy_recovery::{
+    ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
+};
+use orchardpay::model::qualified_identity::PrivateKeyTarget;
+use orchardpay::ui::components::legacy_recovery_section::LegacyRecoverySection;
+use orchardpay::ui::components::{Component, ComponentResponse};
 
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
