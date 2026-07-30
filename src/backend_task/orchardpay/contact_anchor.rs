@@ -39,7 +39,7 @@ use crate::model::orchardpay::{
     AnchorRole, OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation,
     ScheduledAnchorReplace, validate_send_amount,
 };
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::RngCore;
 use bip39::rand::rngs::OsRng;
@@ -1214,7 +1214,7 @@ pub(crate) async fn compute_shared_secret_from_key(
     seed_hash: WalletSeedHash,
 ) -> Result<Zeroizing<[u8; 32]>, TaskError> {
     let resolved = my_identity
-        .resolve_private_key_bytes(PrivateKeyTarget::PrivateKeyOnMainIdentity, my_key.id())
+        .resolve_private_key_bytes(my_key)
         .await?
         .map(|(_, key)| key);
 

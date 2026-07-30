@@ -8,16 +8,16 @@
 //! it still correctly reports that the identity cannot send.
 
 use crate::support::{fresh_app_context, with_isolated_data_dir};
-use orchardpay::app::AppAction;
-use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use orchardpay::ui::identities::transfer_screen::TransferScreen;
-use orchardpay::ui::{Screen, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use orchardpay::app::AppAction;
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use orchardpay::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use orchardpay::ui::identities::transfer_screen::TransferScreen;
+use orchardpay::ui::{Screen, ScreenLike};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;

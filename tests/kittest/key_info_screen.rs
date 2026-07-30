@@ -11,6 +11,12 @@
 //! onto the screen stack. This drives the dispatch the running app really makes.
 
 use crate::support::{mount_app, with_isolated_data_dir};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use egui_kittest::kittest::{NodeT, Queryable};
 use orchardpay::app::TaskResult;
 use orchardpay::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -18,12 +24,6 @@ use orchardpay::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use orchardpay::ui::{RootScreenType, Screen};
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
-use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 
 const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
