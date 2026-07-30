@@ -1285,35 +1285,12 @@ impl MessageThreadScreen {
             return;
         }
 
-        // Fixed-width "columns" laid out via `allocate_ui_with_layout` inside
-        // a single `Frame` per row — a `Frame`'s own `.fill()` covers its
-        // whole bounding rect in one paint call, so (unlike
-        // `egui_extras::TableRow`, which has no per-row fill and needs
-        // fragile per-cell painting) the tint always reads as one solid
-        // strip across the entire row.
-        ui.horizontal(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(RECENT_PAYMENTS_COL1_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.label(RichText::new("Sent/Received").strong());
-                },
-            );
-            ui.allocate_ui_with_layout(
-                egui::vec2(RECENT_PAYMENTS_COL2_WIDTH, RECENT_PAYMENTS_ROW_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.label(RichText::new("Amount (DASH)").strong());
-                },
-            );
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), RECENT_PAYMENTS_ROW_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.label(RichText::new("Date").strong());
-                },
-            );
-        });
+        // The rows themselves already spell out sent/received, amount, and
+        // date, so a full column-header row is redundant — just a small
+        // hint about sort order instead.
+        ui.label(
+            RichText::new("(Most recent on top)").color(DashColors::text_secondary(dark_mode)),
+        );
         ui.add_space(4.0);
 
         for row in &rows {
