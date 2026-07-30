@@ -1,8 +1,8 @@
 # OrchardPay `contactAnchor` deferred replace: trigger-timing iterations
 
 Status: **implemented** (2026-07-30) — the shielded-sync-completed trigger described
-below is live. One known gap remains open: wallet-restore recovery doesn't yet
-re-seed the local scheduling marker (see "Known gap" below).
+below is live, and the wallet-restore gap described below is also closed (see
+"Known gap" below).
 
 ## Background: what this mechanism is for
 
@@ -127,12 +127,14 @@ identity on each synced wallet, on the exact same event.
   handler.
 - `model/orchardpay.rs` — doc comment describing the trigger.
 
-## Known gap: wallet restore into a brand-new install
+## Known gap (now closed): wallet restore into a brand-new install
 
 **Does this cover "I restore my wallet into a fresh app install with no local
 state — will my contacts' pending anchor replaces still fire correctly?"**
 
-**Not yet — this is a real, open gap**, not just a theoretical edge case.
+**Status: closed.** At the time this doc was first written, the answer was
+no — this section originally documented an open gap. It's since been fixed;
+the original problem description and fix are kept below for the record.
 
 `contact_anchor::recover_own_anchors` ("Recover from Network") is the
 existing recovery path: it fetches every `contactAnchor` document the
@@ -156,20 +158,25 @@ scheme was built to eliminate — so an anchor stuck this way after a restore
 quietly reopens that fingerprinting gap for that specific relationship, with
 no local signal that anything is wrong.
 
-**Direction for closing it** (not yet implemented): `recover_own_anchors`
-already decrypts each anchor's `anchor_record` and already knows the
-document's own `$createdAt` (`document.created_at()`, used today to build
-`OrchardPayContactState`'s `created_at` field) and whether
-`their_reference_id` is still the filler sentinel
-(`their_reference_id == owner_id.to_buffer()`) — exactly the two facts needed
-to decide whether a fresh `ScheduledAnchorReplace` marker should be written
-during recovery, using the anchor's own real `created_at` (never the
-recovery time — the 10-hour clock must still be measured from when the
-anchor actually was created, not from when it was rediscovered). Once
-written, the existing periodic sweep picks it up and fires it exactly as
-normal — no new replace logic needed, only recovery needs to learn to
-re-seed the marker it currently drops.
+**Fix implemented**: `recover_own_anchors` now re-seeds a `ScheduledAnchorReplace`
+marker for each newly-recovered anchor, using two signals it already had in
+hand — no new network calls:
 
-Left as a follow-up rather than folded into this change, since it changes
-`recover_own_anchors`'s behavior (a separate, already-shipped flow) rather
-than just the trigger timing this iteration was scoped to.
+- `document.revision()` (`Some(1)` at creation, bumped by
+  `fire_due_scheduled_anchor_replace`'s `bump_revision()` when the deferred
+  replace fires): `revision > 1` means the replace has already happened —
+  regardless of role — so no marker is written.
+- At `revision == 1` (never replaced), `anchor_record.their_reference_id`
+  disambiguates role: filler or `None` (legacy pre-fix anchor) → Initiator; a
+  real value already present at revision 1 can only be an Acceptor anchor (an
+  Initiator's real value only ever appears *after* a replace, which would
+  have bumped the revision).
+
+The marker's `anchor_created_at` uses the anchor's own real
+`document.created_at()`, never recovery time, so the 10-hour clock is still
+measured from when the anchor actually was created. Once written, the
+existing periodic sweep (piggybacked on `OrchardPayShieldedSyncCompleted`)
+picks it up and fires it exactly like any other marker — no changes needed
+there. Scheduling only happens for genuinely new contacts (the existing
+`already_tracked` early-continue already guards this), so it can never
+clobber an in-flight marker a non-recovery flow is already tracking.

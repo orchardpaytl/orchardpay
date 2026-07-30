@@ -1428,6 +1428,13 @@ pub struct AnchorRecoverySummary {
 /// counterparty not already tracked locally. Existing local state is never
 /// overwritten — recovery only fills gaps, it never clobbers.
 ///
+/// For each newly-recovered anchor still at its original revision (i.e. not
+/// yet past its deferred replace), this also re-seeds a
+/// [`ScheduledAnchorReplace`] marker from the document's own `revision` and
+/// `their_reference_id` — otherwise a wallet restored into a fresh install
+/// would have no markers at all, and the finding-5 anti-fingerprinting
+/// replace would silently never fire again for any recovered relationship.
+///
 /// If a decrypted record's cached counterparty pubkeys are missing (an
 /// older anchor, or a partial write) they're re-fetched fresh rather than
 /// leaving the recovered contact unable to message — recovery is already
@@ -1552,6 +1559,37 @@ pub async fn recover_own_anchors(
 
         backend.orchardpay_set_contact_state(&contract_id, &owner_id, &counterparty_id, &state)?;
         summary.contacts_recovered += 1;
+
+        // Re-seed the deferred-replace marker recovery would otherwise drop:
+        // `revision > 1` means the replace already happened (either role),
+        // regardless of what `their_reference_id` looks like now — an
+        // initiator's real value only ever appears *after* a replace, which
+        // always bumps the revision. At `revision == 1` (never replaced), a
+        // real `their_reference_id` can only be an acceptor anchor (created
+        // with the real value from the start), while a filler or `None`
+        // means initiator. Without this, a wallet restored into a fresh
+        // install would have no markers at all and every recovered
+        // relationship's deferred replace would silently never fire again.
+        let already_replaced = matches!(document.revision(), Some(rev) if rev > 1);
+        if !already_replaced && let Some(anchor_created_at) = document.created_at() {
+            let role = match anchor_record.their_reference_id {
+                Some(their_reference_id) if their_reference_id == owner_id.to_buffer() => {
+                    AnchorRole::Initiator
+                }
+                Some(_) => AnchorRole::Acceptor,
+                None => AnchorRole::Initiator,
+            };
+            backend.orchardpay_set_scheduled_anchor_replace(
+                &contract_id,
+                &owner_id,
+                &counterparty_id,
+                &ScheduledAnchorReplace {
+                    anchor_document_id: document.id().to_buffer(),
+                    anchor_created_at,
+                    role,
+                },
+            )?;
+        }
     }
 
     Ok(summary)
