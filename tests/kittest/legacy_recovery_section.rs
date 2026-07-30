@@ -12,6 +12,7 @@ use orchardpay::model::legacy_recovery::{
 use orchardpay::model::qualified_identity::PrivateKeyTarget;
 use orchardpay::ui::components::legacy_recovery_section::LegacyRecoverySection;
 use orchardpay::ui::components::{Component, ComponentResponse};
+use orchardpay::ui::masternodes::KeyVocabulary;
 
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
@@ -52,7 +53,7 @@ fn render(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(move |ui| {
-            let response = LegacyRecoverySection::new(&plan)
+            let response = LegacyRecoverySection::new(&plan, KeyVocabulary::Masternode)
                 .restoring(restoring)
                 .show(ui);
             if let Some(items) = response.inner.changed_value() {
