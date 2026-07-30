@@ -1631,6 +1631,15 @@ impl AppState {
                 Screen::OrchardPayScreen(orchardpay),
             )]
         })
+        .chain({
+            // Register the OrchardParty placeholder screen.
+            let orchardparty =
+                crate::ui::orchardparty_screen::OrchardPartyScreen::new(&active_context);
+            [(
+                RootScreenType::RootScreenOrchardParty,
+                Screen::OrchardPartyScreen(orchardparty),
+            )]
+        })
         .collect();
 
         // Always land on the Wallets tab at launch, regardless of whichever

@@ -80,6 +80,10 @@ pub enum RootScreenType {
     /// `RootScreenDashPay*`/`RootScreenDashpay` entries above — see
     /// `docs/orchardpay/PROTOCOL_DESIGN.md` and `docs/ORCHARDPAY_MIGRATION.md`.
     RootScreenOrchardPay,
+    /// OrchardParty placeholder tab, sitting directly below OrchardPay in the
+    /// nav. Currently a "Coming Soon" stub for a future private-group-chat
+    /// feature.
+    RootScreenOrchardParty,
 }
 
 impl RootScreenType {
@@ -116,6 +120,7 @@ impl RootScreenType {
             RootScreenType::RootScreenIdentityHub => 27,
             RootScreenType::RootScreenMasternodes => 28,
             RootScreenType::RootScreenOrchardPay => 29,
+            RootScreenType::RootScreenOrchardParty => 30,
         }
     }
 
@@ -152,6 +157,7 @@ impl RootScreenType {
             27 => Some(RootScreenType::RootScreenIdentityHub),
             28 => Some(RootScreenType::RootScreenMasternodes),
             29 => Some(RootScreenType::RootScreenOrchardPay),
+            30 => Some(RootScreenType::RootScreenOrchardParty),
             _ => None,
         }
     }

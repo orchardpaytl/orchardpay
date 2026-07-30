@@ -49,6 +49,12 @@ fn nav_button_specs() -> &'static [(
             None,
         ),
         (
+            "OrchardParty",
+            RootScreenType::RootScreenOrchardParty,
+            "orchardparty_trees.svg",
+            None,
+        ),
+        (
             "Dashpay",
             RootScreenType::RootScreenDashPayProfile,
             "dashpay.png",
@@ -111,6 +117,7 @@ fn nav_tooltip(screen: RootScreenType) -> &'static str {
         RootScreenType::RootScreenOrchardPay => {
             "Open OrchardPay to manage your private contacts and messages."
         }
+        RootScreenType::RootScreenOrchardParty => "Open OrchardParty to join private group chats.",
         RootScreenType::RootScreenDashPayProfile => {
             "Open DashPay to manage your profile, contacts, and payments."
         }
@@ -233,9 +240,11 @@ pub fn add_left_panel(
                                                     _ => selected_screen == *screen_type,
                                                 };
 
-                                                let button_color = if *screen_type
-                                                    == RootScreenType::RootScreenOrchardPay
-                                                {
+                                                let button_color = if matches!(
+                                                    *screen_type,
+                                                    RootScreenType::RootScreenOrchardPay
+                                                        | RootScreenType::RootScreenOrchardParty
+                                                ) {
                                                     DashColors::ICON_ORCHARDPAY_GREEN
                                                 } else {
                                                     DashColors::icon_tint(is_selected, dark_mode)

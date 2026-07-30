@@ -27,6 +27,7 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::withdraw_screen::WithdrawalScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
+use crate::ui::orchardparty_screen::OrchardPartyScreen;
 use crate::ui::orchardpay::message_thread_screen::MessageThreadScreen;
 use crate::ui::orchardpay::orchardpay_screen::{OrchardPayScreen, OrchardPaySubscreen};
 use crate::ui::orchardpay::shielded_address_screen::ShieldedAddressSetupScreen;
@@ -87,6 +88,7 @@ pub mod identities;
 pub mod identity;
 pub mod masternodes;
 pub mod network_chooser_screen;
+pub mod orchardparty_screen;
 pub mod orchardpay;
 pub mod state;
 pub mod theme;
@@ -132,6 +134,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenIdentityHub => ScreenType::IdentityHub,
             RootScreenType::RootScreenMasternodes => ScreenType::Masternodes,
             RootScreenType::RootScreenOrchardPay => ScreenType::OrchardPay,
+            RootScreenType::RootScreenOrchardParty => ScreenType::OrchardParty,
         }
     }
 }
@@ -183,6 +186,8 @@ pub enum ScreenType {
     Masternodes,
     /// OrchardPay's own consolidated private-contacts section (Milestone D).
     OrchardPay,
+    /// OrchardParty placeholder tab (see [`RootScreenType::RootScreenOrchardParty`]).
+    OrchardParty,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -498,6 +503,9 @@ impl ScreenType {
                 app_context,
                 OrchardPaySubscreen::MostRecent,
             )),
+            ScreenType::OrchardParty => {
+                Screen::OrchardPartyScreen(OrchardPartyScreen::new(app_context))
+            }
 
             // DashPay Screens
             ScreenType::DashPayContacts => {
@@ -567,6 +575,7 @@ pub enum Screen {
     ShieldedAddressSetupScreen(ShieldedAddressSetupScreen),
     MessageThreadScreen(MessageThreadScreen),
     OrchardPayScreen(OrchardPayScreen),
+    OrchardPartyScreen(OrchardPartyScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
@@ -743,6 +752,7 @@ impl Screen {
             ShieldedAddressSetupScreen,
             MessageThreadScreen,
             OrchardPayScreen,
+            OrchardPartyScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -929,6 +939,7 @@ impl Screen {
                 ScreenType::MessageThread(screen.identity.clone(), screen.counterparty_identity_id)
             }
             Screen::OrchardPayScreen(_) => ScreenType::OrchardPay,
+            Screen::OrchardPartyScreen(_) => ScreenType::OrchardParty,
             Screen::RegisterDpnsNameScreen(screen) => ScreenType::RegisterDpnsName(screen.source),
             Screen::RegisterDataContractScreen(_) => ScreenType::RegisterContract,
             Screen::UpdateDataContractScreen(_) => ScreenType::UpdateContract,
@@ -1082,6 +1093,7 @@ macro_rules! delegate_to_screen {
             Screen::ShieldedAddressSetupScreen($screen) => $call,
             Screen::MessageThreadScreen($screen) => $call,
             Screen::OrchardPayScreen($screen) => $call,
+            Screen::OrchardPartyScreen($screen) => $call,
             Screen::TransferScreen($screen) => $call,
             Screen::AddKeyScreen($screen) => $call,
             Screen::TransitionVisualizerScreen($screen) => $call,
