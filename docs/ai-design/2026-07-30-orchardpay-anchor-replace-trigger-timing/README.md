@@ -2,7 +2,7 @@
 
 Status: **implemented** (2026-07-30) — the shielded-sync-completed trigger described
 below is live, and the wallet-restore gap described below is also closed (see
-"Known gap" below).
+"Known gap" below). A follow-up cost fix is also in (see "Follow-up" below).
 
 ## Background: what this mechanism is for
 
@@ -180,3 +180,34 @@ picks it up and fires it exactly like any other marker — no changes needed
 there. Scheduling only happens for genuinely new contacts (the existing
 `already_tracked` early-continue already guards this), so it can never
 clobber an in-flight marker a non-recovery flow is already tracking.
+
+## Follow-up: bounding the sweep's per-tick cost (2026-07-30)
+
+A separate sidecar-KV overload audit (prompted by an unrelated key-length bug fixed the
+same day, `ab30b81b`) flagged that `fire_due_scheduled_anchor_replaces_for_identity`
+enumerated **every** OrchardPay contact of an identity on every sweep tick — one
+`orchardpay_get_scheduled_anchor_replace` KV read per contact, every ~60-70s, for every
+locally-known identity across every loaded wallet (`load_local_user_identities` reads the
+Global identity-index, not just the "selected" identity) — even though the overwhelming
+majority of contacts never have a marker at all. Cost scaled with total contact count,
+unbounded, with no cap analogous to `scan_for_incoming_anchors`'s
+`MEMO_SCAN_ERROR_RETRY_CAP`.
+
+**Fix**: added `WalletBackend::orchardpay_list_scheduled_anchor_replace_counterparties`
+(`wallet_backend/orchardpay.rs`), which lists directly under the
+`KV_PREFIX_SCHEDULED_ANCHOR_REPLACE` prefix instead of deriving candidates from the full
+contact list — mirroring the existing `contact_key_prefix`/`orchardpay_list_contacts`
+pattern. `fire_due_scheduled_anchor_replaces_for_identity` now sources counterparties from
+this marker-only listing.
+
+This is a pure optimization, not a design change: as established above, marker
+*presence* was already the sole signal this mechanism acts on, regardless of whether the
+marker was seeded by a live handshake (`initiate_contact`/`accept_contact`) or by this
+doc's own wallet-restore re-seed path (`recover_own_anchors`) — both write through the
+identical `orchardpay_set_scheduled_anchor_replace` accessor and key shape, so listing by
+KV prefix sees both provenances identically. It also makes the post-recovery case
+cheaper: right after a large restore, the sweep only touches the freshly re-seeded
+markers, not every recovered contact. Covered by
+`scheduled_anchor_replace_listing_only_returns_counterparties_with_markers` and
+`scheduled_anchor_replace_listing_does_not_care_about_marker_provenance`
+(`wallet_backend/orchardpay.rs` test module).

@@ -335,6 +335,13 @@ fn scheduled_anchor_replace_key(contract_id: &Identifier, counterparty: &Identif
     )
 }
 
+fn scheduled_anchor_replace_key_prefix(contract_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_SCHEDULED_ANCHOR_REPLACE}{}:",
+        contract_id.to_string(Encoding::Base58)
+    )
+}
+
 impl WalletBackend {
     /// Read the local contact-establishment state for `(contract_id, owner,
     /// counterparty)`. `Ok(None)` means no relationship has been started
@@ -509,6 +516,37 @@ impl WalletBackend {
     ) -> Result<Vec<Identifier>, TaskError> {
         let owner_buf = owner.to_buffer();
         let prefix = contact_key_prefix(contract_id);
+        let keys = self
+            .kv()
+            .list(DetScope::Identity(&owner_buf), Some(&prefix))
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+
+        Ok(keys
+            .into_iter()
+            .filter_map(|key| {
+                let b58 = key.strip_prefix(&prefix)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect())
+    }
+
+    /// List every counterparty `owner` currently has a live
+    /// [`ScheduledAnchorReplace`] marker for under `contract_id` — i.e. the
+    /// actual subset of contacts with something to check, rather than every
+    /// contact. Marker presence is the sole signal
+    /// `fire_due_scheduled_anchor_replaces_for_identity` needs (see its doc
+    /// comment), whether the marker was seeded by a live handshake
+    /// (`initiate_contact`/`accept_contact`) or by wallet-restore recovery
+    /// (`recover_own_anchors`) — both write through
+    /// [`Self::orchardpay_set_scheduled_anchor_replace`], so this list can't
+    /// distinguish (or care about) provenance.
+    pub fn orchardpay_list_scheduled_anchor_replace_counterparties(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+    ) -> Result<Vec<Identifier>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        let prefix = scheduled_anchor_replace_key_prefix(contract_id);
         let keys = self
             .kv()
             .list(DetScope::Identity(&owner_buf), Some(&prefix))
@@ -1505,6 +1543,109 @@ mod tests {
             kv.get::<ScheduledAnchorReplace>(scope, &key).unwrap(),
             None,
             "cleared marker must no longer be present"
+        );
+    }
+
+    /// Regression test for the unbounded per-tick contact scan fixed in the
+    /// sidecar-KV overload audit: `fire_due_scheduled_anchor_replaces_for_identity`
+    /// must only ever see counterparties that actually have a live marker,
+    /// not every contact — a contact with local state but no scheduled
+    /// replace must be invisible to the listing this function drives.
+    #[test]
+    fn scheduled_anchor_replace_listing_only_returns_counterparties_with_markers() {
+        let kv = empty_kv();
+        let owner = [0xe1u8; 32];
+        let contract_id = Identifier::new([0x31u8; 32]);
+        let has_marker = Identifier::new([0x32u8; 32]);
+        let no_marker = Identifier::new([0x33u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        // Both counterparties have ordinary contact state...
+        let state = OrchardPayContactState::PendingOutbound {
+            my_reference_id: [1u8; 32],
+            my_anchor_document_id: [2u8; 32],
+            name: None,
+            created_at: None,
+        };
+        kv.put::<OrchardPayContactState>(scope, &contact_key(&contract_id, &has_marker), &state)
+            .unwrap();
+        kv.put::<OrchardPayContactState>(scope, &contact_key(&contract_id, &no_marker), &state)
+            .unwrap();
+
+        // ...but only one has a scheduled-replace marker.
+        let marker = ScheduledAnchorReplace {
+            anchor_document_id: [3u8; 32],
+            anchor_created_at: 1_700_000_000_000,
+            role: AnchorRole::Initiator,
+        };
+        kv.put::<ScheduledAnchorReplace>(
+            scope,
+            &scheduled_anchor_replace_key(&contract_id, &has_marker),
+            &marker,
+        )
+        .unwrap();
+
+        let prefix = scheduled_anchor_replace_key_prefix(&contract_id);
+        let listed: Vec<Identifier> = kv
+            .list(scope, Some(&prefix))
+            .unwrap()
+            .into_iter()
+            .filter_map(|key| {
+                let b58 = key.strip_prefix(&prefix)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect();
+
+        assert_eq!(
+            listed,
+            vec![has_marker],
+            "only the counterparty with a live marker should be returned, not every contact"
+        );
+    }
+
+    /// A marker written the same way `recover_own_anchors` re-seeds one on
+    /// wallet restore (via `orchardpay_set_scheduled_anchor_replace`) must be
+    /// picked up by the marker listing identically to a handshake-seeded
+    /// one — the listing can't distinguish (or care about) provenance, only
+    /// presence, which is what keeps the fix compatible with the
+    /// wallet-restore recovery work.
+    #[test]
+    fn scheduled_anchor_replace_listing_does_not_care_about_marker_provenance() {
+        let kv = empty_kv();
+        let owner = [0xe2u8; 32];
+        let contract_id = Identifier::new([0x34u8; 32]);
+        let recovered_counterparty = Identifier::new([0x35u8; 32]);
+        let scope = DetScope::Identity(&owner);
+
+        // Simulates recover_own_anchors's re-seed call: same accessor, same
+        // key shape, no different code path.
+        let marker = ScheduledAnchorReplace {
+            anchor_document_id: [4u8; 32],
+            anchor_created_at: 1_700_000_000_000,
+            role: AnchorRole::Acceptor,
+        };
+        kv.put::<ScheduledAnchorReplace>(
+            scope,
+            &scheduled_anchor_replace_key(&contract_id, &recovered_counterparty),
+            &marker,
+        )
+        .unwrap();
+
+        let prefix = scheduled_anchor_replace_key_prefix(&contract_id);
+        let listed: Vec<Identifier> = kv
+            .list(scope, Some(&prefix))
+            .unwrap()
+            .into_iter()
+            .filter_map(|key| {
+                let b58 = key.strip_prefix(&prefix)?;
+                Identifier::from_string(b58, Encoding::Base58).ok()
+            })
+            .collect();
+
+        assert_eq!(
+            listed,
+            vec![recovered_counterparty],
+            "a recovery-seeded marker must be visible to the listing just like any other"
         );
     }
 

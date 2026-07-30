@@ -173,6 +173,25 @@ Source: `src/wallet_backend/dashpay.rs`, `src/model/dashpay.rs`
 
 ---
 
+## OrchardPay sidecar
+
+Unlike DashPay, OrchardPay has no upstream `ManagedIdentity` model to overlay — `contactAnchor` is a brand-new Platform document type upstream knows nothing about, so *all* of OrchardPay's local contact/handshake state lives in this sidecar. Per-relationship keys (`contact`, `pending_op`, `anchor_replace`) are scoped both by `DetScope::Identity(&owner)` *and* by `<contract_id_b58>` embedded in the key itself — the contract-ID component exists so a contract re-registration (a fresh contract ID; Platform disallows removing/altering indices via an update) leaves stale entries from the retired contract simply unreadable under the new one, with no explicit migration step. The memo-scan cursor, verified-payment cache, unresolved-anchor list, and retry counters are genuinely wallet-level (keyed off the single wallet-wide Orchard viewing key, not any one identity), so those use `DetScope::Wallet(&seed_hash)` instead.
+
+| Key | Scope | Store | Value type | Notes |
+|-----|-------|-------|------------|-------|
+| `det:orchardpay:contact:<contract_id_b58>:<counterparty_b58>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `OrchardPayContactState` | Per-relationship contact-establishment state (pending outbound/inbound, or established) |
+| `det:orchardpay:pending_op:<contract_id_b58>:<counterparty_b58>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `PendingOrchardPayOperation` | Resumable marker for an in-flight `initiate_contact`/`accept_contact`/`send_payment` call, written before the first network side effect (M-02 atomic contact/payment flows) |
+| `det:orchardpay:anchor_replace:<contract_id_b58>:<counterparty_b58>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ScheduledAnchorReplace` | Deferred `contactAnchor` `anchorData` replace marker (pending-vs-established pairing-signal mitigation); deliberately a separate key from `pending_op` since it can legitimately sit for up to ~10 hours alongside an unrelated in-flight payment to the same counterparty. Prefix is deliberately short — a 32-byte `Identifier` base58-encodes to up to 44 chars, so this key shape is close to the upstream `MAX_KEY_LEN` (128); see the `two_identifier_keys_stay_within_kv_max_len` regression test |
+| `det:orchardpay:has_shielded_address:<contract_id_b58>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `bool` | Presence-only marker: this identity's `shieldedAddress` document is confirmed published. No cached `false` — absence always triggers a live check |
+| `det:orchardpay:memo_scan_cursor` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `u64` | Resume cursor (last chunk-aligned `start_index` fully scanned) for the DET-side incoming-memo duplicate scan |
+| `det:orchardpay:verified_payment:<document_id_b58>` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `u64` | Real credits value observed on a `MEMO_TAG_PAYMENT`-tagged note, keyed by the `Payment`/`PaymentRequest` document ID the memo referenced |
+| `det:orchardpay:unresolved_anchor:<document_id_b58>` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `bool` | An incoming `Anchor` signal that decrypted but matched no identity loaded at the time; retried by a later scan pass without re-walking the note stream |
+| `det:orchardpay:memo_scan_retry_count:<note_index>` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `u32` | Consecutive processing-failure count for a note position; capped at `MEMO_SCAN_ERROR_RETRY_CAP` (5) before the scan stops holding the cursor back for it |
+
+Source: `src/wallet_backend/orchardpay.rs`, `src/backend_task/orchardpay/`, `src/model/orchardpay.rs`
+
+---
+
 ## SecretStore entries
 
 The `SecretStore` file backend (`<data_dir>/secrets/det-secrets.*`) stores opaque encrypted blobs. It is **not** a `KvStore` and does not use the `DetKv` bincode-plus-version-byte envelope. Entries are addressed by `(WalletId scope, label)` pairs.
@@ -204,8 +223,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `platform-wallet.sqlite` | 21 (across 8 domains) |
+| `platform-wallet.sqlite` | 29 (across 9 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **27** |
+| **Total** | **35** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

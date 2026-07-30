@@ -1045,14 +1045,20 @@ pub async fn fire_due_scheduled_anchor_replace(
     Ok(())
 }
 
-/// For every OrchardPay contact of `qualified_identity`, fire a due
-/// [`ScheduledAnchorReplace`] marker if one exists — see
+/// For every counterparty of `qualified_identity` that currently has a live
+/// [`ScheduledAnchorReplace`] marker, fire it if due — see
 /// [`fire_due_scheduled_anchor_replace`]'s doc comment for the full
-/// mechanism. Best-effort per contact; a failure is logged and never blocks
-/// the rest of this pass. Backs `OrchardPayTask::FireDueScheduledAnchorReplaces`,
-/// dispatched once per locally-known identity every time a shielded sync
-/// pass completes (`app.rs`'s `OrchardPayShieldedSyncCompleted` handling,
-/// the same event `OrchardPayTask::ScanForIncomingAnchors` already rides).
+/// mechanism. Scans only counterparties with an actual marker
+/// (`orchardpay_list_scheduled_anchor_replace_counterparties`), not every
+/// contact — marker presence is the sole signal a replace might be due,
+/// regardless of whether it was seeded by a live handshake or by
+/// wallet-restore recovery (`recover_own_anchors`), so this stays correct
+/// without scaling with total contact count. Best-effort per counterparty; a
+/// failure is logged and never blocks the rest of this pass. Backs
+/// `OrchardPayTask::FireDueScheduledAnchorReplaces`, dispatched once per
+/// locally-known identity every time a shielded sync pass completes
+/// (`app.rs`'s `OrchardPayShieldedSyncCompleted` handling, the same event
+/// `OrchardPayTask::ScanForIncomingAnchors` already rides).
 pub async fn fire_due_scheduled_anchor_replaces_for_identity(
     app_context: &AppContext,
     sdk: &Sdk,
@@ -1066,13 +1072,15 @@ pub async fn fire_due_scheduled_anchor_replaces_for_identity(
         return;
     };
     let owner_id = qualified_identity.identity.id();
-    let counterparties = match backend.orchardpay_list_contacts(&contract_id, &owner_id) {
+    let counterparties = match backend
+        .orchardpay_list_scheduled_anchor_replace_counterparties(&contract_id, &owner_id)
+    {
         Ok(counterparties) => counterparties,
         Err(error) => {
             tracing::debug!(
                 identity = %owner_id,
                 %error,
-                "Scheduled anchor-replace sweep: contact list read failed for this identity"
+                "Scheduled anchor-replace sweep: marker list read failed for this identity"
             );
             return;
         }
