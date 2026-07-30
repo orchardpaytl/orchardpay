@@ -142,9 +142,11 @@ pub enum AnchorRole {
 /// it's allowed to fire, in milliseconds — see [`ScheduledAnchorReplace`].
 /// Deliberately coarse and checked opportunistically (not a precise timer):
 /// long enough that a user waiting for a handshake to complete is never
-/// sitting around watching for it, and imprecise enough (fires on next app
-/// use *after* the threshold, not exactly at it) that there's no clustering
-/// artifact right at the 10-hour mark either.
+/// sitting around watching for it, and imprecise enough (fires on the next
+/// shielded-sync-completed pass *after* the threshold, not exactly at it —
+/// see `contact_anchor::fire_due_scheduled_anchor_replace`'s doc comment for
+/// the trigger) that there's no clustering artifact right at the 10-hour
+/// mark either.
 pub const ANCHOR_REPLACE_DELAY_MS: u64 = 10 * 60 * 60 * 1000;
 
 /// A local marker scheduling a `contactAnchor`'s deferred `anchorData`

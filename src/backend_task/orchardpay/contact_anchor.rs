@@ -913,24 +913,31 @@ pub async fn handle_incoming_anchor_signal(
 
 /// Check for and fire `counterparty`'s due [`ScheduledAnchorReplace`]
 /// marker, if any — see the 2026-07-27 adversarial audit's finding 5 (the
-/// pending-vs-established pairing-signal mitigation). Called
-/// opportunistically from the cold-boot/unlock catch-up pass
-/// (`AppContext::bootstrap_wallet_addresses_jit`'s seed scope), not a
-/// dedicated timer — see [`crate::model::orchardpay::ANCHOR_REPLACE_DELAY_MS`]'s
-/// doc comment for why that's deliberate.
+/// pending-vs-established pairing-signal mitigation). Called from
+/// [`fire_due_scheduled_anchor_replaces_for_identity`], which is dispatched
+/// as a `BackendTask` alongside `OrchardPayTask::ScanForIncomingAnchors`
+/// whenever a shielded sync pass completes (`app.rs`'s
+/// `OrchardPayShieldedSyncCompleted` handling) — not a dedicated timer —
+/// see [`crate::model::orchardpay::ANCHOR_REPLACE_DELAY_MS`]'s doc comment
+/// for why that's deliberate. Piggybacking on that event specifically
+/// (rather than app boot/unlock, or OrchardPay screen selection — both
+/// tried and abandoned during the 2026-07-30 trigger-timing bug hunt) means
+/// this only ever runs once Platform/DAPI connectivity is already confirmed
+/// working, and recurs on its own regardless of which screen (if any) is
+/// visible.
 ///
 /// A no-op (`Ok(())`) if: nothing is scheduled for this counterparty; the
 /// marker exists but isn't due yet; or (for [`AnchorRole::Initiator`]
 /// specifically) the real `their_reference_id` isn't known locally yet —
 /// the counterparty hasn't completed the handshake, so there's nothing
 /// real to publish over the filler. In all these cases the marker is left
-/// in place, checked again next time this pass runs.
+/// in place, checked again next time this fires.
 ///
 /// Takes `&AppContext` rather than the `&Arc<AppContext>` its sibling
 /// entry points ([`initiate_contact`], [`accept_contact`],
-/// [`handle_incoming_anchor_signal`]) take: this is called from
-/// `bootstrap_wallet_addresses_jit`, a plain `&self` method with no `Arc`
-/// of its own to hand down. Everything this function needs
+/// [`handle_incoming_anchor_signal`]) take: this matches the plain `&self`
+/// `AppContext` reference `run_*_task` dispatch already hands every
+/// `BackendTask` handler. Everything this function needs
 /// (`orchardpay_contract()`, `run_document_task`, `network`) works the same
 /// either way.
 pub async fn fire_due_scheduled_anchor_replace(
@@ -1036,6 +1043,63 @@ pub async fn fire_due_scheduled_anchor_replace(
     )?;
 
     Ok(())
+}
+
+/// For every OrchardPay contact of `qualified_identity`, fire a due
+/// [`ScheduledAnchorReplace`] marker if one exists — see
+/// [`fire_due_scheduled_anchor_replace`]'s doc comment for the full
+/// mechanism. Best-effort per contact; a failure is logged and never blocks
+/// the rest of this pass. Backs `OrchardPayTask::FireDueScheduledAnchorReplaces`,
+/// dispatched once per locally-known identity every time a shielded sync
+/// pass completes (`app.rs`'s `OrchardPayShieldedSyncCompleted` handling,
+/// the same event `OrchardPayTask::ScanForIncomingAnchors` already rides).
+pub async fn fire_due_scheduled_anchor_replaces_for_identity(
+    app_context: &AppContext,
+    sdk: &Sdk,
+    qualified_identity: &QualifiedIdentity,
+    seed_hash: WalletSeedHash,
+) {
+    let Some(contract_id) = app_context.orchardpay_contract_id() else {
+        return;
+    };
+    let Ok(backend) = app_context.wallet_backend() else {
+        return;
+    };
+    let owner_id = qualified_identity.identity.id();
+    let counterparties = match backend.orchardpay_list_contacts(&contract_id, &owner_id) {
+        Ok(counterparties) => counterparties,
+        Err(error) => {
+            tracing::debug!(
+                identity = %owner_id,
+                %error,
+                "Scheduled anchor-replace sweep: contact list read failed for this identity"
+            );
+            return;
+        }
+    };
+    tracing::debug!(
+        identity = %owner_id,
+        counterparty_count = counterparties.len(),
+        "Scheduled anchor-replace sweep: starting"
+    );
+    for counterparty_identity_id in counterparties {
+        if let Err(error) = fire_due_scheduled_anchor_replace(
+            app_context,
+            sdk,
+            qualified_identity,
+            counterparty_identity_id,
+            seed_hash,
+        )
+        .await
+        {
+            tracing::debug!(
+                identity = %owner_id,
+                counterparty = %counterparty_identity_id,
+                %error,
+                "Scheduled anchor-replace deferred; will retry next OrchardPay tab visit"
+            );
+        }
+    }
 }
 
 /// Find `identity`'s own key for `purpose`, bounded via

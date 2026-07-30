@@ -96,6 +96,16 @@ pub enum OrchardPayTask {
         qualified_identities: Vec<QualifiedIdentity>,
         seed_hash: WalletSeedHash,
     },
+    /// Check for and fire `qualified_identity`'s due `ScheduledAnchorReplace`
+    /// markers (one per OrchardPay contact) — dispatched alongside
+    /// `ScanForIncomingAnchors` whenever a `OrchardPayShieldedSyncCompleted`
+    /// event arrives (`app.rs`'s task-result handler), for every locally-known
+    /// identity on that wallet. See
+    /// `contact_anchor::fire_due_scheduled_anchor_replaces_for_identity`.
+    FireDueScheduledAnchorReplaces {
+        qualified_identity: QualifiedIdentity,
+        seed_hash: WalletSeedHash,
+    },
     /// DPNS-prefix search for contactable identities. See `contact_search`.
     SearchContacts {
         search_query: String,
@@ -300,6 +310,19 @@ impl AppContext {
             } => {
                 memo_scan::scan_for_incoming_anchors(self, sdk, qualified_identities, seed_hash)
                     .await
+            }
+            OrchardPayTask::FireDueScheduledAnchorReplaces {
+                qualified_identity,
+                seed_hash,
+            } => {
+                contact_anchor::fire_due_scheduled_anchor_replaces_for_identity(
+                    self,
+                    sdk,
+                    &qualified_identity,
+                    seed_hash,
+                )
+                .await;
+                Ok(BackendTaskSuccessResult::None)
             }
             OrchardPayTask::SearchContacts {
                 search_query,

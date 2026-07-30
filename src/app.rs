@@ -2622,6 +2622,28 @@ impl App for AppState {
                                             seed_hash,
                                         },
                                     )));
+                                    // Also check every locally-known identity's
+                                    // due ScheduledAnchorReplace markers on this
+                                    // same recurring, GUI-independent cadence —
+                                    // replaces the old cold-boot/unlock trigger
+                                    // (too early for DAPI to be up) and the
+                                    // OrchardPay-tab-selection trigger tried
+                                    // after that (fragile: raced against
+                                    // AppAction's last-write-wins BitOrAssign).
+                                    // This event only ever fires once a
+                                    // shielded sync pass has already
+                                    // succeeded, so connectivity is guaranteed,
+                                    // and it recurs on its own regardless of
+                                    // which screen (if any) is visible. See
+                                    // `contact_anchor::fire_due_scheduled_anchor_replaces_for_identity`.
+                                    for identity in identities.clone() {
+                                        self.handle_backend_task(BackendTask::OrchardPayTask(Box::new(
+                                            crate::backend_task::orchardpay::OrchardPayTask::FireDueScheduledAnchorReplaces {
+                                                qualified_identity: identity,
+                                                seed_hash,
+                                            },
+                                        )));
+                                    }
                                 }
                             }
                         }
