@@ -179,13 +179,15 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         .expect("seed node-with-unprotected-key insert");
 }
 
-/// TC-FR1-01…04 — the Masternodes nav entry is absent below the Power role and
-/// present at Power or above. Raising the role flips the gate; the nav rail
-/// re-evaluates the per-entry `FeatureGate::Masternodes` skip each frame.
+/// The Masternodes nav entry is unconditionally hidden — it was previously
+/// gated by `FeatureGate::Masternodes` (visible at Power role and above), but
+/// is now removed from `nav_button_specs()` entirely, so it stays absent
+/// regardless of role. The screen itself is untouched and still reachable by
+/// other means (see `activate_masternodes_tab`); only its nav entry is gone.
 /// Counted with `query_all_by_label` because the nav button exposes both a
 /// Button and an inner Label node for the same text.
 #[test]
-fn nav_gated_by_expert_mode() {
+fn nav_hidden_regardless_of_role() {
     with_isolated_data_dir(|| {
         let mut harness = mount_app(RootScreenType::RootScreenIdentities);
         let app_context = harness.state().current_app_context().clone();
@@ -195,14 +197,15 @@ fn nav_gated_by_expert_mode() {
         assert_eq!(
             harness.query_all_by_label("Masternodes").count(),
             0,
-            "the Masternodes nav entry must be absent below the Power role"
+            "the Masternodes nav entry must be absent at the Everyday role"
         );
 
         app_context.set_user_role(UserRole::Power);
         harness.run_steps(3);
-        assert!(
-            harness.query_all_by_label("Masternodes").count() >= 1,
-            "the Masternodes nav entry must appear at the Power role"
+        assert_eq!(
+            harness.query_all_by_label("Masternodes").count(),
+            0,
+            "the Masternodes nav entry must stay absent at the Power role too"
         );
     });
 }
@@ -879,7 +882,7 @@ fn add_password_protection_opens_confirmation_dialog() {
 }
 
 #[test]
-fn left_nav_return_to_masternodes_resets_detail_to_list() {
+fn return_to_masternodes_resets_detail_to_list() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -902,21 +905,30 @@ fn left_nav_return_to_masternodes_resets_detail_to_list() {
             .get_by_role_and_label(Role::Button, "Wallets")
             .click();
         harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Masternodes")
-            .click();
+        // The Masternodes tab has no nav entry to click back through anymore
+        // (it's hidden from the rail — see `nav_hidden_regardless_of_role`),
+        // so drive the same two calls a nav click's `set_main_screen` would
+        // make on the freshly-selected screen (`reset_to_root_view` then
+        // `refresh_on_arrival`). This still exercises whether returning to
+        // the tab resets its cached detail view back to the list.
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+        {
+            let screen = harness.state_mut().active_root_screen_mut();
+            screen.reset_to_root_view();
+            screen.refresh_on_arrival();
+        }
         harness.run_steps(3);
 
         assert!(
             harness.query_by_label("Open mn-nav-reset-01").is_some(),
-            "returning through the left nav must show the masternode list"
+            "returning to the tab must show the masternode list"
         );
         assert!(harness.query_by_label("‹ All masternodes").is_none());
     });
 }
 
 #[test]
-fn active_masternodes_left_nav_resets_detail_to_list() {
+fn reselecting_active_masternodes_tab_resets_detail_to_list() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -935,9 +947,16 @@ fn active_masternodes_left_nav_resets_detail_to_list() {
         harness.run_steps(3);
         assert!(harness.query_by_label("‹ All masternodes").is_some());
 
-        harness
-            .get_by_role_and_label(Role::Button, "Masternodes")
-            .click();
+        // The Masternodes tab has no nav entry to click while already active
+        // anymore (it's hidden from the rail — see
+        // `nav_hidden_regardless_of_role`), so drive the same two calls a
+        // click on an already-active nav entry's `set_main_screen` would make
+        // (`reset_to_root_view` then `refresh_on_arrival`).
+        {
+            let screen = harness.state_mut().active_root_screen_mut();
+            screen.reset_to_root_view();
+            screen.refresh_on_arrival();
+        }
         harness.run_steps(3);
 
         assert!(
@@ -951,7 +970,7 @@ fn active_masternodes_left_nav_resets_detail_to_list() {
 }
 
 #[test]
-fn left_nav_return_preserves_pending_masternode_load_form_fields() {
+fn returning_to_masternodes_preserves_pending_load_form_fields() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1018,9 +1037,18 @@ fn left_nav_return_preserves_pending_masternode_load_form_fields() {
             .get_by_role_and_label(Role::Button, "Wallets")
             .click();
         harness.run_steps(3);
-        harness
-            .get_by_role_and_label(Role::Button, "Masternodes")
-            .click();
+        // The Masternodes tab has no nav entry to click back through anymore
+        // (it's hidden from the rail — see `nav_hidden_regardless_of_role`),
+        // so drive the same two calls a nav click's `set_main_screen` would
+        // make (`reset_to_root_view` then `refresh_on_arrival`) — this still
+        // exercises the `MasternodesView::Load` guard that keeps a pending
+        // load form open across a reset.
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+        {
+            let screen = harness.state_mut().active_root_screen_mut();
+            screen.reset_to_root_view();
+            screen.refresh_on_arrival();
+        }
         harness.run_steps(3);
 
         assert!(

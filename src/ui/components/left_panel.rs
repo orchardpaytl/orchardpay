@@ -23,6 +23,14 @@ use std::sync::Arc;
 /// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
 /// `Identities` entry.
 ///
+/// Masternodes ([`RootScreenType::RootScreenMasternodes`]), Contracts
+/// ([`RootScreenType::RootScreenDocumentQuery`]), and Tokens
+/// ([`RootScreenType::RootScreenMyTokenBalances`] and its subscreens) are
+/// likewise intentionally hidden from the nav for now — same treatment as
+/// Identities above. Their screens, routes, and backend paths stay intact
+/// and remain reachable through other means (internal navigation such as
+/// "return to my tokens" after an action, deep links, MCP tools).
+///
 /// ORCHARDPAY-TODO(dashpay-legacy): OrchardPay's ZK-based contact model
 /// (see docs/orchardpay/PROTOCOL_DESIGN.md and docs/ORCHARDPAY_MIGRATION.md)
 /// is meant to supersede legacy DashPay once it reaches full parity
@@ -59,30 +67,6 @@ fn nav_button_specs() -> &'static [(
             RootScreenType::RootScreenDashPayProfile,
             "dashpay.png",
             Some(FeatureGate::DashPay),
-        ),
-        // Masternodes sits directly below the identity cluster (locked decision
-        // #3), gated at the Power role — masternode operation is a Power User
-        // activity. The nav item and route are both absent below Power (the gate
-        // skip at render time drops the entry).
-        // TODO: swap `voting.png` for a dedicated node/server glyph when one is
-        // added to `icons/` (distinct from `identity.png`).
-        (
-            "Masternodes",
-            RootScreenType::RootScreenMasternodes,
-            "voting.png",
-            Some(FeatureGate::Masternodes),
-        ),
-        (
-            "Contracts",
-            RootScreenType::RootScreenDocumentQuery,
-            "doc.png",
-            None,
-        ),
-        (
-            "Tokens",
-            RootScreenType::RootScreenMyTokenBalances,
-            "tokens.png",
-            None,
         ),
         (
             "Wallets",
