@@ -18,7 +18,7 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui_kittest::kittest::{NodeT, Queryable};
 use orchardpay::app::TaskResult;
-use orchardpay::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use orchardpay::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
