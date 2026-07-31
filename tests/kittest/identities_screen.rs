@@ -1,4 +1,10 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0 as _;
+use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use orchardpay::app::AppAction;
 use orchardpay::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use orchardpay::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -7,12 +13,6 @@ use orchardpay::model::qualified_identity::{
 };
 use orchardpay::ui::identities::identities_screen::IdentitiesScreen;
 use orchardpay::ui::{Screen, ScreenLike};
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0 as _;
-use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
-use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
