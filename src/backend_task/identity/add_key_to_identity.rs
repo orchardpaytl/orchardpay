@@ -63,17 +63,20 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
-
         // Assign each new key the next free ID in sequence (max_id + 1, +2, …)
         // and stage it in `private_keys` before the broadcast, mirroring the
-        // single-key path exactly — just looped.
+        // single-key path exactly — just looped. `max_id` comes from the
+        // freshly published record, but each slot is checked against the
+        // LOCAL store: an entry saved here but never broadcast (e.g. restored
+        // from an old blob) can hold `max_id + 1`, and it may be a misfiled
+        // key's only private half — so refuse rather than overwrite.
         let mut next_key_id = qualified_identity.identity.get_public_key_max_id() + 1;
         for (public_key_to_add, private_key) in &mut keys_to_add {
             public_key_to_add.identity_public_key.set_id(next_key_id);
             qualified_identity.private_keys.insert_non_encrypted(
                 (PrivateKeyOnMainIdentity, next_key_id),
                 (public_key_to_add.clone(), *private_key),
-            );
+            )?;
             next_key_id += 1;
         }
 
