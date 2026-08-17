@@ -219,6 +219,44 @@ fn most_recent_tab_shows_all_three_handshake_states_not_just_established() {
     });
 }
 
+/// An `Established` contact offers a "Remove Contact" action behind its
+/// overflow ("⋯") menu. `PendingOutbound`/`PendingInboundUnaccepted` cards
+/// never render an overflow menu at all (only the `Established` arm of
+/// `render_contact_card` does), so a single "⋯" query already proves the
+/// action is Established-only given `seed_three_stage_contacts` seeds
+/// exactly one contact per stage. Stops short of clicking through to the
+/// confirmation dialog — like this file's other action assertions (e.g.
+/// "Accept"), that requires a resolved signing key/wallet context this
+/// screen's precondition guards (`open_remove_contact_confirmation`,
+/// mirroring `accept_clicked`) that `seed_identity`'s wallet-less fixture
+/// doesn't provide. See `contact_anchor::delete_own_contact_anchor` for why
+/// removal is restricted to `Established` contacts.
+#[test]
+fn established_contact_offers_remove_action_via_overflow_menu() {
+    with_isolated_data_dir(|| {
+        let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
+
+        let owner_id = seed_identity(&ctx, 1, "alice.dash");
+        seed_three_stage_contacts(&ctx, contract_id, owner_id);
+        ctx.wallet_backend()
+            .expect("wallet backend wired")
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
+            .expect("seed shielded-address flag");
+
+        let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
+        let mut harness = mount(screen);
+
+        harness.get_by_label("⋯").click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Remove Contact").is_some(),
+            "an Established contact must offer a Remove Contact action in its overflow menu"
+        );
+    });
+}
+
 /// Regression: a pending request must outrank an established contact's
 /// *older* last message, not sort below every contact that has any message
 /// history at all. Before this fix, the sort's primary key was

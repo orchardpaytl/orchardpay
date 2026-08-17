@@ -376,6 +376,27 @@ impl WalletBackend {
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
+    /// Remove the local contact-establishment state for `(contract_id,
+    /// owner, counterparty)` entirely — called after a successful
+    /// `contactAnchor` deletion (`contact_anchor::delete_own_contact_anchor`).
+    /// Unlike [`Self::orchardpay_set_contact_state`], this leaves no record at
+    /// all: the relationship reverts to "never started" from this identity's
+    /// local perspective. Does not touch the counterparty's own state, and
+    /// does not affect their ability to keep messaging/paying this identity —
+    /// see `delete_own_contact_anchor`'s doc comment for why.
+    pub fn orchardpay_clear_contact_state(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = contact_key(contract_id, counterparty);
+        self.kv()
+            .delete(DetScope::Identity(&owner_buf), &key)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
     /// Read the local resumable marker for an in-flight publish-then-transfer
     /// operation with `counterparty` under `contract_id`, if one exists.
     /// `Ok(None)` means no operation is in flight — callers should treat
@@ -1779,6 +1800,54 @@ mod tests {
                 .unwrap(),
             Some(state),
             "the record must still be readable under the contract ID it was actually written under"
+        );
+    }
+
+    /// An `Established` contact's local state round-trips through
+    /// set/get/clear — the exact sequence
+    /// `contact_anchor::delete_own_contact_anchor` relies on after a
+    /// successful Platform delete: the removed contact must no longer be
+    /// readable, and clearing a never-set entry must be a harmless no-op.
+    #[test]
+    fn contact_state_clear_round_trips() {
+        let kv = empty_kv();
+        let owner = [0xd1u8; 32];
+        let contract_id = Identifier::new([0x07u8; 32]);
+        let counterparty = Identifier::new([0xd2u8; 32]);
+        let scope = DetScope::Identity(&owner);
+        let key = contact_key(&contract_id, &counterparty);
+
+        assert_eq!(
+            kv.get::<OrchardPayContactState>(scope, &key).unwrap(),
+            None,
+            "no relationship recorded yet"
+        );
+
+        // Clearing an entry that was never set must not error.
+        kv.delete(scope, &key).unwrap();
+
+        let state = OrchardPayContactState::Established {
+            my_reference_id: [21u8; 32],
+            my_anchor_document_id: [22u8; 32],
+            their_reference_id: [23u8; 32],
+            counterparty_encryption_pubkey: vec![7, 8, 9],
+            counterparty_decryption_pubkey: vec![10, 11, 12],
+            name: Some("alice".to_string()),
+            created_at: Some(1_700_000_000_000),
+        };
+        kv.put::<OrchardPayContactState>(scope, &key, &state)
+            .unwrap();
+        assert_eq!(
+            kv.get::<OrchardPayContactState>(scope, &key).unwrap(),
+            Some(state),
+            "established state must read back unchanged before removal"
+        );
+
+        kv.delete(scope, &key).unwrap();
+        assert_eq!(
+            kv.get::<OrchardPayContactState>(scope, &key).unwrap(),
+            None,
+            "removed contact must revert to \"never started\" locally"
         );
     }
 

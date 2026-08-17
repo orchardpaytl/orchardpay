@@ -1083,6 +1083,16 @@ As a user, I want a quick-glance summary of the real money that's moved between 
 - A fulfilled `PaymentRequest` counts as a payment too, with direction inverted from who made the request — money moved opposite to who asked for it.
 - Rows are tinted the same green (received) / blue (sent) used for the conversation's own payment bubbles, so the panel reads as an extension of the thread rather than a separate concept.
 
+### ORP-018: Remove a contact [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to remove an established OrchardPay contact so that I can prune connections I no longer want to keep locally, without affecting the other person's ability to reach me.
+
+- Available only for `Established` contacts, via a "Remove Contact" action tucked behind an overflow ("⋯") menu on the contact card, to add friction appropriate for a destructive, less-common action.
+- Confirming permanently deletes my own `contactAnchor` document from Platform — not a local-only hide.
+- The confirmation dialog explains the actual tradeoff: I'll no longer be able to recover this connection from the network if I reinstall or switch devices, but the other person can still message and pay me as normal — removal only affects my own copy of the connection record.
+- The contact disappears from both the Contacts and Most Recent tabs immediately on success, and is excluded from any future "Recover from Network" pass (ORP-005) for that counterparty specifically.
+
 ---
 
 ## Token Operations (TOK)

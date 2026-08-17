@@ -757,6 +757,30 @@ impl OrchardPayScreen {
                                 ),
                             ));
                         }
+                        let in_flight = self.contact_actions.is_in_flight(&counterparty);
+                        ui.add_enabled_ui(!in_flight, |ui| {
+                            ui.menu_button("⋯", |ui| {
+                                let label = if in_flight {
+                                    "Removing…"
+                                } else {
+                                    "Remove Contact"
+                                };
+                                if ui.button(label).clicked() {
+                                    ui.close();
+                                    let display_name = name
+                                        .as_deref()
+                                        .map(strip_dash_suffix)
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| {
+                                            counterparty.to_string(Encoding::Base58)
+                                        });
+                                    self.open_remove_contact_confirmation(
+                                        counterparty,
+                                        display_name,
+                                    );
+                                }
+                            });
+                        });
                     });
                 }
             }
@@ -1521,6 +1545,39 @@ impl OrchardPayScreen {
         )))
     }
 
+    /// Open the danger-mode confirmation for permanently removing an
+    /// `Established` contact. See `contact_anchor::delete_own_contact_anchor`
+    /// for why this is safe for the counterparty (their `anchorData` already
+    /// caches everything they need about this identity) and only a
+    /// self-scoped tradeoff (loss of this identity's own future seed-only
+    /// recovery of the relationship).
+    fn open_remove_contact_confirmation(&mut self, counterparty: Identifier, display_name: String) {
+        let Some(identity) = self.identity.clone() else {
+            return;
+        };
+        let Some(key) = self.selected_key.clone() else {
+            return;
+        };
+        let action = AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
+            OrchardPayTask::DeleteOwnContactAnchor {
+                qualified_identity: identity,
+                identity_key: key,
+                counterparty_identity_id: counterparty,
+            },
+        )));
+        self.open_confirmation(
+            "Remove Contact?",
+            format!(
+                "You'll no longer be able to recover your connection with {display_name} if you \
+                 reinstall or switch devices. {display_name} will still be able to message and \
+                 pay you as normal — this only affects your own copy of the connection record."
+            ),
+            action,
+            true,
+            counterparty,
+        );
+    }
+
     /// Stash `action` behind a confirmation modal instead of dispatching it
     /// immediately — the misclick guard every OrchardPay action that reaches
     /// another party goes through. A no-op if `action` is `AppAction::None`
@@ -1688,6 +1745,20 @@ impl OrchardPayScreen {
                 self.contact_actions.release(counterparty_identity_id);
                 self.direct_send_amount = None;
                 self.direct_send_amount_input = None;
+            }
+            BackendTaskSuccessResult::OrchardPayContactRemoved {
+                counterparty_identity_id,
+                ..
+            } => {
+                // Local contact state was already cleared inside
+                // `delete_own_contact_anchor` before this result was
+                // returned, so — same reasoning as `OrchardPayDirectSendCompleted`
+                // — `reconcile_contact_actions` has nothing to reconcile
+                // against (a removed contact never transitions to
+                // `PendingOutbound`/`Established`). Release the guard
+                // directly and refresh the balance (delete costs a fee).
+                self.contact_actions.release(counterparty_identity_id);
+                self.pending_identity_refresh = true;
             }
             _ => return false,
         }

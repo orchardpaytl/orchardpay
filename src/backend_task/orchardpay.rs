@@ -88,6 +88,14 @@ pub enum OrchardPayTask {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         seed_hash: WalletSeedHash,
     },
+    /// Permanently delete my own `contactAnchor` document for an
+    /// `Established` contact and clear the matching local contact state.
+    /// See `contact_anchor::delete_own_contact_anchor`.
+    DeleteOwnContactAnchor {
+        qualified_identity: QualifiedIdentity,
+        identity_key: IdentityPublicKey,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+    },
     /// Run one pass of the DET-side duplicate incoming-memo scan for
     /// `seed_hash`'s wallet, trying every detected anchor signal against
     /// every identity in `qualified_identities`. See `memo_scan` and
@@ -301,6 +309,20 @@ impl AppContext {
                     identity_key,
                     counterparty_identity_id,
                     seed_hash,
+                )
+                .await
+            }
+            OrchardPayTask::DeleteOwnContactAnchor {
+                qualified_identity,
+                identity_key,
+                counterparty_identity_id,
+            } => {
+                contact_anchor::delete_own_contact_anchor(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    identity_key,
+                    counterparty_identity_id,
                 )
                 .await
             }

@@ -670,6 +670,105 @@ pub async fn accept_contact(
         .unwrap_or(BackendTaskSuccessResult::None))
 }
 
+/// Permanently delete my own `contactAnchor` document for
+/// `counterparty_identity_id` — a true Platform document delete (the schema
+/// is `canBeDeleted: true`), not a tombstone. Only offered once the
+/// relationship is `Established`: deleting a still-pending anchor (before
+/// the counterparty has read my `data` field or published their own return
+/// anchor) could interrupt an in-flight handshake, which is a different
+/// concern from the one this restriction is really about — long-term
+/// recovery. Once `Established`, `anchorData` already caches everything
+/// either side needs about the other (`counterparty_identity_id`,
+/// `counterparty_name_snapshot`, `their_reference_id`,
+/// `counterparty_encryption_pubkey`, `counterparty_decryption_pubkey` — see
+/// `AnchorDataRecord`), so deleting my own anchor only affects *my own*
+/// future seed-only recovery of this one relationship (`recover_own_anchors`
+/// / ORP-005); it does not affect the counterparty's ability to keep
+/// messaging or paying me. This is the key difference from DashPay's
+/// original contact-request documents, which stayed non-deletable because
+/// each party depended on fetching the *other* party's live document to
+/// discover their extended public key — see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md` for the full contrast.
+///
+/// Unlike `messages::delete_message`, this needs no document fetch, shared-
+/// secret derivation, or wallet seed — `Established` state already carries
+/// `my_anchor_document_id` locally, so this is a pure "read local state,
+/// sign a delete transition, clear local state" flow.
+pub async fn delete_own_contact_anchor(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    qualified_identity: QualifiedIdentity,
+    identity_key: IdentityPublicKey,
+    counterparty_identity_id: Identifier,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = qualified_identity.identity.id();
+    let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
+    let contract_id = orchardpay_contract.id();
+    let backend = app_context.wallet_backend()?;
+
+    let my_anchor_document_id = match backend.orchardpay_get_contact_state(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )? {
+        Some(OrchardPayContactState::Established {
+            my_anchor_document_id,
+            ..
+        }) => Identifier::from(my_anchor_document_id),
+        _ => return Err(OrchardPayError::ContactNotEstablishedForRemoval.into()),
+    };
+
+    let document_type = orchardpay_contract
+        .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
+        .expect("contactAnchor document type is part of the checked-in OrchardPay contract schema");
+
+    let task = DocumentTask::DeleteDocument {
+        document_id: my_anchor_document_id,
+        document_type,
+        data_contract: orchardpay_contract,
+        qualified_identity,
+        identity_key,
+        token_payment_info: None,
+    };
+    let result = app_context.run_document_task(task, sdk).await?;
+    let fee = match result {
+        BackendTaskSuccessResult::DeletedDocument(_, fee) => fee,
+        other => {
+            // `DocumentTask::DeleteDocument` always yields `DeletedDocument`
+            // on success — anything else means `run_document_task`'s result
+            // shape changed underneath this code.
+            return Ok(other);
+        }
+    };
+
+    // Local cleanup only after the Platform delete actually lands — same
+    // ordering discipline as accept_contact/initiate_contact (write Platform
+    // state first, local state reflects confirmed reality after).
+    backend.orchardpay_clear_contact_state(&contract_id, &owner_id, &counterparty_identity_id)?;
+    // A scheduled re-seal marker should never coexist with a fresh delete,
+    // but clear it too for symmetry/safety — otherwise
+    // `fire_due_scheduled_anchor_replace` would keep failing with
+    // `AnchorNotFound` on every future shielded-sync pass trying to replace a
+    // document that no longer exists.
+    backend.orchardpay_clear_scheduled_anchor_replace(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
+    // Defensive: a pending-operation marker should never coexist with
+    // `Established` state either, but clear it for the same reason.
+    backend.orchardpay_clear_pending_operation(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
+
+    Ok(BackendTaskSuccessResult::OrchardPayContactRemoved {
+        counterparty_identity_id,
+        fee,
+    })
+}
+
 /// Called by the incoming-memo scan when it detects a transfer memo tagged
 /// [`MEMO_TAG_ANCHOR`], carrying `anchor_document_id`. Fetches that document
 /// directly by ID (never by query), learns the sender from its `$ownerId`,

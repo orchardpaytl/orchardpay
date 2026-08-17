@@ -39,6 +39,25 @@ OrchardPay works there, using this updated schema (not the retired one) —
 each network's canonical ID is separate, whoever registers first on a given
 network sets it for everyone building against that network.
 
+**Testnet: re-registered (2026-08-17).** `contactAnchor.canBeDeleted` changed
+from `false` to `true` — an identity can now permanently delete its own
+`contactAnchor` once a contact is `Established`, since (unlike DashPay's
+original non-deletable contact-request documents) neither party depends on
+the other's `contactAnchor` document continuing to exist once established;
+see `docs/orchardpay/PROTOCOL_DESIGN.md`'s "Deletability" subsection under
+section 2. Platform disallows changing `canBeDeleted` via a contract update
+(the same constraint that drove the 2026-07-27 re-registration above), so
+this again required a brand-new contract registration rather than an update.
+The updated schema is now registered on Testnet as
+`4LEz8JLdFXcJwqmeHeZN5BgwkcGY7AzrNeMi5GBewssi` (2026-08-17), recorded as
+`TESTNET_orchardpay_contract_id` in `.env.example` (the live local `.env` was
+updated to match). The contract previously registered as
+`Bu4MNp1gPogr2zSw27Y3e7CE3cKr3kDacUi9tFAYmMFm` (2026-07-27) is retired, along
+with any documents published under it — no migration was performed (clean
+slate, same precedent as before). Mainnet and Devnet still have no
+OrchardPay contract registered at all, so they simply register this
+already-updated schema directly — no retirement step needed there.
+
 DashPay (`src/ui/dashpay/`, `src/backend_task/dashpay/`, `src/database/dashpay.rs`,
 `src/database/contacts.rs`) is **legacy** — superseded in intent by OrchardPay's
 ZK-based contact model, but still fully functional and **not to be deleted or

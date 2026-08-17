@@ -101,11 +101,12 @@ No `protocolVersion` field — see "Dropped: protocolVersion" below.
 
 ## 2. `contactAnchor` — encrypted, publishes no plaintext link to the counterparty
 
-`documentsMutable: true`, `canBeDeleted: false` (permanent — the anchor is
-meant to survive as a durable personal recovery record, see below),
-`documentsKeepHistory: false` (only the current revision is ever retrievable
-— fine here, since neither party ever needs a prior revision, see the flow
-below). No field or index exposes the counterparty's identity in plaintext.
+`documentsMutable: true`, `canBeDeleted: true` (an identity may permanently
+delete its own `contactAnchor` once the relationship is `Established` — see
+"Deletability" below), `documentsKeepHistory: false` (only the current
+revision is ever retrievable — fine here, since neither party ever needs a
+prior revision, see the flow below). No field or index exposes the
+counterparty's identity in plaintext.
 
 ```json
 {
@@ -113,7 +114,7 @@ below). No field or index exposes the counterparty's identity in plaintext.
     "type": "object",
     "documentsKeepHistory": false,
     "documentsMutable": true,
-    "canBeDeleted": false,
+    "canBeDeleted": true,
     "requiresIdentityEncryptionBoundedKey": 2,
     "requiresIdentityDecryptionBoundedKey": 2,
     "properties": {
@@ -220,6 +221,32 @@ design is symmetric and bidirectional — **each party publishes their own
    that makes this possible is safe because Platform's document-ownership
    model means only Alice's own keys can ever sign an update to her own
    anchor — no third party (including Bob) can tamper with it.
+
+### Deletability
+
+`contactAnchor` is `canBeDeleted: true`. DashPay's original contact-request
+documents were made non-deletable because each party had to fetch the
+*other* party's live document to discover their extended public key —
+deleting your side would strand the counterparty. That dependency does not
+exist here: point 5 above is the reason why. Once a relationship reaches
+`Established`, each party's own `anchorData` (decrypted from their own
+document only) already caches everything needed about the counterparty —
+`counterparty_identity_id`, `counterparty_name_snapshot`,
+`their_reference_id`, `counterparty_encryption_pubkey`,
+`counterparty_decryption_pubkey` (see "`anchorData`: a wallet-local recovery
+record" below). Neither party's ability to message or pay the other depends
+on the other party's `contactAnchor` document continuing to exist.
+
+Deleting your own anchor therefore only affects **your own** future
+seed-only recovery of that one relationship (see "Recovery consequence"
+below) — an explicit, user-initiated, self-only tradeoff, not a
+shared-relationship risk the way DashPay's was. OrchardPay only offers
+deletion once a contact is `Established` (`contact_anchor::delete_own_contact_anchor`,
+UI: the "Remove Contact" action on an established contact card): deleting a
+still-`PendingOutbound`/`PendingInboundUnaccepted` anchor is a different
+concern — the counterparty may not have read the anchor's `data` field or
+published their own return anchor yet, so removing it could interrupt an
+in-flight handshake rather than just trading away future recovery.
 
 `anchorData` is not purely something written once, at step 4 — Alice already
 knows Bob's identity ID and DPNS name at step 1 (she looked him up to find
@@ -442,6 +469,13 @@ randomly-generated (`KeyType::random_public_and_private_key_data`), not
 seed-derived. Making those keys HD-derived too is the natural companion fix
 for the *other* half of that gap — a related but separate decision, not
 bundled into this one.
+
+A `contactAnchor` an identity has manually deleted (see "Deletability"
+above) is, by definition, no longer found by this `byOwner` scan — a future
+`recover_own_anchors` pass will not resurrect that relationship. This is the
+one relationship-scoped consequence of deletion: the counterparty is
+unaffected either way, since their own recovery reads their own anchor, not
+this identity's.
 
 **No migration needed.** No `contactAnchor` documents have been created on
 any network yet (Milestone D shipped the contract and the code path, but
@@ -990,8 +1024,15 @@ structurally identical regardless of purpose.
    not yet implemented), and an initial message are all optional additions
    to the same encrypted payload.
 6. **`shieldedAddress` deletability**: `canBeDeleted: true` — full opt-out is
-   possible, not just leaving the address stale. `contactAnchor` stays
-   `canBeDeleted: false` — it's meant to be a permanent recovery record.
+   possible, not just leaving the address stale. **`contactAnchor` deletability
+   (revised, see "Deletability" above)**: also `canBeDeleted: true` — unlike
+   DashPay's non-deletable contact-request documents (which each party
+   depended on to discover the other's extended public key), OrchardPay's
+   `Established` `anchorData` already caches everything either party needs
+   about the other, so deleting your own anchor is a self-only tradeoff
+   (loss of your own future seed-only recovery of that relationship), not a
+   shared-relationship risk. Restricted in the UI to `Established` contacts
+   only, to avoid interrupting an in-flight handshake.
 7. **`encryptedMessage` mutability**: `documentsMutable: true`,
    `canBeDeleted: true` (matching Platform's own defaults, now made
    explicit) — sent messages can be edited/deleted as a deliberate UX
@@ -1123,7 +1164,15 @@ struct PendingConfirmation {
   as `Hk5Tajxf4FNUjh3S9Sqq7ZFYm3p3b8dPpDEWszJp5Juw` (2026-07-20; retired and
   re-registered 2026-07-27 under a new ID after the `shieldedAddress`/
   `encryptedMessage` schema changes below — see `docs/ORCHARDPAY_MIGRATION.md`
-  for the current ID and the per-network registration status).
+  for the per-network registration status). **Retired and re-registered
+  again (2026-08-17)** as `4LEz8JLdFXcJwqmeHeZN5BgwkcGY7AzrNeMi5GBewssi` after
+  `contactAnchor.canBeDeleted` flipped to `true` (see "Deletability" under
+  section 2 above and item 6 of "Resolved design decisions") — Platform
+  disallows changing `canBeDeleted` via a contract update, so this required
+  another brand-new Testnet contract registration; Mainnet/Devnet still have
+  no OrchardPay contract registered, so they will register this
+  already-updated schema directly. See `docs/ORCHARDPAY_MIGRATION.md` for
+  the full per-network registration status.
 - **Done (Milestone C, 2026-07-18)**: `shieldedAddress` publish/lookup
   (`src/backend_task/orchardpay/shielded_address.rs`), `ShieldedAddressSetupScreen`,
   wired into the onboarding chain and a 4-step progress stepper.

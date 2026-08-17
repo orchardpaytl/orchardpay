@@ -129,4 +129,14 @@ pub enum OrchardPayError {
     /// problem with this identity's own OrchardPay setup.
     #[error("Could not prepare your private OrchardPay keys. Please try again.")]
     OwnKeyNotDerivable,
+
+    /// `delete_own_contact_anchor` was called against a counterparty whose
+    /// local contact state isn't `Established` yet — deleting a still-
+    /// pending anchor (before the counterparty has read `data` or published
+    /// their own return anchor) could interrupt an in-flight handshake, a
+    /// distinct concern from the long-term-recovery tradeoff `Established`
+    /// deletion accepts. Distinct wording from [`Self::ContactNotEstablished`],
+    /// which is worded for the messaging flow, not for removal.
+    #[error("You can only remove a contact once the connection is fully established.")]
+    ContactNotEstablishedForRemoval,
 }

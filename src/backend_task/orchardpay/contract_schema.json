@@ -33,7 +33,7 @@
       "type": "object",
       "documentsKeepHistory": false,
       "documentsMutable": true,
-      "canBeDeleted": false,
+      "canBeDeleted": true,
 
       "requiresIdentityEncryptionBoundedKey": 2,
       "requiresIdentityDecryptionBoundedKey": 2,

@@ -688,6 +688,18 @@ pub enum BackendTaskSuccessResult {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         amount: u64,
     },
+    /// Result of `OrchardPayTask::DeleteOwnContactAnchor` — my own
+    /// `contactAnchor` document for `counterparty_identity_id` was deleted
+    /// from Platform and the matching local contact state was cleared. See
+    /// `backend_task::orchardpay::contact_anchor::delete_own_contact_anchor`.
+    /// Deliberately distinct from the generic `DeletedDocument(Identifier,
+    /// FeeResult)` (which only carries the document ID, not the
+    /// counterparty) so the UI can correlate the result back to the specific
+    /// contact-list row without a second local lookup.
+    OrchardPayContactRemoved {
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        fee: FeeResult,
+    },
     /// Result of `OrchardPayTask::RecoverContacts` — a summary of one pass
     /// rebuilding local contact state from every `contactAnchor` the
     /// identity has published. See
