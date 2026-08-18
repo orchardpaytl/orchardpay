@@ -33,8 +33,10 @@ use crate::model::fee_estimation::{
     format_credits_as_dash, format_credits_as_dash_significant, shielded_fee_for_actions,
 };
 use crate::model::orchardpay::{
-    CREDIT_BLOCKED_TOOLTIP, MIN_SEND_AMOUNT_CREDITS, OrchardPayContactState, ShieldedActivityRow,
-    SpentEntry, group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
+    CREDIT_BLOCKED_TOOLTIP, INITIAL_MESSAGE_ROW_SNIPPET_CHARS, MAX_INITIAL_MESSAGE_CHARS,
+    MIN_SEND_AMOUNT_CREDITS, OrchardPayContactState, ShieldedActivityRow, SpentEntry,
+    group_shielded_activity, is_credit_balance_blocked, is_credit_balance_low,
+    truncate_message_snippet, validate_initial_message_text,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -199,6 +201,17 @@ pub struct OrchardPayScreen {
     /// alone, matching how a successful Add Contact doesn't clear
     /// `search_query`/`search_results` either.
     direct_send_amount: Option<Amount>,
+    /// Send Friend Request's optional single-line introduction, above the
+    /// DPNS search box — persisted across frames the same way `search_query`
+    /// is, read at "Add Contact" click time. Not cleared by `refresh()`,
+    /// matching `search_query`'s own persistence across subscreen switches.
+    add_contact_message: String,
+    /// Direct Send's own optional introduction — independent of
+    /// `add_contact_message`, only sent when the confirmation dialog's
+    /// "Include a contact request?" checkbox ends up checked; discarded
+    /// otherwise (a bare `SendDirect` has no message/document channel at
+    /// all).
+    direct_send_message: String,
     /// `None` = not yet known (renders a "checking…" state, not the
     /// "publish" prompt — those two must never be conflated). `Some(true)` =
     /// confirmed published, seeded from the local cache
@@ -282,6 +295,8 @@ impl OrchardPayScreen {
             checking_new_requests: false,
             direct_send_amount_input: None,
             direct_send_amount: None,
+            add_contact_message: String::new(),
+            direct_send_message: String::new(),
             // If the cache already confirms it, skip the check entirely —
             // no network round-trip, no "checking…"/"publish" flash on open.
             shielded_address_check_dispatched: has_shielded_address == Some(true),
@@ -655,16 +670,33 @@ impl OrchardPayScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
 
-        let (name, created_at) = match &state {
+        let (name, created_at, amount_credits, initial_message) = match &state {
             OrchardPayContactState::PendingOutbound {
-                name, created_at, ..
+                name,
+                created_at,
+                amount_credits,
+                initial_message,
+                ..
             }
             | OrchardPayContactState::PendingInboundUnaccepted {
+                name,
+                created_at,
+                amount_credits,
+                initial_message,
+                ..
+            } => (
+                name.clone(),
+                *created_at,
+                Some(*amount_credits),
+                initial_message.clone(),
+            ),
+            // No badge/snippet on an `Established` row — both are only
+            // meaningful for a still-pending request; once connected, the
+            // message lives on in the conversation thread instead (see
+            // `messages::load_thread`'s synthetic first bubble).
+            OrchardPayContactState::Established {
                 name, created_at, ..
-            }
-            | OrchardPayContactState::Established {
-                name, created_at, ..
-            } => (name.clone(), *created_at),
+            } => (name.clone(), *created_at, None, None),
         };
 
         ui.group(|ui| {
@@ -701,6 +733,31 @@ impl OrchardPayScreen {
                     RichText::new(activity_label)
                         .size(11.0)
                         .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+            if let Some(text) = &initial_message {
+                ui.label(
+                    RichText::new(format!(
+                        "\"{}\"",
+                        truncate_message_snippet(text, INITIAL_MESSAGE_ROW_SNIPPET_CHARS)
+                    ))
+                    .italics()
+                    .size(12.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+            // Only shown above the routine fixed signal amount — a plain
+            // "Add Contact" click always spends exactly
+            // `ANCHOR_SIGNAL_AMOUNT_CREDITS`, and repeating that on every
+            // row would be noise rather than information.
+            if let Some(credits) = amount_credits
+                && credits > ANCHOR_SIGNAL_AMOUNT_CREDITS
+            {
+                ui.label(
+                    RichText::new(format!("Sent with {}", format_credits_as_dash(credits)))
+                        .size(11.0)
+                        .strong()
+                        .color(DashColors::info_color(dark_mode)),
                 );
             }
             match state {
@@ -1168,6 +1225,13 @@ impl OrchardPayScreen {
 
         ui.heading("Send Friend Request");
         ui.add_space(6.0);
+        ui.label("Add a short message (optional):");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.add_contact_message)
+                .char_limit(MAX_INITIAL_MESSAGE_CHARS)
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
             ui.text_edit_singleline(&mut self.search_query);
@@ -1232,18 +1296,33 @@ impl OrchardPayScreen {
                                 response
                             };
                             if response.clicked() {
-                                let confirm_action = self.initiate_clicked(
-                                    result.identity_id,
-                                    result.username.clone(),
-                                    ANCHOR_SIGNAL_AMOUNT_CREDITS,
-                                );
-                                self.open_confirmation(
-                                    "Send Contact Request",
-                                    format!("Send a contact request to {}?", result.username),
-                                    confirm_action,
-                                    false,
-                                    result.identity_id,
-                                );
+                                let message = self.add_contact_message.trim();
+                                if !message.is_empty()
+                                    && let Err(source) = validate_initial_message_text(message)
+                                {
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "The message is too long. Use 250 characters or fewer and try again.",
+                                        MessageType::Error,
+                                    )
+                                    .with_details(source);
+                                } else {
+                                    let initial_message = (!message.is_empty())
+                                        .then(|| message.to_string());
+                                    let confirm_action = self.initiate_clicked(
+                                        result.identity_id,
+                                        result.username.clone(),
+                                        ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                                        initial_message,
+                                    );
+                                    self.open_confirmation(
+                                        "Send Contact Request",
+                                        format!("Send a contact request to {}?", result.username),
+                                        confirm_action,
+                                        false,
+                                        result.identity_id,
+                                    );
+                                }
                             }
                         }
                         None => {
@@ -1299,6 +1378,18 @@ impl OrchardPayScreen {
         let response = widget.show(ui);
         response.inner.update(&mut self.direct_send_amount);
         ui.add_space(10.0);
+
+        // Independent of the "Include a contact request?" checkbox in the
+        // confirmation dialog below — this text only ends up sent if that
+        // checkbox is checked at confirm time; a bare Direct Send discards
+        // it (no message/document channel exists for a plain transfer).
+        ui.label("Add a short message (optional, only sent if bundled with a contact request):");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.direct_send_message)
+                .char_limit(MAX_INITIAL_MESSAGE_CHARS)
+                .desired_width(ui.available_width()),
+        );
+        ui.add_space(6.0);
 
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
@@ -1375,10 +1466,25 @@ impl OrchardPayScreen {
                                 response
                             };
                             if response.clicked() {
-                                self.direct_send_clicked(
-                                    result.identity_id,
-                                    result.username.clone(),
-                                );
+                                let message = self.direct_send_message.trim();
+                                if !message.is_empty()
+                                    && let Err(source) = validate_initial_message_text(message)
+                                {
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "The message is too long. Use 250 characters or fewer and try again.",
+                                        MessageType::Error,
+                                    )
+                                    .with_details(source);
+                                } else {
+                                    let initial_message = (!message.is_empty())
+                                        .then(|| message.to_string());
+                                    self.direct_send_clicked(
+                                        result.identity_id,
+                                        result.username.clone(),
+                                        initial_message,
+                                    );
+                                }
                             }
                         }
                         None => {
@@ -1404,6 +1510,7 @@ impl OrchardPayScreen {
         &mut self,
         counterparty_identity_id: Identifier,
         counterparty_name: String,
+        initial_message: Option<String>,
     ) {
         let Some(amount_credits) = self.direct_send_amount.as_ref().map(Amount::value) else {
             return;
@@ -1438,6 +1545,7 @@ impl OrchardPayScreen {
                         counterparty_name,
                         seed_hash,
                         amount_credits,
+                        initial_message,
                     }
                 } else {
                     OrchardPayTask::SendDirect {
@@ -1521,6 +1629,7 @@ impl OrchardPayScreen {
         counterparty_identity_id: Identifier,
         counterparty_name: String,
         amount_credits: u64,
+        initial_message: Option<String>,
     ) -> AppAction {
         let (Some(identity), Some(key), Some(wallet)) = (
             self.identity.clone(),
@@ -1541,6 +1650,7 @@ impl OrchardPayScreen {
                 counterparty_name,
                 seed_hash,
                 amount_credits,
+                initial_message,
             },
         )))
     }

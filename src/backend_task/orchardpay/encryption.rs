@@ -454,6 +454,142 @@ mod tests {
         assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
     }
 
+    /// `initial_message` holds a bincode-encoded `MessageContent::Message`,
+    /// not a bare string — confirms the whole encode-then-encrypt-then-
+    /// decrypt-then-decode round trip works end to end.
+    #[test]
+    fn contact_anchor_payload_round_trips_with_initial_message() {
+        let shared_key = [40u8; 32];
+        let encoded = bincode::serde::encode_to_vec(
+            &MessageContent::Message {
+                data: "hey its me Paul".to_string(),
+            },
+            bincode::config::standard(),
+        )
+        .expect("encode succeeds");
+        let payload = ContactAnchorPayload {
+            reference_id: [1u8; 32],
+            core_payment_xpub: None,
+            dedicated_shielded_address: None,
+            initial_message: Some(encoded),
+        };
+
+        let encrypted = payload.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted =
+            ContactAnchorPayload::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+        assert_eq!(payload, decrypted);
+
+        let (content, _) = bincode::serde::decode_from_slice::<MessageContent, _>(
+            decrypted.initial_message.as_ref().expect("was set"),
+            bincode::config::standard(),
+        )
+        .expect("decode succeeds");
+        assert_eq!(
+            content,
+            MessageContent::Message {
+                data: "hey its me Paul".to_string(),
+            }
+        );
+    }
+
+    /// Regression guard: omitting `initial_message` must round-trip as
+    /// `None`, not accidentally become `Some(vec![])` or similar.
+    #[test]
+    fn contact_anchor_payload_initial_message_none_round_trips() {
+        let shared_key = [41u8; 32];
+        let payload = ContactAnchorPayload {
+            reference_id: [1u8; 32],
+            core_payment_xpub: None,
+            dedicated_shielded_address: None,
+            initial_message: None,
+        };
+
+        let encrypted = payload.encrypt(&shared_key).expect("encrypt succeeds");
+        let decrypted =
+            ContactAnchorPayload::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+        assert_eq!(decrypted.initial_message, None);
+    }
+
+    #[test]
+    fn anchor_data_record_round_trips_with_my_initial_message() {
+        let anchor_data_key = [42u8; 32];
+        let encoded = bincode::serde::encode_to_vec(
+            &MessageContent::Message {
+                data: "hey its me Paul".to_string(),
+            },
+            bincode::config::standard(),
+        )
+        .expect("encode succeeds");
+        let record = AnchorDataRecord {
+            counterparty_identity_id: [3u8; 32],
+            counterparty_name_snapshot: Some("bob.dash".to_string()),
+            my_reference_id: [1u8; 32],
+            their_reference_id: None,
+            my_initial_message: Some(encoded),
+            my_core_payment_xpub: None,
+            my_dedicated_shielded_address: None,
+            counterparty_encryption_pubkey: None,
+            counterparty_decryption_pubkey: None,
+        };
+
+        let encrypted = record.encrypt(&anchor_data_key).expect("encrypt succeeds");
+        let decrypted =
+            AnchorDataRecord::decrypt(&anchor_data_key, &encrypted).expect("decrypt succeeds");
+        assert_eq!(record, decrypted);
+
+        let (content, _) = bincode::serde::decode_from_slice::<MessageContent, _>(
+            decrypted.my_initial_message.as_ref().expect("was set"),
+            bincode::config::standard(),
+        )
+        .expect("decode succeeds");
+        assert_eq!(
+            content,
+            MessageContent::Message {
+                data: "hey its me Paul".to_string(),
+            }
+        );
+    }
+
+    /// Both `contactAnchor.data` and `contactAnchor.anchorData` are capped
+    /// at 5120 bytes (`contract_schema.json`'s `maxItems`). `AnchorDataRecord`
+    /// is the tighter budget of the two — it carries every optional field at
+    /// once (name snapshot, both reference IDs, both cached pubkeys) plus
+    /// the message — so it's the one worth asserting directly rather than
+    /// just reasoning about it in a comment.
+    #[test]
+    fn anchor_data_record_with_every_field_populated_stays_under_platform_size_limit() {
+        let anchor_data_key = [43u8; 32];
+        // Worst case: every character multi-byte (emoji-width), maxed out
+        // at MAX_INITIAL_MESSAGE_CHARS.
+        let worst_case_message = "🦀".repeat(crate::model::orchardpay::MAX_INITIAL_MESSAGE_CHARS);
+        let encoded = bincode::serde::encode_to_vec(
+            &MessageContent::Message {
+                data: worst_case_message,
+            },
+            bincode::config::standard(),
+        )
+        .expect("encode succeeds");
+        let record = AnchorDataRecord {
+            counterparty_identity_id: [3u8; 32],
+            counterparty_name_snapshot: Some("a".repeat(63)), // DPNS max label length
+            my_reference_id: [1u8; 32],
+            their_reference_id: Some([2u8; 32]),
+            my_initial_message: Some(encoded),
+            my_core_payment_xpub: Some(vec![4u8; 96]),
+            my_dedicated_shielded_address: Some(vec![5u8; 43]),
+            counterparty_encryption_pubkey: Some(vec![6u8; 33]),
+            counterparty_decryption_pubkey: Some(vec![7u8; 33]),
+        };
+
+        let encrypted = record.encrypt(&anchor_data_key).expect("encrypt succeeds");
+        assert!(
+            encrypted.len() < 5120,
+            "AnchorDataRecord with every field populated must stay under Platform's 5120-byte \
+             field ceiling; was {} bytes",
+            encrypted.len()
+        );
+    }
+
     #[test]
     fn message_content_message_round_trips() {
         let shared_key = [11u8; 32];

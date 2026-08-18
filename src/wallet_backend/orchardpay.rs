@@ -53,7 +53,15 @@ const SHIELDED_NOTES_CHUNK_ALIGNMENT: u64 = 2048;
 /// half.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IncomingMemoSignal {
-    Anchor(Identifier),
+    Anchor {
+        anchor_document_id: Identifier,
+        /// The real value observed on this wallet's own decrypted note for
+        /// the anchor-signaling transfer — same "authoritative, never trust
+        /// a claimed value" role as [`Self::Payment`]'s own field (though
+        /// the anchor payload itself has no amount field to claim one in
+        /// the first place; this is simply the only source of truth).
+        amount_credits: u64,
+    },
     Payment {
         /// The `Payment` or `PaymentRequest` document this transfer's memo
         /// referenced.
@@ -240,10 +248,13 @@ const KV_PREFIX_SILENT_PAYMENT: &str = "det:orchardpay:silent:";
 /// freshly re-registered one.
 const KV_PREFIX_HAS_SHIELDED_ADDRESS: &str = "det:orchardpay:has_shielded_address";
 
-/// Value: `bool` (always `true` when present). An incoming `Anchor` signal
-/// (a `contactAnchor` document ID) that decrypted successfully from this
-/// wallet's shielded note stream but didn't match any identity loaded at
-/// the time — see `backend_task::orchardpay::memo_scan::scan_for_incoming_anchors`.
+/// Value: `u64` — the anchor-signaling transfer's own decrypted note value
+/// in credits (needed again on retry, since `handle_incoming_anchor_signal`
+/// requires it and the whole point of this cache is to avoid re-decrypting
+/// the note). An incoming `Anchor` signal (a `contactAnchor` document ID)
+/// that decrypted successfully from this wallet's shielded note stream but
+/// didn't match any identity loaded at the time — see
+/// `backend_task::orchardpay::memo_scan::scan_for_incoming_anchors`.
 /// Persisted so a later-loaded identity (or one that has since set up
 /// OrchardPay) can be tried against it without re-walking or re-decrypting
 /// the note stream: the decrypt pass is genuinely wallet-level, keyed off
@@ -715,11 +726,13 @@ impl WalletBackend {
     /// List every incoming `Anchor` signal that decrypted successfully but
     /// hasn't matched any identity yet — candidates to retry the next time a
     /// scan pass runs (e.g. after a new identity is loaded). See
-    /// [`KV_PREFIX_UNRESOLVED_ANCHOR`].
+    /// [`KV_PREFIX_UNRESOLVED_ANCHOR`]. The paired `u64` is the transfer's
+    /// own decrypted note value, carried alongside the document ID so a
+    /// retry doesn't need to re-decrypt the note that carried it.
     pub fn orchardpay_list_unresolved_anchor_signals(
         &self,
         seed_hash: &WalletSeedHash,
-    ) -> Result<Vec<Identifier>, TaskError> {
+    ) -> Result<Vec<(Identifier, u64)>, TaskError> {
         let keys = self
             .kv()
             .list(
@@ -728,26 +741,37 @@ impl WalletBackend {
             )
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
 
-        Ok(keys
-            .into_iter()
+        keys.into_iter()
             .filter_map(|key| {
                 let b58 = key.strip_prefix(KV_PREFIX_UNRESOLVED_ANCHOR)?;
-                Identifier::from_string(b58, Encoding::Base58).ok()
+                let anchor_document_id = Identifier::from_string(b58, Encoding::Base58).ok()?;
+                Some((key, anchor_document_id))
             })
-            .collect())
+            .map(|(key, anchor_document_id)| {
+                let amount_credits = self
+                    .kv()
+                    .get::<u64>(DetScope::Wallet(seed_hash), &key)
+                    .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?
+                    .unwrap_or(0);
+                Ok((anchor_document_id, amount_credits))
+            })
+            .collect()
     }
 
     /// Persist that `anchor_document_id` didn't match any currently-loaded
     /// identity, so a future scan pass can retry it without re-decrypting
-    /// the note that carried it.
+    /// the note that carried it. `amount_credits` is that note's own
+    /// decrypted value, needed again on retry since
+    /// `handle_incoming_anchor_signal` requires it.
     pub fn orchardpay_record_unresolved_anchor_signal(
         &self,
         seed_hash: &WalletSeedHash,
         anchor_document_id: &Identifier,
+        amount_credits: u64,
     ) -> Result<(), TaskError> {
         let key = unresolved_anchor_key(anchor_document_id);
         self.kv()
-            .put::<bool>(DetScope::Wallet(seed_hash), &key, &true)
+            .put::<u64>(DetScope::Wallet(seed_hash), &key, &amount_credits)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
     }
 
@@ -1019,7 +1043,10 @@ impl WalletBackend {
                             }
                             found.push((
                                 note_index,
-                                IncomingMemoSignal::Anchor(Identifier::from(doc_id_bytes)),
+                                IncomingMemoSignal::Anchor {
+                                    anchor_document_id: Identifier::from(doc_id_bytes),
+                                    amount_credits: decrypted_note.value().inner(),
+                                },
                             ));
                         } else if tag == MEMO_TAG_PAYMENT {
                             found.push((
@@ -1706,6 +1733,8 @@ mod tests {
             my_anchor_document_id: [2u8; 32],
             name: None,
             created_at: None,
+            amount_credits: 100_000_000,
+            initial_message: None,
         };
         kv.put::<OrchardPayContactState>(scope, &contact_key(&contract_id, &has_marker), &state)
             .unwrap();
@@ -1903,6 +1932,9 @@ mod tests {
             counterparty_decryption_pubkey: vec![4, 5, 6],
             name: None,
             created_at: None,
+            initial_message: None,
+            initial_message_from_me: false,
+            initial_message_document_id: None,
         };
         kv.put::<OrchardPayContactState>(scope, &contact_key(&old_contract, &counterparty), &state)
             .unwrap();
@@ -1953,6 +1985,9 @@ mod tests {
             counterparty_decryption_pubkey: vec![10, 11, 12],
             name: Some("alice".to_string()),
             created_at: Some(1_700_000_000_000),
+            initial_message: None,
+            initial_message_from_me: false,
+            initial_message_document_id: None,
         };
         kv.put::<OrchardPayContactState>(scope, &key, &state)
             .unwrap();
@@ -1989,6 +2024,8 @@ mod tests {
             my_anchor_document_id: [2u8; 32],
             name: None,
             created_at: None,
+            amount_credits: 100_000_000,
+            initial_message: None,
         };
         kv.put::<OrchardPayContactState>(
             scope,
@@ -2228,6 +2265,7 @@ mod tests {
         let anchor = Identifier::new([0x66u8; 32]);
         let scope = DetScope::Wallet(&wallet);
         let key = unresolved_anchor_key(&anchor);
+        let amount_credits = 500_000_000u64;
 
         assert!(
             kv.list(scope, Some(KV_PREFIX_UNRESOLVED_ANCHOR))
@@ -2236,7 +2274,7 @@ mod tests {
             "nothing recorded yet"
         );
 
-        kv.put::<bool>(scope, &key, &true).unwrap();
+        kv.put::<u64>(scope, &key, &amount_credits).unwrap();
         let listed: Vec<Identifier> = kv
             .list(scope, Some(KV_PREFIX_UNRESOLVED_ANCHOR))
             .unwrap()
@@ -2247,6 +2285,11 @@ mod tests {
             })
             .collect();
         assert_eq!(listed, vec![anchor], "recorded anchor must be listed");
+        assert_eq!(
+            kv.get::<u64>(scope, &key).unwrap(),
+            Some(amount_credits),
+            "the recorded amount must round-trip alongside the document id"
+        );
 
         kv.delete(scope, &key).unwrap();
         assert!(
@@ -2265,10 +2308,10 @@ mod tests {
         let wallet_b: WalletSeedHash = [0x88u8; 32];
         let anchor = Identifier::new([0x99u8; 32]);
 
-        kv.put::<bool>(
+        kv.put::<u64>(
             DetScope::Wallet(&wallet_a),
             &unresolved_anchor_key(&anchor),
-            &true,
+            &500_000_000u64,
         )
         .unwrap();
 
@@ -2334,10 +2377,10 @@ mod tests {
         let wallet_b: WalletSeedHash = [0xccu8; 32];
         let anchor = Identifier::new([0xddu8; 32]);
 
-        kv.put::<bool>(
+        kv.put::<u64>(
             DetScope::Wallet(&wallet_a),
             &unresolved_anchor_key(&anchor),
-            &true,
+            &500_000_000u64,
         )
         .unwrap();
         kv.put::<u32>(
@@ -2346,10 +2389,10 @@ mod tests {
             &1,
         )
         .unwrap();
-        kv.put::<bool>(
+        kv.put::<u64>(
             DetScope::Wallet(&wallet_b),
             &unresolved_anchor_key(&anchor),
-            &true,
+            &500_000_000u64,
         )
         .unwrap();
 

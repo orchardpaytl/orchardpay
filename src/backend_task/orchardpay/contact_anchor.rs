@@ -25,7 +25,9 @@
 
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::orchardpay::encryption::{AnchorDataRecord, ContactAnchorPayload};
+use crate::backend_task::orchardpay::encryption::{
+    AnchorDataRecord, ContactAnchorPayload, MessageContent,
+};
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::keys::{
     CONTACT_ANCHOR_DOCUMENT_TYPE, fetch_bounds_verified_counterparty_key,
@@ -36,10 +38,12 @@ use crate::backend_task::{
 };
 use crate::context::AppContext;
 use crate::model::orchardpay::{
-    AnchorRole, OrchardPayContactState, PendingOperationStep, PendingOrchardPayOperation,
-    ScheduledAnchorReplace, validate_send_amount,
+    AnchorRole, MAX_INITIAL_MESSAGE_CHARS, OrchardPayContactState, PendingOperationStep,
+    PendingOrchardPayOperation, ScheduledAnchorReplace, validate_initial_message_text,
+    validate_send_amount,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::validation::strip_unsafe_display_characters;
 use crate::model::wallet::WalletSeedHash;
 use bip39::rand::RngCore;
 use bip39::rand::rngs::OsRng;
@@ -102,6 +106,32 @@ fn broadcast_document_created_at(result: &BackendTaskSuccessResult) -> Option<u6
     }
 }
 
+/// Decode an `initial_message`/`my_initial_message` byte payload (bincode-
+/// encoded `MessageContent::Message`) into sanitized, display-ready plain
+/// text. `None` for anything that isn't cleanly decodable as a `Message`
+/// variant (malformed bytes, wrong variant, or empty after sanitizing) —
+/// a peer's malformed data must never break the caller's own flow, whether
+/// that's the incoming-signal handler or seed-only recovery. Sanitizes with
+/// [`strip_unsafe_display_characters`] (not the newline-preserving variant),
+/// since the initial message is restricted to a single line regardless of
+/// whether the bytes originated from our own single-line UI or a
+/// non-conforming peer, then defensively clamps to `MAX_INITIAL_MESSAGE_CHARS`
+/// in case the source never enforced that ceiling either.
+fn decode_initial_message(encoded: Option<&Vec<u8>>) -> Option<String> {
+    let bytes = encoded?;
+    let (content, _) =
+        bincode::serde::decode_from_slice::<MessageContent, _>(bytes, bincode::config::standard())
+            .ok()?;
+    let MessageContent::Message { data } = content else {
+        return None;
+    };
+    let sanitized = strip_unsafe_display_characters(&data)
+        .chars()
+        .take(MAX_INITIAL_MESSAGE_CHARS)
+        .collect::<String>();
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
 /// Start a new contact relationship with `counterparty_identity_id`:
 /// publish my own `contactAnchor` (with `anchorData` already populated from
 /// what I know at this point — see [`AnchorDataRecord`]) and send a
@@ -109,6 +139,16 @@ fn broadcast_document_created_at(result: &BackendTaskSuccessResult) -> Option<u6
 /// `amount_credits` (Send Friend Request passes
 /// [`ANCHOR_SIGNAL_AMOUNT_CREDITS`]; Direct Send's "include a contact
 /// request" branch passes the user's own typed amount instead).
+///
+/// `initial_message` is an optional short (`MAX_INITIAL_MESSAGE_CHARS`),
+/// single-line introduction that rides along with the request itself —
+/// available from both Send Friend Request and Direct Send's bundled
+/// "include a contact request" branch. Sanitized with
+/// [`strip_unsafe_display_characters`] (not the newline-preserving variant
+/// used for regular thread messages) before validation, so this is also
+/// where any line break — whether typed past the UI's single-line widget or
+/// smuggled in via paste — gets stripped; `validate_initial_message_text`
+/// only ever sees single-line text.
 #[allow(clippy::too_many_arguments)]
 pub async fn initiate_contact(
     app_context: &Arc<AppContext>,
@@ -119,6 +159,7 @@ pub async fn initiate_contact(
     counterparty_name: String,
     seed_hash: WalletSeedHash,
     amount_credits: u64,
+    initial_message: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     if owner_id == counterparty_identity_id {
@@ -126,6 +167,28 @@ pub async fn initiate_contact(
     }
     validate_send_amount(amount_credits)
         .map_err(|source| TaskError::OrchardPayAmountTooLow { source })?;
+
+    let initial_message = initial_message
+        .map(|text| strip_unsafe_display_characters(text.trim()))
+        .filter(|text| !text.is_empty());
+    if let Some(text) = &initial_message {
+        validate_initial_message_text(text)
+            .map_err(|source| TaskError::OrchardPayInitialMessageTooLong { source })?;
+    }
+    let initial_message_encoded = initial_message
+        .as_ref()
+        .map(|text| {
+            bincode::serde::encode_to_vec(
+                &MessageContent::Message { data: text.clone() },
+                bincode::config::standard(),
+            )
+        })
+        .transpose()
+        .map_err(|_| {
+            OrchardPayError::Crypto(
+                crate::backend_task::orchardpay::encryption::OrchardPayCryptoError::Malformed,
+            )
+        })?;
 
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let contract_id = orchardpay_contract.id();
@@ -219,7 +282,7 @@ pub async fn initiate_contact(
                 reference_id: my_reference_id,
                 core_payment_xpub: None,
                 dedicated_shielded_address: None,
-                initial_message: None,
+                initial_message: initial_message_encoded.clone(),
             };
             let data_bytes = my_payload
                 .encrypt(&shared_secret)
@@ -243,7 +306,7 @@ pub async fn initiate_contact(
                 counterparty_name_snapshot: Some(counterparty_name.clone()),
                 my_reference_id,
                 their_reference_id: Some(owner_id.to_buffer()),
-                my_initial_message: None,
+                my_initial_message: initial_message_encoded,
                 my_core_payment_xpub: None,
                 my_dedicated_shielded_address: None,
                 counterparty_encryption_pubkey: Some(counterparty_encryption_pubkey),
@@ -383,6 +446,8 @@ pub async fn initiate_contact(
             created_at: broadcast_result
                 .as_ref()
                 .and_then(broadcast_document_created_at),
+            amount_credits,
+            initial_message,
         },
     )?;
     backend.orchardpay_clear_pending_operation(
@@ -413,14 +478,19 @@ pub async fn accept_contact(
     let contract_id = orchardpay_contract.id();
 
     let backend = app_context.wallet_backend()?;
-    let their_reference_id = match backend.orchardpay_get_contact_state(
-        &contract_id,
-        &owner_id,
-        &counterparty_identity_id,
-    )? {
+    let (their_reference_id, their_anchor_document_id, their_initial_message) = match backend
+        .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty_identity_id)?
+    {
         Some(OrchardPayContactState::PendingInboundUnaccepted {
-            their_reference_id, ..
-        }) => their_reference_id,
+            their_reference_id,
+            their_anchor_document_id,
+            initial_message,
+            ..
+        }) => (
+            their_reference_id,
+            their_anchor_document_id,
+            initial_message,
+        ),
         _ => return Err(OrchardPayError::AnchorNotFound.into()),
     };
 
@@ -657,6 +727,11 @@ pub async fn accept_contact(
             created_at: broadcast_result
                 .as_ref()
                 .and_then(broadcast_document_created_at),
+            initial_message: their_initial_message.clone(),
+            initial_message_from_me: false,
+            initial_message_document_id: their_initial_message
+                .is_some()
+                .then_some(their_anchor_document_id),
         },
     )?;
     backend.orchardpay_clear_pending_operation(
@@ -784,6 +859,7 @@ pub async fn handle_incoming_anchor_signal(
     qualified_identity: &QualifiedIdentity,
     anchor_document_id: Identifier,
     seed_hash: WalletSeedHash,
+    amount_credits: u64,
 ) -> Result<bool, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
@@ -892,6 +968,21 @@ pub async fn handle_incoming_anchor_signal(
                 .await
                 .ok()
                 .flatten();
+            // A malformed/oversized `initial_message` from a non-conforming
+            // peer must never break the handshake — decode failure or a
+            // decoded-but-non-`Message` variant is treated as "no message",
+            // same posture as the DPNS lookup above.
+            let their_initial_message =
+                decode_initial_message(their_payload.initial_message.as_ref());
+            if their_payload.initial_message.is_some() && their_initial_message.is_none() {
+                tracing::debug!(
+                    identity = %owner_id,
+                    anchor = %anchor_document_id,
+                    sender = %sender_id,
+                    reason = "initial_message_undecodable",
+                    "OrchardPay: incoming anchor signal's initial message ignored"
+                );
+            }
             backend.orchardpay_set_contact_state(
                 &contract_id,
                 &owner_id,
@@ -901,6 +992,8 @@ pub async fn handle_incoming_anchor_signal(
                     their_anchor_document_id: anchor_document_id.to_buffer(),
                     name: sender_name,
                     created_at: document.created_at(),
+                    amount_credits,
+                    initial_message: their_initial_message,
                 },
             )?;
             Ok(true)
@@ -910,6 +1003,8 @@ pub async fn handle_incoming_anchor_signal(
             my_anchor_document_id,
             name,
             created_at,
+            initial_message,
+            ..
         }) => {
             // This is the counterparty's return signal. Read (not write)
             // my own anchor's `anchorData` to recover the counterparty
@@ -987,6 +1082,11 @@ pub async fn handle_incoming_anchor_signal(
                         ),
                     name,
                     created_at,
+                    initial_message_document_id: initial_message
+                        .is_some()
+                        .then_some(my_anchor_document_id),
+                    initial_message_from_me: true,
+                    initial_message,
                 },
             )?;
             Ok(true)
@@ -1601,6 +1701,17 @@ pub async fn recover_own_anchors(
 
         let name = anchor_record.counterparty_name_snapshot.clone();
         let created_at = document.created_at();
+        // Seed-only recovery only ever iterates documents *I* own, so any
+        // decoded message here was necessarily attached by me.
+        let my_decoded_initial_message =
+            decode_initial_message(anchor_record.my_initial_message.as_ref());
+        // Recovery can't reconstruct the historical bundled anchor-signal
+        // amount — it was only ever spent as a shielded transfer, never
+        // written into `AnchorDataRecord`. Defaulting to the fixed signal
+        // amount silently loses the amount badge for a recovered pending
+        // request rather than showing a wrong number; accepted, documented
+        // gap.
+        let recovered_amount_credits = ANCHOR_SIGNAL_AMOUNT_CREDITS;
         let state = match anchor_record.their_reference_id {
             // Filler (this identity's own ID, seeded at creation — see
             // `initiate_contact`/finding 5 of the 2026-07-27 adversarial
@@ -1615,6 +1726,8 @@ pub async fn recover_own_anchors(
                     my_anchor_document_id: document.id().to_buffer(),
                     name,
                     created_at,
+                    amount_credits: recovered_amount_credits,
+                    initial_message: my_decoded_initial_message.clone(),
                 }
             }
             Some(their_reference_id) => {
@@ -1654,6 +1767,11 @@ pub async fn recover_own_anchors(
                     counterparty_decryption_pubkey,
                     name,
                     created_at,
+                    initial_message_document_id: my_decoded_initial_message
+                        .is_some()
+                        .then_some(document.id().to_buffer()),
+                    initial_message_from_me: true,
+                    initial_message: my_decoded_initial_message.clone(),
                 }
             }
             None => OrchardPayContactState::PendingOutbound {
@@ -1661,6 +1779,8 @@ pub async fn recover_own_anchors(
                 my_anchor_document_id: document.id().to_buffer(),
                 name,
                 created_at,
+                amount_credits: recovered_amount_credits,
+                initial_message: my_decoded_initial_message.clone(),
             },
         };
 

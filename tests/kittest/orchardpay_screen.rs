@@ -15,6 +15,7 @@ use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use orchardpay::backend_task::BackendTaskSuccessResult;
+use orchardpay::backend_task::orchardpay::contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS;
 use orchardpay::backend_task::orchardpay::messages::RecentContactActivity;
 use orchardpay::context::AppContext;
 use orchardpay::model::orchardpay::OrchardPayContactState;
@@ -80,9 +81,12 @@ fn seed_identity(app_context: &Arc<AppContext>, byte: u8, dpns_name: &str) -> Id
 
 /// Seeds one contact per handshake stage against `owner_id`, each with a
 /// distinct `created_at` so sort order is checkable. Field values other
-/// than `name`/`created_at` are never read by rendering, so dummy bytes
-/// are fine. Returns `(pending_outbound_id, pending_inbound_id,
-/// established_id)`.
+/// than `name`/`created_at` are never read by rendering, so dummy bytes are
+/// fine — except `amount_credits`/`initial_message`, which now render a
+/// badge/snippet when set: seeded at the routine default amount and `None`
+/// respectively, so this fixture's baseline stays neutral (no badge, no
+/// snippet) unless a test explicitly overrides them. Returns
+/// `(pending_outbound_id, pending_inbound_id, established_id)`.
 fn seed_three_stage_contacts(
     app_context: &Arc<AppContext>,
     contract_id: Identifier,
@@ -101,6 +105,8 @@ fn seed_three_stage_contacts(
                 my_anchor_document_id: [2u8; 32],
                 name: Some("Outbound Ollie".to_string()),
                 created_at: Some(1_000),
+                amount_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                initial_message: None,
             },
         )
         .expect("seed pending-outbound contact");
@@ -116,6 +122,8 @@ fn seed_three_stage_contacts(
                 their_anchor_document_id: [4u8; 32],
                 name: Some("Inbound Ingrid".to_string()),
                 created_at: Some(2_000),
+                amount_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                initial_message: None,
             },
         )
         .expect("seed pending-inbound contact");
@@ -134,6 +142,9 @@ fn seed_three_stage_contacts(
                 counterparty_decryption_pubkey: vec![0u8; 32],
                 name: Some("Established Eve".to_string()),
                 created_at: Some(3_000),
+                initial_message: None,
+                initial_message_from_me: false,
+                initial_message_document_id: None,
             },
         )
         .expect("seed established contact");
@@ -294,6 +305,9 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
                     counterparty_decryption_pubkey: vec![0u8; 32],
                     name: Some("Older Message Established".to_string()),
                     created_at: Some(nine_hours_ago),
+                    initial_message: None,
+                    initial_message_from_me: false,
+                    initial_message_document_id: None,
                 },
             )
             .expect("seed established contact");
@@ -309,6 +323,8 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
                     their_anchor_document_id: [5u8; 32],
                     name: Some("Newer Pending Request".to_string()),
                     created_at: Some(seven_hours_ago),
+                    amount_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                    initial_message: None,
                 },
             )
             .expect("seed pending contact");
@@ -370,6 +386,163 @@ fn most_recent_header_text_no_longer_says_established() {
                     "Established contacts, ordered by their conversation's most recent activity."
                 )
                 .is_none()
+        );
+    });
+}
+
+/// A pending request's attached message renders as a truncated, quoted
+/// snippet directly on the row, in both the Contacts and Most Recent tabs —
+/// the "visible in both tabs" requirement is satisfied for free since both
+/// share `render_contact_card`.
+#[test]
+fn pending_outbound_row_shows_message_snippet_when_present() {
+    with_isolated_data_dir(|| {
+        let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
+        let owner_id = seed_identity(&ctx, 1, "alice.dash");
+        let backend = ctx.wallet_backend().expect("wallet backend wired");
+
+        let counterparty_id = Identifier::from([111u8; 32]);
+        backend
+            .orchardpay_set_contact_state(
+                &contract_id,
+                &owner_id,
+                &counterparty_id,
+                &OrchardPayContactState::PendingOutbound {
+                    my_reference_id: [1u8; 32],
+                    my_anchor_document_id: [2u8; 32],
+                    name: Some("Message Mia".to_string()),
+                    created_at: Some(1_000),
+                    amount_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
+                    initial_message: Some("hey its me Paul".to_string()),
+                },
+            )
+            .expect("seed contact with a message");
+        backend
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
+            .expect("seed shielded-address flag");
+
+        let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
+        let harness = mount(screen);
+
+        assert!(
+            harness.query_by_label("\"hey its me Paul\"").is_some(),
+            "Contacts tab must show the attached message as a quoted snippet"
+        );
+    });
+}
+
+/// The routine default signal amount (`ANCHOR_SIGNAL_AMOUNT_CREDITS`) never
+/// shows an amount badge — it would be repetitive noise on every plain "Add
+/// Contact" row.
+#[test]
+fn pending_row_hides_amount_badge_at_default_signal_amount() {
+    with_isolated_data_dir(|| {
+        let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
+        let owner_id = seed_identity(&ctx, 1, "alice.dash");
+        seed_three_stage_contacts(&ctx, contract_id, owner_id);
+        ctx.wallet_backend()
+            .expect("wallet backend wired")
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
+            .expect("seed shielded-address flag");
+
+        let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
+        let harness = mount(screen);
+
+        assert!(
+            harness.query_by_label_contains("Sent with").is_none(),
+            "a request at the routine default signal amount must never show an amount badge"
+        );
+    });
+}
+
+/// An amount meaningfully above the default signal amount (Direct Send's
+/// bundled-request path) shows an amount badge on the pending row.
+#[test]
+fn pending_row_shows_amount_badge_above_default_signal_amount() {
+    with_isolated_data_dir(|| {
+        let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
+        let owner_id = seed_identity(&ctx, 1, "alice.dash");
+        let backend = ctx.wallet_backend().expect("wallet backend wired");
+
+        let counterparty_id = Identifier::from([112u8; 32]);
+        backend
+            .orchardpay_set_contact_state(
+                &contract_id,
+                &owner_id,
+                &counterparty_id,
+                &OrchardPayContactState::PendingOutbound {
+                    my_reference_id: [1u8; 32],
+                    my_anchor_document_id: [2u8; 32],
+                    name: Some("Bundled Bob".to_string()),
+                    created_at: Some(1_000),
+                    amount_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS * 10,
+                    initial_message: None,
+                },
+            )
+            .expect("seed contact with a bundled amount");
+        backend
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
+            .expect("seed shielded-address flag");
+
+        let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
+        let harness = mount(screen);
+
+        assert!(
+            harness.query_by_label_contains("Sent with").is_some(),
+            "a request bundled with an above-default amount must show an amount badge"
+        );
+    });
+}
+
+/// Once `Established`, a row shows neither the message snippet nor the
+/// amount badge — both belong to the pending phase only; the message lives
+/// on in the conversation thread instead (see `messages::load_thread`'s
+/// synthetic first bubble).
+#[test]
+fn established_row_never_shows_amount_badge_or_snippet() {
+    with_isolated_data_dir(|| {
+        let (_rt, ctx) = fresh_app_context();
+        let contract_id = resolve_test_contract_id(&ctx);
+        let owner_id = seed_identity(&ctx, 1, "alice.dash");
+        let backend = ctx.wallet_backend().expect("wallet backend wired");
+
+        let counterparty_id = Identifier::from([113u8; 32]);
+        backend
+            .orchardpay_set_contact_state(
+                &contract_id,
+                &owner_id,
+                &counterparty_id,
+                &OrchardPayContactState::Established {
+                    my_reference_id: [1u8; 32],
+                    my_anchor_document_id: [2u8; 32],
+                    their_reference_id: [3u8; 32],
+                    counterparty_encryption_pubkey: vec![0u8; 32],
+                    counterparty_decryption_pubkey: vec![0u8; 32],
+                    name: Some("Connected Carl".to_string()),
+                    created_at: Some(1_000),
+                    initial_message: Some("hey its me Paul".to_string()),
+                    initial_message_from_me: true,
+                    initial_message_document_id: Some([4u8; 32]),
+                },
+            )
+            .expect("seed established contact carrying a message");
+        backend
+            .orchardpay_set_has_shielded_address(&contract_id, &owner_id)
+            .expect("seed shielded-address flag");
+
+        let screen = OrchardPayScreen::new(&ctx, OrchardPaySubscreen::Contacts);
+        let harness = mount(screen);
+
+        assert!(
+            harness.query_by_label("\"hey its me Paul\"").is_none(),
+            "an Established row must never show the message snippet"
+        );
+        assert!(
+            harness.query_by_label_contains("Sent with").is_none(),
+            "an Established row must never show an amount badge"
         );
     });
 }

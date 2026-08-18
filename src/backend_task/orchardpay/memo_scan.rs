@@ -105,6 +105,7 @@ async fn try_anchor_against_identities(
     qualified_identities: &[QualifiedIdentity],
     anchor_document_id: Identifier,
     seed_hash: WalletSeedHash,
+    amount_credits: u64,
 ) -> (bool, bool) {
     let mut applied = false;
     let mut had_error = false;
@@ -115,6 +116,7 @@ async fn try_anchor_against_identities(
             identity,
             anchor_document_id,
             seed_hash,
+            amount_credits,
         )
         .await
         {
@@ -200,7 +202,9 @@ pub async fn scan_for_incoming_anchors(
         None
     };
 
-    for anchor_document_id in backend.orchardpay_list_unresolved_anchor_signals(&seed_hash)? {
+    for (anchor_document_id, amount_credits) in
+        backend.orchardpay_list_unresolved_anchor_signals(&seed_hash)?
+    {
         anchor_signals_seen += 1;
         let (applied, _had_error) = try_anchor_against_identities(
             app_context,
@@ -208,6 +212,7 @@ pub async fn scan_for_incoming_anchors(
             &qualified_identities,
             anchor_document_id,
             seed_hash,
+            amount_credits,
         )
         .await;
         if applied {
@@ -229,7 +234,10 @@ pub async fn scan_for_incoming_anchors(
     let mut retry_from: Option<u64> = None;
     for (note_index, signal) in found {
         match signal {
-            IncomingMemoSignal::Anchor(anchor_document_id) => {
+            IncomingMemoSignal::Anchor {
+                anchor_document_id,
+                amount_credits,
+            } => {
                 anchor_signals_seen += 1;
                 let (applied, had_error) = try_anchor_against_identities(
                     app_context,
@@ -237,6 +245,7 @@ pub async fn scan_for_incoming_anchors(
                     &qualified_identities,
                     anchor_document_id,
                     seed_hash,
+                    amount_credits,
                 )
                 .await;
                 if applied {
@@ -263,6 +272,7 @@ pub async fn scan_for_incoming_anchors(
                     backend.orchardpay_record_unresolved_anchor_signal(
                         &seed_hash,
                         &anchor_document_id,
+                        amount_credits,
                     )?;
                 }
             }

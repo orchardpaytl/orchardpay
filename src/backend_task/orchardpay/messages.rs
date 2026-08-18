@@ -143,6 +143,13 @@ pub struct ThreadMessage {
     /// `Some` also means "paid" — the UI hides the "Pay" button and shows
     /// a PAID badge once this is set, on both sides of the relationship.
     pub verified_amount: Option<u64>,
+    /// `true` only for the one synthesized "initial message" entry
+    /// [`load_thread`] injects from `OrchardPayContactState::Established`'s
+    /// carried-forward `initial_message` — every real, document-backed
+    /// message is `false`. `document_id` on a synthetic entry is a
+    /// `contactAnchor`, not an `encryptedMessage`, so this must gate any UI
+    /// action (edit/delete) that would hand it to a document-mutation task.
+    pub synthetic: bool,
 }
 
 /// Why a [`ReceiptAlert`] was raised — mirrors the three ways a
@@ -246,14 +253,21 @@ fn synthetic_ecdh_public_key(bytes: &[u8], purpose: Purpose) -> IdentityPublicKe
 }
 
 /// The subset of [`OrchardPayContactState::Established`] messaging needs:
-/// both ReferenceIDs (to tag outbound documents / query inbound ones) and
-/// the counterparty's cached ECDH pubkeys (to derive both directional
-/// secrets with no network call).
+/// both ReferenceIDs (to tag outbound documents / query inbound ones), the
+/// counterparty's cached ECDH pubkeys (to derive both directional secrets
+/// with no network call), and the initial message (if any) carried forward
+/// from whichever pending phase preceded `Established` — [`load_thread`]
+/// synthesizes this into the conversation's first bubble without a second
+/// `orchardpay_get_contact_state` read.
 pub(crate) struct EstablishedRelationship {
     pub(crate) my_reference_id: [u8; 32],
     pub(crate) their_reference_id: [u8; 32],
     pub(crate) counterparty_encryption_pubkey: Vec<u8>,
     pub(crate) counterparty_decryption_pubkey: Vec<u8>,
+    pub(crate) created_at: Option<u64>,
+    pub(crate) initial_message: Option<String>,
+    pub(crate) initial_message_from_me: bool,
+    pub(crate) initial_message_document_id: Option<[u8; 32]>,
 }
 
 /// Resolve `counterparty_identity_id`'s `Established` local contact state
@@ -277,12 +291,20 @@ pub(crate) fn established_state(
             their_reference_id,
             counterparty_encryption_pubkey,
             counterparty_decryption_pubkey,
+            created_at,
+            initial_message,
+            initial_message_from_me,
+            initial_message_document_id,
             ..
         }) => Ok(EstablishedRelationship {
             my_reference_id,
             their_reference_id,
             counterparty_encryption_pubkey,
             counterparty_decryption_pubkey,
+            created_at,
+            initial_message,
+            initial_message_from_me,
+            initial_message_document_id,
         }),
         _ => Err(OrchardPayError::ContactNotEstablished.into()),
     }
@@ -1636,6 +1658,7 @@ fn decode_thread_message(
         updated_at: document.updated_at(),
         content,
         verified_amount,
+        synthetic: false,
     })
 }
 
@@ -1659,6 +1682,10 @@ pub async fn load_thread(
         their_reference_id,
         counterparty_encryption_pubkey: enc_pk,
         counterparty_decryption_pubkey: dec_pk,
+        created_at: established_created_at,
+        initial_message,
+        initial_message_from_me,
+        initial_message_document_id,
     } = established_state(
         &backend,
         orchardpay_contract.id(),
@@ -1723,6 +1750,29 @@ pub async fn load_thread(
         &incoming_payments,
         &mut all_decoded,
     );
+
+    // The initial message attached to whichever side's request started this
+    // relationship rides along on the `contactAnchor` document itself, not
+    // as a separate `encryptedMessage` — synthesize it into the timeline
+    // here so it renders as a normal bubble instead of vanishing once the
+    // handshake completes. Its `created_at` is the anchor's own
+    // `$createdAt`, which causally precedes every real message in this
+    // relationship (messaging only becomes possible once `Established`), so
+    // it naturally sorts first without any special-casing below.
+    if let Some(text) = initial_message {
+        all_decoded.push(ThreadMessage {
+            document_id: Identifier::from(
+                initial_message_document_id
+                    .expect("Some initial_message implies Some initial_message_document_id"),
+            ),
+            from_me: initial_message_from_me,
+            created_at: established_created_at,
+            updated_at: None,
+            content: MessageContent::Message { data: text },
+            verified_amount: None,
+            synthetic: true,
+        });
+    }
 
     let history_cursor = HistoryCursor {
         mine_before: mine_page
@@ -1897,11 +1947,16 @@ pub async fn load_more_history(
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
     let backend = app_context.wallet_backend()?;
+    // Deliberately does not re-synthesize the initial-message entry:
+    // `all_decoded` is round-tripped from the initial `load_thread` call,
+    // which already contains it — synthesizing again here would duplicate
+    // it in the timeline.
     let EstablishedRelationship {
         my_reference_id,
         their_reference_id,
         counterparty_encryption_pubkey: enc_pk,
         counterparty_decryption_pubkey: dec_pk,
+        ..
     } = established_state(
         &backend,
         orchardpay_contract.id(),

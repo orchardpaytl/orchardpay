@@ -943,6 +943,7 @@ As a user, I want to connect privately with another OrchardPay user so that we c
 - The recipient detects the incoming signal, decrypts the anchor, and can accept (publishing their own anchor + return signal) or leave it pending.
 - Once both anchors are published and cross-referenced, the connection is "Established" and messaging/payments unlock.
 - Confirming "Add Contact" or "Accept" disables and relabels that row's button ("Sending…"/"Accepting…") until the result lands, so the same request can't be re-sent by clicking again before it resolves.
+- Sending a request (Send Friend Request or Direct Send's bundled request — see ORP-015) can include a short, optional single-line introduction (up to 250 characters) — entered in a single-line field that can't itself contain a line break, sent along with the anchor document rather than as a separate message. Once the request is accepted and the connection becomes Established, that introduction becomes the very first message in the conversation thread, attributed to whichever side actually sent it — it isn't lost once the pending phase ends.
 
 ### ORP-004: View my contacts and connection status [Implemented]
 **Persona:** Alex, Priya
@@ -956,6 +957,8 @@ As a user, I want to see my OrchardPay contacts and whether each connection is p
 - "Check for New Requests" manually re-runs the incoming-request scan for the
   current identity, for when an already-synced request hasn't appeared yet because
   no shielded sync pass has completed this session.
+- A still-pending request's row (either tab) shows a truncated, quoted preview of its attached introduction, if one was sent (see ORP-003) — visible before deciding whether to accept, not hidden behind an extra click. An Established row never shows this preview; by then the message has already moved into the conversation thread itself.
+- A still-pending request's row also shows the amount that was sent with it, but only when that amount is meaningfully above the routine fixed signal amount (i.e. a Direct Send-bundled request, not a plain "Add Contact" click) — a routine request always spends the same small fixed amount, so repeating that number on every row would just be noise.
 
 ### ORP-005: Recover contacts after reinstalling [Implemented]
 **Persona:** Alex, Priya
@@ -1061,6 +1064,7 @@ As a user, I want to send DASH straight to someone I've found by DPNS name, with
 - Confirming shows the amount and recipient and offers an "Include a contact request?" checkbox, unchecked by default.
 - Left unchecked, the DASH moves as a bare shielded transfer with no accompanying document — the recipient sees it as an ordinary shielded receive, with no OrchardPay document created and no relationship formed.
 - Checked, a normal contact request is sent exactly like Send Friend Request's, except the anchor-signaling transfer carries the amount just entered instead of the usual fixed 0.001 DASH.
+- Direct Send has its own optional single-line introduction field, independent of Send Friend Request's — it's only actually sent if the "Include a contact request?" checkbox ends up checked; a bare Direct Send with the checkbox left unchecked discards whatever was typed there, since a no-strings-attached transfer has no document/message channel to carry it on.
 - The 0.001 DASH floor applies everywhere in OrchardPay, not just Direct Send — enforced by the backend regardless of which screen or caller initiated the send, and used by the incoming-memo scan to skip a griefing anchor-signal transfer's Platform lookup entirely before it happens.
 - The Direct Send button disables and relabels ("Sending Directly…") the instant it's confirmed, so it can't be clicked again while the send is still in flight.
 

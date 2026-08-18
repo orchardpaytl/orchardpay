@@ -80,6 +80,11 @@ pub enum OrchardPayTask {
         /// 0.001 DASH default); Direct Send's "include a contact request"
         /// branch passes the user's own typed amount instead.
         amount_credits: u64,
+        /// Optional short introduction attached to the request — available
+        /// from both Send Friend Request and Direct Send's bundled "include
+        /// a contact request" branch. `None` for a plain request with no
+        /// message. See `contact_anchor::initiate_contact`.
+        initial_message: Option<String>,
     },
     /// Complete a relationship already recorded as `PendingInboundUnaccepted`.
     /// See `contact_anchor::accept_contact`.
@@ -297,6 +302,7 @@ impl AppContext {
                 counterparty_name,
                 seed_hash,
                 amount_credits,
+                initial_message,
             } => {
                 contact_anchor::initiate_contact(
                     self,
@@ -307,6 +313,7 @@ impl AppContext {
                     counterparty_name,
                     seed_hash,
                     amount_credits,
+                    initial_message,
                 )
                 .await
             }

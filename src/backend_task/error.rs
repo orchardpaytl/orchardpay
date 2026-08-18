@@ -1350,6 +1350,15 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
+    /// A contact request's optional attached message exceeded its
+    /// character limit — tighter than a regular message's, since this is a
+    /// short introduction, not a full conversation.
+    #[error("The message is too long. Use 250 characters or fewer and try again.")]
+    OrchardPayInitialMessageTooLong {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
     /// A user-entered OrchardPay send amount (`Payment`, `PaymentRequest`,
     /// Direct Send, or a contact-request anchor signal) fell below the
     /// shared minimum.

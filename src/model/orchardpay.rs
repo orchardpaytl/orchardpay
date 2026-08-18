@@ -25,6 +25,17 @@ pub enum OrchardPayContactState {
         /// Platform-assigned `$createdAt` (ms since epoch) of my own anchor
         /// document — i.e. when I sent this request.
         created_at: Option<u64>,
+        /// Credits sent with this request's own anchor-signaling transfer —
+        /// either the fixed `contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS`
+        /// default, or Direct Send's bundled user-chosen amount. Always a
+        /// value I chose and sent myself, so no verification is needed —
+        /// unlike a `Payment` document's claimed amount.
+        amount_credits: u64,
+        /// My own attached message, already decoded and sanitized plain
+        /// text (never raw/encrypted bytes — those exist only inside the
+        /// Platform document / `AnchorDataRecord`). `None` if I didn't
+        /// attach one.
+        initial_message: Option<String>,
     },
     /// I detected and decrypted an incoming `contactAnchor` (via a
     /// memo-tagged shielded transfer) but haven't decided to accept it yet
@@ -39,6 +50,15 @@ pub enum OrchardPayContactState {
         /// Platform-assigned `$createdAt` (ms since epoch) of their anchor
         /// document — i.e. when their request was sent.
         created_at: Option<u64>,
+        /// The real value observed on *my own* decrypted note for the
+        /// incoming anchor-signaling transfer — never a value merely
+        /// claimed by the counterparty (there is no amount field in the
+        /// anchor payload anyway; this always comes from the wallet's own
+        /// note decryption).
+        amount_credits: u64,
+        /// Their attached message, already decoded and sanitized plain
+        /// text. `None` if they didn't attach one.
+        initial_message: Option<String>,
     },
     /// Both sides complete: my own anchor (published, `anchorData` filled
     /// in with their ReferenceID) and theirs are both known. Neither
@@ -66,6 +86,21 @@ pub enum OrchardPayContactState {
         /// `PendingInboundUnaccepted` phase, not overwritten when the
         /// relationship completes.
         created_at: Option<u64>,
+        /// The initial message attached to whichever side's request
+        /// started this relationship, carried forward from the pending
+        /// phase that preceded `Established` — never re-fetched/re-decrypted
+        /// on every thread-open. `None` if neither side attached one.
+        initial_message: Option<String>,
+        /// `true` if *I* attached `initial_message`, `false` if the
+        /// counterparty did. Meaningless (ignore) when `initial_message` is
+        /// `None`.
+        initial_message_from_me: bool,
+        /// The anchor document ID that carried `initial_message` — mine if
+        /// `initial_message_from_me`, theirs otherwise. Used as the stable,
+        /// collision-free synthetic `ThreadMessage` id for rendering this
+        /// message as the conversation's first bubble. `None` iff
+        /// `initial_message` is `None`.
+        initial_message_document_id: Option<[u8; 32]>,
     },
 }
 
@@ -464,6 +499,55 @@ pub fn validate_message_text(text: &str) -> Result<(), crate::model::validation:
     crate::model::validation::validate_char_count(text, 1, MAX_MESSAGE_CHARS)
 }
 
+/// Character ceiling for a contact request's optional attached message —
+/// tighter than [`MAX_MESSAGE_CHARS`] (which governs regular, free-form
+/// thread messages) since this is meant to be a short "hey it's me"
+/// introduction, not a full message. Enforced purely at the
+/// validation/UI level — the underlying `contactAnchor.data`/`anchorData`
+/// byte fields have no schema-level ceiling of their own beyond Platform's
+/// shared 5120-byte `maxItems`.
+pub const MAX_INITIAL_MESSAGE_CHARS: usize = 250;
+
+/// Character ceiling for a contact-request row's message *preview* in the
+/// Contacts/Most Recent tabs — distinct from and shorter than
+/// [`MAX_INITIAL_MESSAGE_CHARS`], which governs what can actually be typed.
+/// A message can be entered up to 250 characters; the row just previews the
+/// first 60.
+pub const INITIAL_MESSAGE_ROW_SNIPPET_CHARS: usize = 60;
+
+/// Validates a contact request's optional attached message before it's
+/// sent. Like [`validate_message_text`], a non-empty message can't be empty
+/// (`min: 1`) — callers pass `None`/skip this call entirely for "no
+/// message" rather than validating an empty string. Does not itself check
+/// for line breaks: the initial message is restricted to a single line by
+/// sanitizing with [`crate::model::validation::strip_unsafe_display_characters`]
+/// (which strips `\n`/`\r` like any other control character) before this
+/// ever runs, so a `\n` can never reach this check.
+pub fn validate_initial_message_text(
+    text: &str,
+) -> Result<(), crate::model::validation::TextLengthError> {
+    crate::model::validation::validate_char_count(text, 1, MAX_INITIAL_MESSAGE_CHARS)
+}
+
+/// Truncate `text` to `max_chars` *characters* (not bytes) for row display,
+/// sanitizing first via
+/// [`crate::model::validation::strip_unsafe_display_characters`] — this also
+/// collapses any embedded line break, which is correct both because a row
+/// snippet is always single-line and because the initial message itself is
+/// never supposed to contain one (see [`validate_initial_message_text`]).
+/// Appends `…` when truncation actually happens, so the row visibly signals
+/// there's more text than shown.
+pub fn truncate_message_snippet(text: &str, max_chars: usize) -> String {
+    let sanitized = crate::model::validation::strip_unsafe_display_characters(text);
+    let mut chars = sanitized.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 /// Validates a `Payment`/`PaymentRequest`'s optional memo before it's sent.
 /// A memo may be empty (`min: 0`) — mirrors `model/dashpay.rs`'s
 /// `validate_payment_memo`, kept as OrchardPay's own copy since DashPay is
@@ -526,6 +610,59 @@ mod message_validation_tests {
     #[test]
     fn payment_memo_rejects_one_over_the_limit() {
         assert!(validate_payment_memo(&"m".repeat(MAX_PAYMENT_MEMO_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn initial_message_text_rejects_empty() {
+        assert!(validate_initial_message_text("").is_err());
+    }
+
+    #[test]
+    fn initial_message_text_accepts_at_the_limit() {
+        assert!(validate_initial_message_text(&"m".repeat(MAX_INITIAL_MESSAGE_CHARS)).is_ok());
+    }
+
+    #[test]
+    fn initial_message_text_rejects_one_over_the_limit() {
+        assert!(validate_initial_message_text(&"m".repeat(MAX_INITIAL_MESSAGE_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn truncate_message_snippet_passes_through_short_text_unchanged() {
+        assert_eq!(
+            truncate_message_snippet("hey its me Paul", 60),
+            "hey its me Paul"
+        );
+    }
+
+    #[test]
+    fn truncate_message_snippet_passes_through_exact_limit_unchanged() {
+        let text = "m".repeat(60);
+        assert_eq!(truncate_message_snippet(&text, 60), text);
+    }
+
+    #[test]
+    fn truncate_message_snippet_truncates_and_appends_ellipsis() {
+        let text = "m".repeat(65);
+        let result = truncate_message_snippet(&text, 60);
+        assert_eq!(result.chars().count(), 61); // 60 chars + ellipsis
+        assert!(result.ends_with('…'));
+        assert_eq!(&result[..result.len() - '…'.len_utf8()], &"m".repeat(60));
+    }
+
+    #[test]
+    fn truncate_message_snippet_counts_characters_not_bytes() {
+        // "é" is 2 bytes in UTF-8 — a byte-based truncation would cut mid-character.
+        let text = "é".repeat(65);
+        let result = truncate_message_snippet(&text, 60);
+        assert_eq!(result.chars().count(), 61);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_message_snippet_strips_embedded_newline() {
+        let result = truncate_message_snippet("hey\nits me", 60);
+        assert_eq!(result, "heyits me");
     }
 }
 

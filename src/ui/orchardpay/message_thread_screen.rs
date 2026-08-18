@@ -1020,7 +1020,12 @@ impl MessageThreadScreen {
                             let text_response = ui.label(&sanitized_data);
                             show_edited_tag(ui);
                             show_busy_label(ui);
-                            if message.from_me {
+                            // Never reachable for the synthesized initial-
+                            // message entry: its `document_id` is a
+                            // `contactAnchor`, not an `encryptedMessage`, and
+                            // must never be handed to a document-mutation
+                            // task (delete/edit).
+                            if message.from_me && !message.synthetic {
                                 text_response.context_menu(|ui| {
                                     ui.set_min_width(140.0);
                                     if ui
@@ -2291,6 +2296,24 @@ mod tests {
         harness
     }
 
+    /// Full-screen render (`ScreenLike::ui`), not just the composer —
+    /// needed to see the conversation column's message bubbles. Any
+    /// `AppAction` returned (e.g. a `LoadThread` dispatch on first render)
+    /// is discarded, same as every other full-render kittest mount in this
+    /// codebase.
+    fn mount_full(screen: MessageThreadScreen) -> Harness<'static, MessageThreadScreen> {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 700.0))
+            .build_ui_state(
+                move |ui, screen: &mut MessageThreadScreen| {
+                    let _ = screen.ui(ui);
+                },
+                screen,
+            );
+        harness.run();
+        harness
+    }
+
     #[test]
     fn send_message_click_opens_confirmation_without_dispatching() {
         let (mut screen, _temp_dir) = message_thread_screen();
@@ -2352,6 +2375,89 @@ mod tests {
         assert!(
             matches!(*observed_action.borrow(), AppAction::None),
             "canceling must never dispatch a backend task"
+        );
+    }
+
+    /// Right-click (secondary button, press + release) at `label`'s center —
+    /// mirrors `click_in_one_frame`'s primary-click recipe, since egui's
+    /// `context_menu` opens on a raw secondary pointer event, not an
+    /// accesskit action.
+    fn right_click_in_one_frame(harness: &mut Harness<'_, MessageThreadScreen>, label: &str) {
+        let pos = harness.get_by_label(label).rect().center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        harness.step();
+    }
+
+    /// The regression test for the §8 gotcha: a synthesized initial-message
+    /// bubble (`ThreadMessage::synthetic == true`) must render as a normal
+    /// "From Me" message but must never expose the Delete/Edit Message
+    /// context menu, since its `document_id` is a `contactAnchor`, not an
+    /// `encryptedMessage` — handing it to `DeleteMessage`/`EditMessage`
+    /// would attempt to mutate the wrong document type.
+    #[test]
+    fn synthetic_initial_message_renders_with_no_delete_or_edit_menu() {
+        let (mut screen, _temp_dir) = message_thread_screen();
+
+        screen.display_task_result(BackendTaskSuccessResult::OrchardPayThreadLoaded {
+            counterparty_identity_id: screen.counterparty_identity_id,
+            all_decoded: vec![ThreadMessage {
+                document_id: Identifier::random(),
+                from_me: true,
+                created_at: Some(1_700_000_000_000),
+                updated_at: None,
+                content: MessageContent::Message {
+                    data: "hey its me Paul".to_string(),
+                },
+                verified_amount: None,
+                synthetic: true,
+            }],
+            messages: vec![ThreadMessage {
+                document_id: Identifier::random(),
+                from_me: true,
+                created_at: Some(1_700_000_000_000),
+                updated_at: None,
+                content: MessageContent::Message {
+                    data: "hey its me Paul".to_string(),
+                },
+                verified_amount: None,
+                synthetic: true,
+            }],
+            silent_payments: Vec::new(),
+            receipt_alerts: Vec::new(),
+            history_cursor: HistoryCursor::default(),
+            may_be_incomplete: false,
+        });
+
+        let mut harness = mount_full(screen);
+
+        assert!(
+            harness.query_by_label_contains("hey its me Paul").is_some(),
+            "the synthesized initial message must render as a normal bubble"
+        );
+
+        right_click_in_one_frame(&mut harness, "hey its me Paul");
+
+        assert!(
+            harness.query_by_label("Delete").is_none(),
+            "a synthetic bubble must never expose a Delete action"
+        );
+        assert!(
+            harness.query_by_label("Edit Message").is_none(),
+            "a synthetic bubble must never expose an Edit Message action"
         );
     }
 }
