@@ -1339,15 +1339,17 @@ impl MessageThreadScreen {
     }
 
     /// The up-to-6 most recent verified money movements between the two
-    /// parties, newest first, for the "Recent Payments" side table. Mirrors
-    /// `render_message_bubble`'s own `verified_amount`-gated match (only a
-    /// `Payment`/`PaymentRequest` with a wallet-confirmed amount counts —
-    /// never the sender's bare claim) but flattens it into rows instead of
-    /// a bubble tint. A paid `PaymentRequest` counts too, with direction
-    /// inverted from its own `from_me`: money moves opposite to who asked
-    /// for it (`verified_amount.is_some()` on a `PaymentRequest` means
-    /// "paid", per `ThreadMessage::verified_amount`'s doc comment).
-    fn recent_verified_payments(&self) -> Vec<PaymentRow> {
+    /// parties, newest first, for the "Recent Payments" side table, plus
+    /// whether the pre-truncation count reached [`RECENT_PAYMENTS_MAX_ROWS`]
+    /// (i.e. whether the table's "only the N most recent" hint should show).
+    /// Mirrors `render_message_bubble`'s own `verified_amount`-gated match
+    /// (only a `Payment`/`PaymentRequest` with a wallet-confirmed amount
+    /// counts — never the sender's bare claim) but flattens it into rows
+    /// instead of a bubble tint. A paid `PaymentRequest` counts too, with
+    /// direction inverted from its own `from_me`: money moves opposite to
+    /// who asked for it (`verified_amount.is_some()` on a `PaymentRequest`
+    /// means "paid", per `ThreadMessage::verified_amount`'s doc comment).
+    fn recent_verified_payments(&self) -> (Vec<PaymentRow>, bool) {
         let mut rows: Vec<PaymentRow> = self
             .messages
             .iter()
@@ -1377,8 +1379,9 @@ impl MessageThreadScreen {
             }))
             .collect();
         rows.sort_by_key(|row| std::cmp::Reverse(row.created_at.unwrap_or(0)));
+        let has_six_or_more = rows.len() >= RECENT_PAYMENTS_MAX_ROWS;
         rows.truncate(RECENT_PAYMENTS_MAX_ROWS);
-        rows
+        (rows, has_six_or_more)
     }
 
     /// Renders the "Recent Payments" side table — up to
@@ -1393,7 +1396,7 @@ impl MessageThreadScreen {
         ui.heading(RichText::new("Recent Payments"));
         ui.add_space(8.0);
 
-        let rows = self.recent_verified_payments();
+        let (rows, has_six_or_more) = self.recent_verified_payments();
         if rows.is_empty() {
             ui.label(
                 RichText::new("No payments yet.").color(DashColors::text_secondary(dark_mode)),
@@ -1407,6 +1410,12 @@ impl MessageThreadScreen {
         ui.label(
             RichText::new("(Most recent on top)").color(DashColors::text_secondary(dark_mode)),
         );
+        if has_six_or_more {
+            ui.label(
+                RichText::new("Only the 6 most recent payments are displayed")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+        }
         ui.add_space(4.0);
 
         for row in &rows {

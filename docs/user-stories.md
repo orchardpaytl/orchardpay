@@ -1023,6 +1023,7 @@ As a user, I want to see my wallet's shielded notes grouped into what's still sp
 - The Shielded TXs tab (formerly "Payments") lists notes in two sections: Unspent Notes (still contributing to spendable balance, with a note count and running total) and Spent Notes (notes already consumed, plus every outgoing send).
 - Within Spent Notes, a spent note is shown side by side with the outgoing send of the same amount that most likely consumed it, when one exists; unmatched notes and sends are shown on their own.
 - The pairing is a best-effort amount match, not true note-level linkage — when several notes share an amount (e.g. repeated contact-request signals), a pairing may not be the literal note that was spent.
+- A filter dropdown next to Refresh switches between "All Shielded" (default, every note/send on the wallet) and "Only OrchardPay" (narrowed to rows tagged with one of OrchardPay's own memo tags — contact-request anchor, payment, or silent payment) — useful for separating this wallet's OrchardPay activity from unrelated shielded transactions.
 
 ### ORP-012: See a payment request marked PAID once fulfilled [Implemented]
 **Persona:** Alex, Priya
@@ -1086,6 +1087,7 @@ As a user, I want a quick-glance summary of the real money that's moved between 
 - Only wallet-verified transfers count — a `Payment` whose amount hasn't been confirmed against this wallet's own decrypted shielded note, or an unfulfilled `PaymentRequest`, never appears, matching the same trust model the conversation bubbles themselves use (ORP-008, ORP-012).
 - A fulfilled `PaymentRequest` counts as a payment too, with direction inverted from who made the request — money moved opposite to who asked for it.
 - Rows are tinted the same green (received) / blue (sent) used for the conversation's own payment bubbles, so the panel reads as an extension of the thread rather than a separate concept.
+- Once the pair's verified-payment count reaches 6, a small hint ("Only the 6 most recent payments are displayed") makes clear the panel isn't necessarily the whole history.
 
 ### ORP-018: Remove a contact [Implemented]
 **Persona:** Alex, Priya

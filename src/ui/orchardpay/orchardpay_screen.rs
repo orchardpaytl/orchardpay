@@ -170,6 +170,17 @@ enum LocalReadiness {
     ContractConfigured,
 }
 
+/// The Shielded TXs tab's filter selector — "All Shielded" (default) shows
+/// every shielded note/send on the wallet; "Only OrchardPay" narrows it down
+/// to rows tagged with one of OrchardPay's own memo tags (contact-request
+/// anchor, payment, or silent payment) via [`ShieldedActivityRow::is_orchardpay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ShieldedActivityFilter {
+    #[default]
+    AllShielded,
+    OnlyOrchardPay,
+}
+
 pub struct OrchardPayScreen {
     pub app_context: Arc<AppContext>,
     pub orchardpay_subscreen: OrchardPaySubscreen,
@@ -234,6 +245,20 @@ pub struct OrchardPayScreen {
     /// `wallet_backend::shielded::shielded_activity`.
     shielded_activity: Option<Vec<ShieldedActivityRow>>,
     shielded_activity_dispatched: bool,
+    /// The Shielded TXs tab's "All Shielded" / "Only OrchardPay" filter
+    /// selection. Not reset by `refresh()` or the "Refresh" button — the
+    /// user's chosen filter persists across those the same way
+    /// `search_query`/`add_contact_message` do elsewhere on this screen.
+    shielded_activity_filter: ShieldedActivityFilter,
+    /// Set on construction, whenever the subscreen nav switches into
+    /// `OrchardPaySubscreen::Payments`, on `refresh()`, and by the Shielded
+    /// TXs tab's own "Refresh" button — every point that (re)shows or
+    /// reloads this tab's list. `egui`'s `ScrollArea` otherwise remembers
+    /// its last scroll offset by `id_salt` across visits, so without this
+    /// the tab could reopen scrolled to wherever the user last left it
+    /// rather than at the top. Consumed (set back to `false`) the next time
+    /// `render_payments` builds its `ScrollArea`.
+    shielded_activity_scroll_to_top_pending: bool,
     /// Set on construction, on `refresh()` (tab (re)entry), and after a
     /// credit-spending action completes — drained by `ui()` into a
     /// `RefreshIdentity` dispatch. Identity credit balance has no live push
@@ -305,6 +330,8 @@ impl OrchardPayScreen {
             recent_activity_dispatched: false,
             shielded_activity: None,
             shielded_activity_dispatched: false,
+            shielded_activity_filter: ShieldedActivityFilter::default(),
+            shielded_activity_scroll_to_top_pending: true,
             pending_identity_refresh: true,
             pending_confirmation: None,
             contact_actions: InFlightActions::new(),
@@ -999,7 +1026,26 @@ impl OrchardPayScreen {
                 if ui.button("Refresh").clicked() {
                     self.shielded_activity = None;
                     self.shielded_activity_dispatched = false;
+                    self.shielded_activity_scroll_to_top_pending = true;
                 }
+                egui::ComboBox::from_id_salt("shielded_activity_filter")
+                    .width(160.0)
+                    .selected_text(match self.shielded_activity_filter {
+                        ShieldedActivityFilter::AllShielded => "All Shielded",
+                        ShieldedActivityFilter::OnlyOrchardPay => "Only OrchardPay",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.shielded_activity_filter,
+                            ShieldedActivityFilter::AllShielded,
+                            "All Shielded",
+                        );
+                        ui.selectable_value(
+                            &mut self.shielded_activity_filter,
+                            ShieldedActivityFilter::OnlyOrchardPay,
+                            "Only OrchardPay",
+                        );
+                    });
             });
         });
         ui.label(
@@ -1054,72 +1100,95 @@ impl OrchardPayScreen {
             return action;
         }
 
+        let rows = match self.shielded_activity_filter {
+            ShieldedActivityFilter::AllShielded => rows,
+            ShieldedActivityFilter::OnlyOrchardPay => {
+                rows.into_iter().filter(|row| row.is_orchardpay).collect()
+            }
+        };
+
+        if rows.is_empty() {
+            ui.label(
+                RichText::new("No OrchardPay shielded transactions found for this wallet yet.")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            return action;
+        }
+
         let view = group_shielded_activity(rows);
 
-        ScrollArea::vertical()
+        let mut scroll_area = ScrollArea::vertical()
             .id_salt("orchardpay_payments_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.heading("Unspent Notes");
+            .auto_shrink([false, false]);
+        // `ScrollArea` otherwise remembers its last offset by `id_salt`
+        // across tab visits — force it back to the top on every point that
+        // (re)shows this tab (see `shielded_activity_scroll_to_top_pending`'s
+        // own doc comment), then consume the flag so normal scrolling isn't
+        // fought on every subsequent frame.
+        if self.shielded_activity_scroll_to_top_pending {
+            scroll_area = scroll_area.vertical_scroll_offset(0.0);
+            self.shielded_activity_scroll_to_top_pending = false;
+        }
+        scroll_area.show(ui, |ui| {
+            ui.heading("Unspent Notes");
+            ui.label(
+                RichText::new(format!(
+                    "{} note{} · {} total",
+                    view.unspent_count,
+                    if view.unspent_count == 1 { "" } else { "s" },
+                    format_credits_as_dash(view.unspent_total_credits)
+                ))
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            ui.add_space(6.0);
+            if view.unspent.is_empty() {
                 ui.label(
-                    RichText::new(format!(
-                        "{} note{} · {} total",
-                        view.unspent_count,
-                        if view.unspent_count == 1 { "" } else { "s" },
-                        format_credits_as_dash(view.unspent_total_credits)
-                    ))
-                    .size(11.0)
-                    .color(DashColors::text_secondary(dark_mode)),
+                    RichText::new("No unspent notes.").color(DashColors::text_secondary(dark_mode)),
                 );
-                ui.add_space(6.0);
-                if view.unspent.is_empty() {
-                    ui.label(
-                        RichText::new("No unspent notes.")
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                } else {
-                    for row in &view.unspent {
-                        render_shielded_note_card(ui, row, dark_mode);
-                        ui.add_space(6.0);
-                    }
+            } else {
+                for row in &view.unspent {
+                    render_shielded_note_card(ui, row, dark_mode);
+                    ui.add_space(6.0);
                 }
+            }
 
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(8.0);
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
 
-                ui.heading("Spent Notes");
-                ui.label(
-                    RichText::new(
-                        "Where a same-amount send matches a spent note, they're shown side by \
+            ui.heading("Spent Notes");
+            ui.label(
+                RichText::new(
+                    "Where a same-amount send matches a spent note, they're shown side by \
                          side as a best-effort pairing — not a guaranteed link between the two.",
-                    )
-                    .size(11.0)
-                    .color(DashColors::text_secondary(dark_mode)),
+                )
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            ui.add_space(6.0);
+            if view.spent.is_empty() {
+                ui.label(
+                    RichText::new("No spent notes yet.")
+                        .color(DashColors::text_secondary(dark_mode)),
                 );
-                ui.add_space(6.0);
-                if view.spent.is_empty() {
-                    ui.label(
-                        RichText::new("No spent notes yet.")
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                } else {
-                    for entry in &view.spent {
-                        match entry {
-                            SpentEntry::Pair { spent, sent } => {
-                                ui.columns(2, |columns| {
-                                    render_shielded_note_card(&mut columns[0], spent, dark_mode);
-                                    render_shielded_note_card(&mut columns[1], sent, dark_mode);
-                                });
-                            }
-                            SpentEntry::SpentOnly(row) | SpentEntry::SentOnly(row) => {
-                                render_shielded_note_card(ui, row, dark_mode);
-                            }
+            } else {
+                for entry in &view.spent {
+                    match entry {
+                        SpentEntry::Pair { spent, sent } => {
+                            ui.columns(2, |columns| {
+                                render_shielded_note_card(&mut columns[0], spent, dark_mode);
+                                render_shielded_note_card(&mut columns[1], sent, dark_mode);
+                            });
                         }
-                        ui.add_space(6.0);
+                        SpentEntry::SpentOnly(row) | SpentEntry::SentOnly(row) => {
+                            render_shielded_note_card(ui, row, dark_mode);
+                        }
                     }
+                    ui.add_space(6.0);
                 }
-            });
+            }
+        });
 
         action
     }
@@ -1896,6 +1965,7 @@ impl ScreenLike for OrchardPayScreen {
         self.recent_activity_dispatched = false;
         self.shielded_activity = None;
         self.shielded_activity_dispatched = false;
+        self.shielded_activity_scroll_to_top_pending = true;
         self.pending_identity_refresh = true;
         self.profile_screen.refresh();
         self.contact_actions.prune_stale();
@@ -2053,6 +2123,7 @@ impl ScreenLike for OrchardPayScreen {
                 }
                 AppAction::Custom(ref tag) if tag == TAB_PAYMENTS => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::Payments;
+                    self.shielded_activity_scroll_to_top_pending = true;
                 }
                 AppAction::Custom(ref tag) if tag == TAB_ADD_CONTACT => {
                     self.orchardpay_subscreen = OrchardPaySubscreen::AddContact;

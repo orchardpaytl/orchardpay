@@ -10,7 +10,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
-use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
+use crate::backend_task::orchardpay::messages::{MEMO_TAG_PAYMENT, MEMO_TAG_SILENT_PAYMENT};
 use crate::model::orchardpay::{ShieldedActivityRow, ShieldedNoteKind};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::platform::Identifier;
@@ -501,7 +501,8 @@ impl WalletBackend {
 
         let mut rows: Vec<ShieldedActivityRow> = Vec::with_capacity(notes.len() + outgoing.len());
         for note in &notes {
-            let memo_label = match recovered_memos.get(&note.position) {
+            let recovered_memo = recovered_memos.get(&note.position);
+            let memo_label = match recovered_memo {
                 Some(memo) => decode_memo_label(memo),
                 None => "Memo not available for received notes".to_string(),
             };
@@ -511,6 +512,7 @@ impl WalletBackend {
                 },
                 amount_credits: note.value,
                 memo_label,
+                is_orchardpay: recovered_memo.is_some_and(|memo| is_orchardpay_memo(memo)),
                 block_height: Some(note.block_height),
                 pending: false,
             });
@@ -520,6 +522,7 @@ impl WalletBackend {
                 kind: ShieldedNoteKind::Sent,
                 amount_credits: out.value,
                 memo_label: decode_memo_label(&out.memo),
+                is_orchardpay: is_orchardpay_memo(&out.memo),
                 block_height: Some(out.block_height),
                 pending: false,
             });
@@ -682,20 +685,35 @@ fn decode_memo_label(memo: &[u8]) -> String {
         "Contact request signal".to_string()
     } else if memo.starts_with(&MEMO_TAG_PAYMENT) {
         "OrchardPay payment".to_string()
+    } else if memo.starts_with(&MEMO_TAG_SILENT_PAYMENT) {
+        "OrchardPay silent payment".to_string()
     } else {
         format!("Unrecognized memo: {}", hex::encode(memo))
     }
+}
+
+/// Whether a raw memo carries one of OrchardPay's own known tags
+/// (`MEMO_TAG_ANCHOR` / `MEMO_TAG_PAYMENT` / `MEMO_TAG_SILENT_PAYMENT`) —
+/// the typed check behind [`ShieldedActivityRow::is_orchardpay`], kept
+/// separate from [`decode_memo_label`] so the Shielded TXs tab's "Only
+/// OrchardPay" filter matches on tag bytes rather than the label's display
+/// text.
+fn is_orchardpay_memo(memo: &[u8]) -> bool {
+    memo.starts_with(&MEMO_TAG_ANCHOR)
+        || memo.starts_with(&MEMO_TAG_PAYMENT)
+        || memo.starts_with(&MEMO_TAG_SILENT_PAYMENT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         SecretPlaintext, ShieldedNote, ShieldedOutgoingNote, decode_memo_label,
-        hd_seed_for_shielded_spend, incoming_payments_by_document, outgoing_payments_by_document,
+        hd_seed_for_shielded_spend, incoming_payments_by_document, is_orchardpay_memo,
+        outgoing_payments_by_document,
     };
     use crate::backend_task::error::TaskError;
     use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
-    use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
+    use crate::backend_task::orchardpay::messages::{MEMO_TAG_PAYMENT, MEMO_TAG_SILENT_PAYMENT};
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
     use zeroize::Zeroizing;
@@ -737,6 +755,13 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_silent_payment_memo_tag() {
+        let mut memo = vec![0u8; 36];
+        memo[..4].copy_from_slice(&MEMO_TAG_SILENT_PAYMENT);
+        assert_eq!(decode_memo_label(&memo), "OrchardPay silent payment");
+    }
+
+    #[test]
     fn unrecognized_memo_falls_back_to_hex() {
         let memo = vec![0xABu8; 36];
         assert_eq!(
@@ -748,6 +773,21 @@ mod tests {
     #[test]
     fn empty_memo_is_labeled_explicitly() {
         assert_eq!(decode_memo_label(&[]), "No memo");
+    }
+
+    #[test]
+    fn is_orchardpay_memo_recognizes_all_known_tags() {
+        for tag in [MEMO_TAG_ANCHOR, MEMO_TAG_PAYMENT, MEMO_TAG_SILENT_PAYMENT] {
+            let mut memo = vec![0u8; 36];
+            memo[..4].copy_from_slice(&tag);
+            assert!(is_orchardpay_memo(&memo));
+        }
+    }
+
+    #[test]
+    fn is_orchardpay_memo_rejects_unrecognized_or_empty() {
+        assert!(!is_orchardpay_memo(&[0xABu8; 36]));
+        assert!(!is_orchardpay_memo(&[]));
     }
 
     #[test]

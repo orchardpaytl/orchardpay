@@ -311,8 +311,9 @@ impl ShieldedNoteKind {
 /// `wallet_backend::shielded::shielded_activity`'s doc comment for why
 /// clustering (`derive_activity_from_scan_data`) was deliberately not used.
 /// That's also where the raw memo bytes get matched against
-/// `MEMO_TAG_ANCHOR` / `MEMO_TAG_PAYMENT` — this struct only ever holds the
-/// already-decoded result, so it has no dependency on `backend_task`.
+/// `MEMO_TAG_ANCHOR` / `MEMO_TAG_PAYMENT` / `MEMO_TAG_SILENT_PAYMENT` — this
+/// struct only ever holds the already-decoded result, so it has no
+/// dependency on `backend_task`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShieldedActivityRow {
     /// What this row represents and, for a received note, whether it's
@@ -322,12 +323,21 @@ pub struct ShieldedActivityRow {
     /// `model::fee_estimation::format_credits_as_dash`.
     pub amount_credits: u64,
     /// Already-decoded memo for a Sent row ("Contact request signal",
-    /// "OrchardPay payment", a truncated hex fallback for an unrecognized
-    /// non-empty memo, or "No memo"). Received rows have no memo available
-    /// from this data source at all — see the struct-level doc comment —
-    /// so this reads "Memo not available for received notes" instead of
-    /// implying there wasn't one.
+    /// "OrchardPay payment", "OrchardPay silent payment", a truncated hex
+    /// fallback for an unrecognized non-empty memo, or "No memo"). Received
+    /// rows have no memo available from this data source at all — see the
+    /// struct-level doc comment — so this reads "Memo not available for
+    /// received notes" instead of implying there wasn't one.
     pub memo_label: String,
+    /// Whether the raw memo matched a known OrchardPay tag (`MEMO_TAG_ANCHOR`
+    /// / `MEMO_TAG_PAYMENT` / `MEMO_TAG_SILENT_PAYMENT`) — a typed
+    /// discriminant for the Shielded TXs tab's "Only OrchardPay" filter,
+    /// mirroring [`ShieldedNoteKind`]'s own reasoning for not matching on
+    /// `memo_label`'s display text: that wording is free to change (e.g.
+    /// under future i18n) without breaking filtering. Always `false` for a
+    /// received row whose memo couldn't be recovered — see `memo_label`'s
+    /// "Memo not available" case — since it can't be classified either way.
+    pub is_orchardpay: bool,
     /// Block height the operation confirmed at. Always `Some` for a row
     /// built from these lists — both only ever contain confirmed,
     /// on-chain-verified entries. The sole chronological signal available
@@ -741,6 +751,7 @@ mod shielded_activity_tests {
             kind,
             amount_credits,
             memo_label: "No memo".to_string(),
+            is_orchardpay: false,
             block_height: Some(block_height),
             pending: false,
         }
