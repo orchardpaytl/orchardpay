@@ -26,10 +26,13 @@ use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::MEMO_TAG_ANCHOR;
+use crate::backend_task::orchardpay::encryption::OPP2_MAC_LEN;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
-use crate::backend_task::orchardpay::messages::MEMO_TAG_PAYMENT;
+use crate::backend_task::orchardpay::messages::{
+    MEMO_TAG_PAYMENT, MEMO_TAG_SILENT_PAYMENT, OPP2_MAC_OFFSET, OPP2_TIMESTAMP_OFFSET,
+};
 use crate::model::orchardpay::{
-    OrchardPayContactState, PendingOrchardPayOperation, ScheduledAnchorReplace,
+    OrchardPayContactState, PendingOrchardPayOperation, ScheduledAnchorReplace, SilentPaymentRecord,
 };
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, WalletBackend};
@@ -58,6 +61,18 @@ pub enum IncomingMemoSignal {
         /// The real value observed on this wallet's own decrypted note —
         /// the authoritative amount, cached for `messages::load_thread` to
         /// compare against whatever the document itself claims.
+        received_amount_credits: u64,
+    },
+    /// A [`MEMO_TAG_SILENT_PAYMENT`]-tagged transfer — carries its own
+    /// timestamp + MAC rather than a DocumentID (there is no document).
+    /// `memo_scan.rs` resolves which `Established` contact this belongs to
+    /// by trying each one's derived key against `mac`; this scan itself has
+    /// no identity context to do that resolution here.
+    SilentPayment {
+        timestamp: u32,
+        mac: [u8; OPP2_MAC_LEN],
+        /// The real value observed on this wallet's own decrypted note —
+        /// same authoritative-amount role as [`Self::Payment`]'s own field.
         received_amount_credits: u64,
     },
 }
@@ -187,6 +202,22 @@ const KV_PREFIX_MEMO_SCAN_CURSOR: &str = "det:orchardpay:memo_scan_cursor";
 /// [`DetScope::Wallet`], matching [`KV_PREFIX_MEMO_SCAN_CURSOR`]'s own
 /// wallet-level (not identity-level) reasoning.
 const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
+
+/// A locally-resolved `OPP2` "silent payment" — see
+/// [`SilentPaymentRecord`]. Written by the sender itself immediately
+/// (`silent_payment::send_silent_payment`) or by the recipient's eager
+/// incoming-memo scan once its HMAC matches exactly one `Established`
+/// contact (`memo_scan.rs`). Scope: [`DetScope::Identity`] of the owner,
+/// same reasoning as [`KV_PREFIX_CONTACT`] — cascades on identity removal,
+/// never bleeds across identities sharing a wallet. Key shape:
+/// `det:orchardpay:silent:<contract_id_b58>:<counterparty_b58>:<fingerprint>`,
+/// where `<fingerprint>` is [`crate::backend_task::orchardpay::encryption::opp2_memo_fingerprint`]'s 12-hex-char
+/// output — kept deliberately short (not the full timestamp+MAC) for the
+/// same [`platform_wallet_storage::kv::MAX_KEY_LEN`] (128) reason documented
+/// on [`KV_PREFIX_SCHEDULED_ANCHOR_REPLACE`]'s prefix: two full 44-char
+/// Identifiers already consume most of the budget before any per-note
+/// suffix is added.
+const KV_PREFIX_SILENT_PAYMENT: &str = "det:orchardpay:silent:";
 
 /// Presence marker: this identity's `shieldedAddress` document has been
 /// confirmed to exist on Platform. Value: `bool`, always `true` when
@@ -339,6 +370,26 @@ fn scheduled_anchor_replace_key_prefix(contract_id: &Identifier) -> String {
     format!(
         "{KV_PREFIX_SCHEDULED_ANCHOR_REPLACE}{}:",
         contract_id.to_string(Encoding::Base58)
+    )
+}
+
+fn silent_payment_key(
+    contract_id: &Identifier,
+    counterparty: &Identifier,
+    fingerprint: &str,
+) -> String {
+    format!(
+        "{KV_PREFIX_SILENT_PAYMENT}{}:{}:{fingerprint}",
+        contract_id.to_string(Encoding::Base58),
+        counterparty.to_string(Encoding::Base58)
+    )
+}
+
+fn silent_payment_key_prefix(contract_id: &Identifier, counterparty: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_SILENT_PAYMENT}{}:{}:",
+        contract_id.to_string(Encoding::Base58),
+        counterparty.to_string(Encoding::Base58)
     )
 }
 
@@ -549,6 +600,57 @@ impl WalletBackend {
                 Identifier::from_string(b58, Encoding::Base58).ok()
             })
             .collect())
+    }
+
+    /// Persist a resolved `OPP2` "silent payment" for `(contract_id, owner,
+    /// counterparty)`, keyed by `fingerprint`
+    /// ([`crate::backend_task::orchardpay::encryption::opp2_memo_fingerprint`]) so repeated writes for the
+    /// same underlying transfer (e.g. a retried scan pass) overwrite rather
+    /// than duplicate. Never called for an ambiguous (2+ candidate) match —
+    /// see [`SilentPaymentRecord`]'s doc comment.
+    pub fn orchardpay_set_silent_payment(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+        fingerprint: &str,
+        record: &SilentPaymentRecord,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = silent_payment_key(contract_id, counterparty, fingerprint);
+        self.kv()
+            .put::<SilentPaymentRecord>(DetScope::Identity(&owner_buf), &key, record)
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+    }
+
+    /// List every locally-resolved `OPP2` silent payment `owner` has with
+    /// `counterparty` under `contract_id`, in no particular order — callers
+    /// needing chronological order should sort by
+    /// [`SilentPaymentRecord::timestamp`]. Used by `messages::load_thread`
+    /// (merged into the thread alongside document-backed messages) and
+    /// `messages::fetch_recent_activity` (folded into the same
+    /// last-activity computation as message timestamps).
+    pub fn orchardpay_list_silent_payments(
+        &self,
+        contract_id: &Identifier,
+        owner: &Identifier,
+        counterparty: &Identifier,
+    ) -> Result<Vec<SilentPaymentRecord>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        let prefix = silent_payment_key_prefix(contract_id, counterparty);
+        let keys = self
+            .kv()
+            .list(DetScope::Identity(&owner_buf), Some(&prefix))
+            .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })?;
+
+        keys.into_iter()
+            .filter_map(|key| {
+                self.kv()
+                    .get::<SilentPaymentRecord>(DetScope::Identity(&owner_buf), &key)
+                    .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
+                    .transpose()
+            })
+            .collect()
     }
 
     /// List every counterparty `owner` currently has a live
@@ -924,6 +1026,23 @@ impl WalletBackend {
                                 note_index,
                                 IncomingMemoSignal::Payment {
                                     referenced_document_id: Identifier::from(doc_id_bytes),
+                                    received_amount_credits: decrypted_note.value().inner(),
+                                },
+                            ));
+                        } else if tag == MEMO_TAG_SILENT_PAYMENT {
+                            let timestamp = u32::from_be_bytes(
+                                memo[OPP2_TIMESTAMP_OFFSET..OPP2_MAC_OFFSET]
+                                    .try_into()
+                                    .expect("memo is 36 bytes"),
+                            );
+                            let mac: [u8; OPP2_MAC_LEN] = memo[OPP2_MAC_OFFSET..]
+                                .try_into()
+                                .expect("memo is 36 bytes, tag+timestamp is 8");
+                            found.push((
+                                note_index,
+                                IncomingMemoSignal::SilentPayment {
+                                    timestamp,
+                                    mac,
                                     received_amount_credits: decrypted_note.value().inner(),
                                 },
                             ));

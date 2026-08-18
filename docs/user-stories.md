@@ -1093,6 +1093,15 @@ As a user, I want to remove an established OrchardPay contact so that I can prun
 - The confirmation dialog explains the actual tradeoff: I'll no longer be able to recover this connection from the network if I reinstall or switch devices, but the other person can still message and pay me as normal — removal only affects my own copy of the connection record.
 - The contact disappears from both the Contacts and Most Recent tabs immediately on success, and is excluded from any future "Recover from Network" pass (ORP-005) for that counterparty specifically.
 
+### ORP-019: Send a payment without leaving a public paper trail [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to send a payment to an established contact without publishing a public document about it, so that an outside observer can't correlate a document I just created with a shielded transfer I just sent.
+
+- A "Send without a message" checkbox on the Payment composer — when checked, no `encryptedMessage` document is created at all, only a private shielded transfer.
+- The payment still shows up in the conversation, tinted the same as a normal payment bubble, and counts toward the "Recent Payments" panel and the Most Recent tab's sort order — the only difference from a normal payment is that no document backs it, so it can't be edited, deleted, or replied to.
+- Authenticated cryptographically (not just correlated) so it can't be spoofed as coming from a different contact than it actually did.
+
 ---
 
 ## Token Operations (TOK)

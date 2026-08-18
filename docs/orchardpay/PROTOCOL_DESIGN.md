@@ -977,6 +977,75 @@ mentioned above as still-undesigned future work — that placeholder is an
 unrelated, mutual purchase-receipt concept (both parties' own record of a
 completed transaction), not this payer-only tamper/deletion-evidence record.
 
+### Silent payments (`OPP2`, decided and implemented 2026-08-18)
+
+`send_payment` is document-first: even a memo-less payment always publishes
+a `Payment` document, then a memo-correlated transfer — leaving a public,
+timestamped document-creation event immediately followed by a shielded
+transfer's broadcast, letting a chain observer infer a payment happened
+around that time (narrowing that transfer's anonymity set). `send_direct`
+already avoids this (no document, all-zero memo) but never appears in any
+conversation, since thread rendering only ever builds from a fetched
+Platform document.
+
+A third mode closes the gap: `MEMO_TAG_SILENT_PAYMENT = *b"OPP2"`, a real
+shielded transfer to an `Established` contact with no backing document at
+all, still correlated to the right conversation. 36-byte memo: `tag(4) ‖
+timestamp(4, sender-written Unix seconds) ‖ mac(28, truncated
+HMAC-SHA256)`.
+
+A first design considered tagging the transfer with a raw fragment of the
+sender's `reference_id` instead of a MAC. Rejected: `refId` is **publicly
+queryable** once a relationship has any published message (see the `refId`
+discussion above), so anyone who's seen a relationship's `refId` could
+forge an attributed silent payment — no funds at risk, but it would
+undermine the "wallet-verified" trust the Recent Payments panel (ORP-017)
+is built on, since only the *amount* would stay trustworthy, not the
+attributed sender. The implemented design instead authenticates the
+timestamp with `HMAC-SHA256(opp2_mac_key, timestamp)`, where `opp2_mac_key
+= HKDF-SHA256(shared_secret, "orchardpay-opp2-mac-v1")` — domain-separated
+from the raw ECDH secret (which every other primitive in `encryption.rs`
+uses directly, with no KDF step, as an AEAD key). This restores the same
+authentication bar `MEMO_TAG_PAYMENT` already has: forging an attribution
+requires the actual per-relationship shared secret, not a value that
+becomes public the moment a relationship has exchanged one message.
+
+The timestamp is sender-written rather than reconstructed after the fact —
+a shielded note's `block_height` turned out not to be a real per-note
+confirmation height (`platform-wallet`'s own doc comments describe it as
+the sync-fetch chunk's proof-anchor height, identical across a whole
+cold-restore batch), so there was nothing reliable to reconstruct from. The
+timestamp is folded into the HMAC's authenticated content, but still only
+trusted as a cosmetic ordering hint (clamped at cache-write time to no more
+than 5 minutes ahead of local receive time) — never for authenticity or
+amount, both of which come from elsewhere as usual.
+
+**Detection is eager, not lazy**: wired into the existing wallet-wide
+incoming-memo scan (the same pass that already detects `OPA1`/`OPP1`)
+rather than only resolving when a specific thread is opened, so a silent
+payment surfaces in Most Recent / activity sort immediately. Every
+locally-known identity's `Established` contacts' `opp2_mac_key`s are
+derived once per scan pass (not once per note — local-only, no network
+call), then checked against each detected `OPP2` signal. Zero matches is
+treated the same as any other foreign/malformed memo (dropped — the funds
+still count toward the normal wallet balance regardless). Two or more
+matches is deliberately **never guessed** — left unattributed rather than
+risking misattribution to the wrong contact; this is only reachable via an
+actual forgery attempt (an honest sender's MAC cannot collide with another
+contact's key by chance), and even then costs only "doesn't appear in a
+conversation," not a wrong one.
+
+Thread rendering reused the existing `TimelineItem` merge pattern
+(`message_thread_screen.rs`) that already merges `ReceiptAlert`s alongside
+real messages into one sorted, rendered list — `ThreadMessage`/`LoadedThread.messages`
+themselves stay untouched (every edit/delete/cancel path keys off a real
+document ID, which a silent payment doesn't have), and a silent payment
+became a third kind of timeline entry, sourced from its own local cache
+(`WalletBackend::orchardpay_get/set_silent_payment`) rather than a Platform
+query. See `docs/ai-design/2026-08-18-orchardpay-silent-payments/README.md`
+for the full design writeup, including the cache key shape and the
+rejected alternatives.
+
 ## Dropped: `protocolVersion`
 
 The v0 draft carried a plaintext `protocolVersion` field on all three
@@ -1057,6 +1126,13 @@ structurally identical regardless of purpose.
    (`AUTH_KEY_LOOKUP_WINDOW`) to assign the next free index at creation and
    re-find it by matching Purpose + ContractBounds at lookup/recovery time.
    See "HD-deriving the ENCRYPTION/DECRYPTION identity keys" above.
+10. **`OPP2` silent-payment authentication**: HMAC over an HKDF-derived
+    sub-key of the relationship's existing ECDH shared secret, not a raw
+    `reference_id` fragment — the latter is publicly queryable once used
+    and would allow forged attribution. Detection is eager (wired into the
+    existing incoming-memo scan, not resolved lazily per-thread), and an
+    ambiguous match (2+ candidate contacts) is never guessed. See "Silent
+    payments" above and `docs/ai-design/2026-08-18-orchardpay-silent-payments/README.md`.
 
 ## Payment semantics (resolved)
 
@@ -1317,5 +1393,13 @@ struct PendingConfirmation {
   for the current contract ID. No migration of prior Testnet documents or
   local wallet-cached state was performed (clean slate, consistent with this
   project's established pre-launch pattern).
+- **Done (2026-08-18)**: `OPP2` silent payments — a real, documentless,
+  HMAC-authenticated shielded transfer to an `Established` contact,
+  detected via the existing incoming-memo scan and merged into thread
+  rendering/Recent Payments/Most Recent alongside document-backed messages.
+  No contract schema change required (an app-level memo convention, not a
+  new document type), so no new registration is needed for this one. See
+  "Silent payments" above and
+  `docs/ai-design/2026-08-18-orchardpay-silent-payments/README.md`.
 - **Not yet done**: Mainnet/Devnet registration (each network needs its own,
   independent of Testnet's).

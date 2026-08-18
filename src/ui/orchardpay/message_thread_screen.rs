@@ -20,7 +20,7 @@ use crate::model::fee_estimation::{
 };
 use crate::model::orchardpay::{
     CREDIT_BLOCKED_TOOLTIP, MAX_MESSAGE_CHARS, MAX_PAYMENT_MEMO_CHARS, MIN_SEND_AMOUNT_CREDITS,
-    OrchardPayContactState, is_credit_balance_blocked, is_credit_balance_low,
+    OrchardPayContactState, SilentPaymentRecord, is_credit_balance_blocked, is_credit_balance_low,
     validate_message_text, validate_payment_memo,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -126,6 +126,12 @@ pub struct MessageThreadScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
     messages: Vec<ThreadMessage>,
+    /// Every locally-resolved `OPP2` silent payment with this counterparty
+    /// — never document-backed, so it's merged into the same rendered
+    /// timeline as `messages` (by timestamp) at render time, the same way
+    /// `receipt_alerts` already is, rather than living inside `messages`
+    /// itself. See `messages::LoadedThread::silent_payments`.
+    silent_payments: Vec<SilentPaymentRecord>,
     /// Saved `PaymentRequestReceipt`s whose original `PaymentRequest` no
     /// longer matches them — see `messages::load_thread`'s anomaly-
     /// detection pass. Rendered as warning panels, never as bubbles.
@@ -163,6 +169,12 @@ pub struct MessageThreadScreen {
     compose_amount: Option<Amount>,
     compose_amount_input: Option<AmountInput>,
     compose_memo: String,
+    /// "Send without a message" — only meaningful for `ComposeKind::Payment`.
+    /// When checked, `send_clicked` dispatches `SendSilentPayment` (no
+    /// document, no message) instead of `SendPayment`; the memo field is
+    /// hidden while checked, since a silent payment carries no message at
+    /// all. See `silent_payment::send_silent_payment`.
+    compose_send_silently: bool,
     sending: bool,
     refresh_banner: Option<BannerHandle>,
     /// The active identity's own primary DPNS name, for the "You" message
@@ -307,6 +319,7 @@ impl MessageThreadScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
             messages: Vec::new(),
+            silent_payments: Vec::new(),
             receipt_alerts: Vec::new(),
             all_decoded_thread: Vec::new(),
             history_cursor: HistoryCursor::default(),
@@ -320,6 +333,7 @@ impl MessageThreadScreen {
             compose_amount: None,
             compose_amount_input: None,
             compose_memo: String::new(),
+            compose_send_silently: false,
             sending: false,
             refresh_banner: None,
             my_name,
@@ -446,6 +460,7 @@ impl MessageThreadScreen {
         // matching the prior `String::clear()` behavior.
         self.compose_amount_input = None;
         self.compose_memo.clear();
+        self.compose_send_silently = false;
     }
 
     /// The counterparty's display name for confirmation-modal copy — same
@@ -747,6 +762,32 @@ impl MessageThreadScreen {
                     "Send Payment Request?",
                     format!("Request {} from {name}?", format_credits_as_dash(amount)),
                     false,
+                )
+            }
+            ComposeKind::Payment if self.compose_send_silently => {
+                let Some(amount) = self.compose_amount.as_ref().map(Amount::value) else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Enter an amount in DASH to send.",
+                        MessageType::Error,
+                    );
+                    return AppAction::None;
+                };
+                let task = OrchardPayTask::SendSilentPayment {
+                    qualified_identity: self.identity.clone(),
+                    counterparty_identity_id: self.counterparty_identity_id,
+                    seed_hash,
+                    amount,
+                };
+                (
+                    task,
+                    "Send Payment?",
+                    format!(
+                        "Send {} to {name} without a message? This won't create a document, \
+                         only a private transfer.",
+                        format_credits_as_dash(amount)
+                    ),
+                    true,
                 )
             }
             ComposeKind::Payment => {
@@ -1230,6 +1271,68 @@ impl MessageThreadScreen {
         bubble_action
     }
 
+    /// Renders one `OPP2` silent payment — a real, wallet-verified transfer
+    /// with no backing document, so there is nothing to edit, delete, or
+    /// reply to; no context menu, no `BubbleAction`. Reuses
+    /// `render_message_bubble`'s money-tint color language (blue for
+    /// outgoing, green for incoming) and header/timestamp layout so it
+    /// reads as part of the same conversation rather than a separate
+    /// concept.
+    fn render_silent_payment_bubble(&self, ui: &mut Ui, payment: &SilentPaymentRecord) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let sender_label = if payment.from_me {
+            self.my_name.as_deref().unwrap_or("You")
+        } else {
+            self.counterparty_name.as_deref().unwrap_or("Them")
+        };
+        let color = if payment.from_me {
+            DashColors::info_color(dark_mode)
+        } else {
+            DashColors::success_color(dark_mode)
+        };
+        let bubble_frame = egui::Frame::group(ui.style())
+            .fill(color.gamma_multiply(0.08))
+            .stroke(egui::Stroke::new(1.0, color));
+
+        ui.horizontal(|ui| {
+            if payment.from_me {
+                ui.add_space(MY_MESSAGE_INDENT);
+            }
+            bubble_frame.show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(MESSAGE_BUBBLE_MAX_WIDTH));
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                    egui::Sides::new().show(
+                        ui,
+                        |ui| {
+                            ui.label(RichText::new(sender_label).strong());
+                        },
+                        |ui| {
+                            if let Some(timestamp) =
+                                format_relative_time(payment.timestamp as u64 * 1000)
+                            {
+                                ui.label(
+                                    RichText::new(timestamp)
+                                        .size(11.0)
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            }
+                        },
+                    );
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Payment: {}",
+                                format_credits_as_dash(payment.amount)
+                            ))
+                            .strong(),
+                        );
+                    });
+                });
+            });
+        });
+        ui.add_space(6.0);
+    }
+
     /// The up-to-6 most recent verified money movements between the two
     /// parties, newest first, for the "Recent Payments" side table. Mirrors
     /// `render_message_bubble`'s own `verified_amount`-gated match (only a
@@ -1259,6 +1362,14 @@ impl MessageThreadScreen {
                     created_at: message.created_at,
                 })
             })
+            // A silent payment is a real wallet-verified transfer too — same
+            // trust category as a document-backed `Payment`, just without a
+            // document — so it counts toward this panel the same way.
+            .chain(self.silent_payments.iter().map(|payment| PaymentRow {
+                received: !payment.from_me,
+                credits: payment.amount,
+                created_at: Some(payment.timestamp as u64 * 1000),
+            }))
             .collect();
         rows.sort_by_key(|row| std::cmp::Reverse(row.created_at.unwrap_or(0)));
         rows.truncate(RECENT_PAYMENTS_MAX_ROWS);
@@ -1410,6 +1521,7 @@ impl MessageThreadScreen {
         enum TimelineItem {
             Message(ThreadMessage),
             ReceiptAlert(ReceiptAlert),
+            SilentPayment(SilentPaymentRecord),
         }
         let mut timeline: Vec<TimelineItem> = self
             .messages
@@ -1422,10 +1534,17 @@ impl MessageThreadScreen {
                     .cloned()
                     .map(TimelineItem::ReceiptAlert),
             )
+            .chain(
+                self.silent_payments
+                    .iter()
+                    .copied()
+                    .map(TimelineItem::SilentPayment),
+            )
             .collect();
         timeline.sort_by_key(|item| match item {
             TimelineItem::Message(message) => message.created_at.unwrap_or(0),
             TimelineItem::ReceiptAlert(alert) => alert.original_created_at.unwrap_or(0),
+            TimelineItem::SilentPayment(payment) => payment.timestamp as u64 * 1000,
         });
 
         let mut bubble_action: Option<BubbleAction> = None;
@@ -1469,6 +1588,9 @@ impl MessageThreadScreen {
                         }
                         TimelineItem::ReceiptAlert(alert) => {
                             self.render_receipt_alert(ui, &alert);
+                        }
+                        TimelineItem::SilentPayment(payment) => {
+                            self.render_silent_payment_bubble(ui, &payment);
                         }
                     }
                 }
@@ -1661,14 +1783,32 @@ impl MessageThreadScreen {
                         }
                         let response = widget.show(ui);
                         response.inner.update(&mut self.compose_amount);
-                        ui.horizontal(|ui| {
-                            ui.label("Note (optional):");
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.compose_memo)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(2),
-                            );
-                        });
+
+                        if self.compose_kind == ComposeKind::Payment {
+                            ui.checkbox(&mut self.compose_send_silently, "Send without a message")
+                                .clickable_tooltip(
+                                    "No document is published for this payment — only a private \
+                                     transfer, with no public record that it happened.",
+                                );
+                        }
+
+                        // Hidden while sending silently — a silent payment
+                        // carries no message/memo at all (see
+                        // `silent_payment::send_silent_payment`'s doc
+                        // comment); showing an input the send path ignores
+                        // would be misleading.
+                        if !(self.compose_kind == ComposeKind::Payment
+                            && self.compose_send_silently)
+                        {
+                            ui.horizontal(|ui| {
+                                ui.label("Note (optional):");
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.compose_memo)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(2),
+                                );
+                            });
+                        }
                     }
                 }
                 ui.add_space(6.0);
@@ -1734,11 +1874,13 @@ impl ScreenLike for MessageThreadScreen {
                 counterparty_identity_id,
                 all_decoded,
                 messages,
+                silent_payments,
                 receipt_alerts,
                 history_cursor,
                 may_be_incomplete,
             } if counterparty_identity_id == self.counterparty_identity_id => {
                 self.messages = messages;
+                self.silent_payments = silent_payments;
                 self.receipt_alerts = receipt_alerts;
                 self.all_decoded_thread = all_decoded;
                 self.history_cursor = history_cursor;
@@ -1746,7 +1888,8 @@ impl ScreenLike for MessageThreadScreen {
                 self.loading = false;
                 self.loading_more = false;
             }
-            BackendTaskSuccessResult::OrchardPayPaymentSent { .. } => {
+            BackendTaskSuccessResult::OrchardPayPaymentSent { .. }
+            | BackendTaskSuccessResult::OrchardPaySilentPaymentSent { .. } => {
                 self.sending = false;
                 self.pending_document_mutation_id = None;
                 self.pending_bubble_action_label = None;

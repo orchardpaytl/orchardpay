@@ -31,7 +31,11 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use bip39::rand::RngCore;
 use bip39::rand::rngs::OsRng;
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// 96-bit AES-GCM nonce, per the standard AES-GCM construction.
 const NONCE_SIZE: usize = 12;
@@ -91,6 +95,74 @@ pub fn decrypt(shared_key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, OrchardPay
     cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| OrchardPayCryptoError::Decryption)
+}
+
+/// Context string domain-separating the `OPP2` "silent payment" memo's
+/// authentication sub-key from the raw ECDH shared secret, which every other
+/// use in this module consumes directly (with no KDF step) as the AES-256
+/// key. Deriving a sub-key here — rather than reusing `shared_key` itself —
+/// means the MAC key can never be confused with, or leak anything about,
+/// the message-encryption key for the same relationship.
+const OPP2_MAC_KEY_INFO: &[u8] = b"orchardpay-opp2-mac-v1";
+
+/// Truncated HMAC-SHA256 tag length for an `OPP2` "silent payment" memo.
+/// 28 bytes (224 bits) is far beyond the ~128-bit forgery-infeasibility
+/// bar, chosen so the tag fills the remainder of the 32-byte memo payload
+/// alongside the 4-byte sender timestamp (4 + 28 = 32) — see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "silent payments" section.
+pub const OPP2_MAC_LEN: usize = 28;
+
+/// Derive the sub-key used to authenticate an `OPP2` "silent payment" memo,
+/// via HKDF-SHA256 over the relationship's existing ECDH shared secret (the
+/// same one [`MessageContent`] encrypts under directly) with a dedicated
+/// context string ([`OPP2_MAC_KEY_INFO`]). Never use `shared_key` itself as
+/// a MAC key — mixing one secret across two different cryptographic
+/// purposes (an AEAD key here, a MAC key there) is exactly the anti-pattern
+/// this domain-separation step exists to avoid. The ECDH secret is
+/// symmetric, so both established parties derive the identical sub-key
+/// regardless of which side computes it.
+pub fn derive_opp2_mac_key(shared_key: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(None, shared_key);
+    let mut mac_key = [0u8; 32];
+    hk.expand(OPP2_MAC_KEY_INFO, &mut mac_key)
+        .expect("32 is a valid HKDF-SHA256 output length");
+    Zeroizing::new(mac_key)
+}
+
+/// Compute the truncated HMAC-SHA256 tag over an `OPP2` memo's 4-byte
+/// sender-timestamp field, under `mac_key` (from [`derive_opp2_mac_key`]).
+/// The timestamp is authenticated *content*, not decoration: a party who
+/// hasn't derived this key from the real per-relationship shared secret
+/// cannot produce a tag the recipient will accept for any timestamp value,
+/// closing off the forgery a raw (publicly-queryable) reference-ID prefix
+/// would have allowed. See `docs/orchardpay/PROTOCOL_DESIGN.md`.
+pub fn compute_opp2_mac(mac_key: &[u8; 32], timestamp: u32) -> [u8; OPP2_MAC_LEN] {
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(mac_key).expect("HMAC accepts any key length");
+    mac.update(&timestamp.to_be_bytes());
+    let full = mac.finalize().into_bytes();
+    let mut out = [0u8; OPP2_MAC_LEN];
+    out.copy_from_slice(&full[..OPP2_MAC_LEN]);
+    out
+}
+
+/// A short (12 hex chars, 48 bits) fingerprint identifying one `OPP2`
+/// "silent payment" memo, derived from its timestamp + MAC tag — used as
+/// the local cache's unique key suffix
+/// (`WalletBackend::orchardpay_set_silent_payment`). 48 bits comfortably
+/// exceeds any realistic per-relationship payment volume before a birthday
+/// collision becomes plausible, while staying short enough that the full
+/// cache key (prefix + contract ID + counterparty ID + this fingerprint)
+/// stays well under `platform_wallet_storage::kv::MAX_KEY_LEN` (128) — see
+/// `wallet_backend::orchardpay`'s own note on that same constraint. Not a
+/// security property — just a compact, practically-unique identifier for a
+/// note this scan (or the sender itself) already authenticated via its MAC.
+pub fn opp2_memo_fingerprint(timestamp: u32, mac: &[u8; OPP2_MAC_LEN]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(timestamp.to_be_bytes());
+    hasher.update(mac);
+    let digest = hasher.finalize();
+    hex::encode(&digest[..6])
 }
 
 /// Decrypted contents of a `contactAnchor`'s `data`/`anchorData` field. See
@@ -515,5 +587,88 @@ mod tests {
 
         let result = content.encrypt(&shared_key);
         assert_eq!(result, Err(OrchardPayCryptoError::PayloadTooLarge));
+    }
+
+    /// The ECDH shared secret is symmetric — both established parties must
+    /// derive the identical `OPP2` MAC key from it regardless of which side
+    /// computes it, and the same key + timestamp must always produce the
+    /// same tag (deterministic, no nonce/randomness involved).
+    #[test]
+    fn opp2_mac_key_and_tag_are_deterministic() {
+        let shared_key = [30u8; 32];
+        let mac_key_a = derive_opp2_mac_key(&shared_key);
+        let mac_key_b = derive_opp2_mac_key(&shared_key);
+        assert_eq!(
+            *mac_key_a, *mac_key_b,
+            "same shared secret must derive the same MAC key every time"
+        );
+
+        let tag_a = compute_opp2_mac(&mac_key_a, 1_700_000_000);
+        let tag_b = compute_opp2_mac(&mac_key_b, 1_700_000_000);
+        assert_eq!(
+            tag_a, tag_b,
+            "same MAC key + timestamp must always produce the same tag"
+        );
+    }
+
+    /// The MAC key must not equal the raw shared secret it was derived
+    /// from — domain separation is the entire point of the HKDF step.
+    #[test]
+    fn opp2_mac_key_differs_from_raw_shared_secret() {
+        let shared_key = [31u8; 32];
+        let mac_key = derive_opp2_mac_key(&shared_key);
+        assert_ne!(
+            *mac_key, shared_key,
+            "the derived MAC key must not equal the raw shared secret"
+        );
+    }
+
+    /// A different shared secret (a different relationship) must derive a
+    /// different MAC key, and a different timestamp must produce a
+    /// different tag under the same key — both are required for the
+    /// forgery-resistance this scheme is meant to provide.
+    #[test]
+    fn opp2_mac_is_sensitive_to_key_and_timestamp() {
+        let mac_key_1 = derive_opp2_mac_key(&[32u8; 32]);
+        let mac_key_2 = derive_opp2_mac_key(&[33u8; 32]);
+        assert_ne!(
+            *mac_key_1, *mac_key_2,
+            "different shared secrets must derive different MAC keys"
+        );
+
+        let tag_same_key_diff_time_a = compute_opp2_mac(&mac_key_1, 1_700_000_000);
+        let tag_same_key_diff_time_b = compute_opp2_mac(&mac_key_1, 1_700_000_001);
+        assert_ne!(
+            tag_same_key_diff_time_a, tag_same_key_diff_time_b,
+            "different timestamps under the same key must produce different tags"
+        );
+
+        let tag_diff_key_same_time = compute_opp2_mac(&mac_key_2, 1_700_000_000);
+        assert_ne!(
+            tag_same_key_diff_time_a, tag_diff_key_same_time,
+            "different keys must produce different tags for the same timestamp"
+        );
+    }
+
+    #[test]
+    fn opp2_memo_fingerprint_is_deterministic_and_sensitive_to_input() {
+        let mac = [1u8; OPP2_MAC_LEN];
+        let fp_a = opp2_memo_fingerprint(1_700_000_000, &mac);
+        let fp_b = opp2_memo_fingerprint(1_700_000_000, &mac);
+        assert_eq!(fp_a, fp_b, "same input must fingerprint identically");
+        assert_eq!(fp_a.len(), 12, "fingerprint must be 12 hex chars (48 bits)");
+
+        let fp_diff_time = opp2_memo_fingerprint(1_700_000_001, &mac);
+        assert_ne!(
+            fp_a, fp_diff_time,
+            "a different timestamp must change the fingerprint"
+        );
+
+        let other_mac = [2u8; OPP2_MAC_LEN];
+        let fp_diff_mac = opp2_memo_fingerprint(1_700_000_000, &other_mac);
+        assert_ne!(
+            fp_a, fp_diff_mac,
+            "a different MAC must change the fingerprint"
+        );
     }
 }

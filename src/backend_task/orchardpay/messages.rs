@@ -75,6 +75,52 @@ pub const MESSAGE_PAGE_SIZE: u32 = 100;
 /// `encryptedMessage`".
 pub const MEMO_TAG_PAYMENT: [u8; 4] = *b"OPP1";
 
+/// 4-byte tag identifying a "silent payment" shielded transfer's memo —
+/// a real payment to an `Established` contact with **no** backing
+/// `encryptedMessage` document, so no public document-creation event
+/// precedes the transfer's broadcast (the timing-correlation privacy gap
+/// `MEMO_TAG_PAYMENT` doesn't close, since it always publishes a document
+/// first). Followed by a 4-byte sender-written Unix-seconds timestamp and a
+/// 28-byte truncated HMAC-SHA256 tag authenticating that timestamp under a
+/// relationship-specific sub-key (`encryption::derive_opp2_mac_key`) — not
+/// a DocumentID, since there is no document. See
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "silent payments" section and
+/// `silent_payment.rs`.
+pub const MEMO_TAG_SILENT_PAYMENT: [u8; 4] = *b"OPP2";
+
+/// Byte offset within a [`MEMO_TAG_SILENT_PAYMENT`] memo where the 4-byte
+/// sender timestamp starts (immediately after the 4-byte tag).
+pub const OPP2_TIMESTAMP_OFFSET: usize = 4;
+/// Byte offset within a [`MEMO_TAG_SILENT_PAYMENT`] memo where the
+/// truncated HMAC tag starts (immediately after the 4-byte timestamp).
+pub const OPP2_MAC_OFFSET: usize = 8;
+
+/// How far into the future a [`MEMO_TAG_SILENT_PAYMENT`] memo's
+/// sender-written timestamp is allowed to sit relative to this device's own
+/// clock before it gets clamped down to "now" at cache-write time
+/// (`memo_scan.rs`). The timestamp is authenticated (HMAC-covered) but
+/// never independently verified against real chain time — a dishonest or
+/// clock-skewed sender could otherwise pin a silent payment permanently at
+/// the top of Most Recent / a conversation's sort order. Generous enough to
+/// absorb ordinary clock drift between two independent devices, not a
+/// precision guarantee.
+pub const OPP2_TIMESTAMP_FUTURE_TOLERANCE_SECS: u32 = 300;
+
+/// Clamp a [`MEMO_TAG_SILENT_PAYMENT`] memo's sender-written `timestamp` to
+/// no more than [`OPP2_TIMESTAMP_FUTURE_TOLERANCE_SECS`] ahead of this
+/// device's own current time — see that constant's doc comment. Never
+/// clamps a timestamp that's in the past (an old, honestly-late-arriving
+/// payment is not the risk this guards against).
+pub fn clamp_opp2_timestamp(timestamp: u32) -> u32 {
+    let now: u32 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        .try_into()
+        .unwrap_or(u32::MAX);
+    timestamp.min(now.saturating_add(OPP2_TIMESTAMP_FUTURE_TOLERANCE_SECS))
+}
+
 /// A decrypted `encryptedMessage`, reconstructed for a thread view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThreadMessage {
@@ -163,6 +209,13 @@ pub struct LoadedThread {
     /// page.
     pub all_decoded: Vec<ThreadMessage>,
     pub messages: Vec<ThreadMessage>,
+    /// Every locally-resolved `OPP2` silent payment with this counterparty
+    /// — never document-backed, so these merge into the same rendered
+    /// timeline as `messages` (by `SilentPaymentRecord::timestamp`) at the
+    /// UI layer, the same way `receipt_alerts` already does, rather than
+    /// living inside `messages`/`all_decoded` itself. See
+    /// `WalletBackend::orchardpay_list_silent_payments`.
+    pub silent_payments: Vec<crate::model::orchardpay::SilentPaymentRecord>,
     pub receipt_alerts: Vec<ReceiptAlert>,
     pub history_cursor: HistoryCursor,
     /// Whether some documents may not have made it into `all_decoded` —
@@ -196,17 +249,19 @@ fn synthetic_ecdh_public_key(bytes: &[u8], purpose: Purpose) -> IdentityPublicKe
 /// both ReferenceIDs (to tag outbound documents / query inbound ones) and
 /// the counterparty's cached ECDH pubkeys (to derive both directional
 /// secrets with no network call).
-struct EstablishedRelationship {
-    my_reference_id: [u8; 32],
-    their_reference_id: [u8; 32],
-    counterparty_encryption_pubkey: Vec<u8>,
-    counterparty_decryption_pubkey: Vec<u8>,
+pub(crate) struct EstablishedRelationship {
+    pub(crate) my_reference_id: [u8; 32],
+    pub(crate) their_reference_id: [u8; 32],
+    pub(crate) counterparty_encryption_pubkey: Vec<u8>,
+    pub(crate) counterparty_decryption_pubkey: Vec<u8>,
 }
 
 /// Resolve `counterparty_identity_id`'s `Established` local contact state
 /// for `owner_id` under `contract_id`, or a typed error if no relationship
-/// exists yet or the handshake with them hasn't completed.
-fn established_state(
+/// exists yet or the handshake with them hasn't completed. `pub(crate)` so
+/// sibling modules (e.g. `silent_payment`) that also require an established
+/// relationship can reuse this instead of re-implementing the same lookup.
+pub(crate) fn established_state(
     backend: &crate::wallet_backend::WalletBackend,
     contract_id: Identifier,
     owner_id: Identifier,
@@ -235,8 +290,10 @@ fn established_state(
 
 /// The ECDH secret for messages I *send* to `counterparty_identity_id`
 /// (tagged with my own `refId`): my ENCRYPTION key + their cached
-/// DECRYPTION pubkey.
-async fn outbound_shared_secret(
+/// DECRYPTION pubkey. `pub(crate)` so sibling modules (e.g.
+/// `silent_payment`) needing the same per-relationship secret don't
+/// re-derive it differently.
+pub(crate) async fn outbound_shared_secret(
     app_context: &Arc<AppContext>,
     qualified_identity: &QualifiedIdentity,
     orchardpay_contract_id: Identifier,
@@ -1406,14 +1463,18 @@ async fn fetch_latest_message_created_at(
 #[derive(Debug, Clone)]
 pub struct RecentContactActivity {
     pub identity_id: Identifier,
-    /// The sort key: the latest message timestamp if any messages have
-    /// been exchanged, otherwise the `contactAnchor`'s own `$createdAt`
-    /// (when the relationship was established) as a fallback, so contacts
-    /// with no conversation yet still sort somewhere meaningful.
+    /// The sort key: the latest message or silent-payment timestamp if any
+    /// conversation activity exists, otherwise the `contactAnchor`'s own
+    /// `$createdAt` (when the relationship was established) as a fallback,
+    /// so contacts with no activity yet still sort somewhere meaningful.
     pub last_activity: Option<u64>,
     /// `false` means `last_activity` (if `Some`) is the anchor-date
-    /// fallback, not a real message timestamp — the UI shows "No messages
-    /// yet" instead of a "last activity" label in that case.
+    /// fallback, not a real activity timestamp — the UI shows "No messages
+    /// yet" instead of a "last activity" label in that case. Despite the
+    /// name, `true` also covers a contact whose only activity is an `OPP2`
+    /// silent payment (no message ever sent) — the UI's own label
+    /// (`recent_activity_label`) says "Last activity", not "Last message",
+    /// so this stays accurate either way.
     pub has_messages: bool,
 }
 
@@ -1472,6 +1533,7 @@ pub async fn fetch_recent_activity(
         })
         .collect();
 
+    let backend_ref = &backend;
     let contract_ref = &orchardpay_contract;
     let futures = established.into_iter().map(move |contact| async move {
         let (mine, theirs) = futures::future::join(
@@ -1484,11 +1546,22 @@ pub async fn fetch_recent_activity(
             ),
         )
         .await;
+        // Local-only, no network call — folded in alongside the two message
+        // queries rather than requiring a separate fetch pass. A silent
+        // payment counts as real conversation activity the same way a
+        // message does, for both the sort key and `has_messages`.
+        let latest_silent_payment = backend_ref
+            .orchardpay_list_silent_payments(&contract_ref.id(), &owner_id, &contact.identity_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.timestamp as u64 * 1000)
+            .max();
         let latest_message = mine
             .ok()
             .flatten()
             .into_iter()
             .chain(theirs.ok().flatten())
+            .chain(latest_silent_payment)
             .max();
         match latest_message {
             Some(ts) => RecentContactActivity {
@@ -1666,10 +1739,19 @@ pub async fn load_thread(
         || their_page.may_be_incomplete
         || mine_decode_failed
         || their_decode_failed;
+    // Local-only (a k/v prefix scan, no network) and cheap enough to fetch
+    // in full every time — unlike `messages`, which pages through a network
+    // query, there's no pagination story needed here.
+    let silent_payments = backend.orchardpay_list_silent_payments(
+        &orchardpay_contract.id(),
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     Ok(LoadedThread {
         all_decoded,
         messages,
+        silent_payments,
         receipt_alerts,
         history_cursor,
         may_be_incomplete,
@@ -1903,10 +1985,16 @@ pub async fn load_more_history(
         their_before: new_their_before,
     };
     let (messages, receipt_alerts) = assemble_thread(&all_decoded, &history_cursor);
+    let silent_payments = backend.orchardpay_list_silent_payments(
+        &orchardpay_contract.id(),
+        &owner_id,
+        &counterparty_identity_id,
+    )?;
 
     Ok(LoadedThread {
         all_decoded,
         messages,
+        silent_payments,
         receipt_alerts,
         history_cursor,
         may_be_incomplete,
@@ -2099,5 +2187,50 @@ mod tests {
         );
         assert_eq!(cursor, Some(999));
         assert!(!may_be_incomplete);
+    }
+
+    #[test]
+    fn clamp_opp2_timestamp_passes_through_present_and_past_values() {
+        let now: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .try_into()
+            .unwrap();
+        assert_eq!(clamp_opp2_timestamp(now), now);
+        assert_eq!(clamp_opp2_timestamp(now - 10_000), now - 10_000);
+    }
+
+    #[test]
+    fn clamp_opp2_timestamp_clamps_far_future_values() {
+        let now: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .try_into()
+            .unwrap();
+        let far_future = now + 1_000_000;
+        let clamped = clamp_opp2_timestamp(far_future);
+        assert!(
+            clamped <= now + OPP2_TIMESTAMP_FUTURE_TOLERANCE_SECS,
+            "a far-future timestamp must be clamped down near the current time"
+        );
+        assert_ne!(clamped, far_future);
+    }
+
+    #[test]
+    fn clamp_opp2_timestamp_allows_small_clock_skew() {
+        let now: u32 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .try_into()
+            .unwrap();
+        let slightly_ahead = now + 30;
+        assert_eq!(
+            clamp_opp2_timestamp(slightly_ahead),
+            slightly_ahead,
+            "modest clock skew within tolerance must not be altered"
+        );
     }
 }

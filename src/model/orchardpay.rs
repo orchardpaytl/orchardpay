@@ -216,6 +216,32 @@ mod scheduled_anchor_replace_tests {
     }
 }
 
+/// A locally-cached resolution of an `OPP2` "silent payment" — a real
+/// shielded transfer to/from an `Established` contact with no backing
+/// Platform document. Written either by the sender itself immediately
+/// (every field is already known with certainty) or by the recipient's
+/// eager incoming-memo scan once it successfully matches the transfer's
+/// HMAC against exactly one `Established` contact's derived key — never
+/// written for a memo that matched zero or more than one contact (see
+/// `docs/orchardpay/PROTOCOL_DESIGN.md`'s "silent payments" section for the
+/// ambiguous-match policy: the underlying transfer still counts toward the
+/// wallet's normal balance either way, only the conversational attribution
+/// is what's foregone). See `WalletBackend::orchardpay_get_silent_payment`
+/// for the k/v sidecar this backs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SilentPaymentRecord {
+    pub amount: u64,
+    /// Sender-written Unix-seconds timestamp from the memo, authenticated
+    /// as part of the HMAC tag (so it can't be altered in transit without
+    /// invalidating the tag) but never independently verified against real
+    /// chain time — a dishonest sender's own clock could still be wrong or
+    /// deliberately skewed. Cosmetic ordering hint only, clamped to a sane
+    /// window relative to local receive time before caching; never trusted
+    /// for authenticity or amount.
+    pub timestamp: u32,
+    pub from_me: bool,
+}
+
 /// What a [`ShieldedActivityRow`] represents: a received note (still
 /// spendable or already consumed) or an outgoing send recovered via OVK.
 /// A typed discriminant instead of matching on the display label, since the

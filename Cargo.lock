@@ -6108,6 +6108,8 @@ dependencies = [
  "futures",
  "grovestark",
  "hex",
+ "hkdf",
+ "hmac",
  "humantime",
  "image",
  "itertools 0.14.0",

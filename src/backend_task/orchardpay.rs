@@ -12,6 +12,7 @@ pub mod keys;
 pub mod memo_scan;
 pub mod messages;
 pub mod shielded_address;
+pub mod silent_payment;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
@@ -173,6 +174,19 @@ pub enum OrchardPayTask {
     /// is only for the no-request path.
     SendDirect {
         owner_identity_id: dash_sdk::platform::Identifier,
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    /// Send a real payment to an `Established` contact with no backing
+    /// document — a "silent payment", so no public document-creation event
+    /// precedes the transfer's broadcast. Unlike `SendDirect`, this still
+    /// shows up in the right conversation (via the eager incoming-memo
+    /// scan's `OPP2` resolution), and unlike `SendPayment`, it requires no
+    /// `identity_key` — nothing gets signed, since no document is created.
+    /// See `silent_payment::send_silent_payment`.
+    SendSilentPayment {
+        qualified_identity: QualifiedIdentity,
         counterparty_identity_id: dash_sdk::platform::Identifier,
         seed_hash: WalletSeedHash,
         amount: u64,
@@ -452,6 +466,22 @@ impl AppContext {
                 )
                 .await
             }
+            OrchardPayTask::SendSilentPayment {
+                qualified_identity,
+                counterparty_identity_id,
+                seed_hash,
+                amount,
+            } => {
+                silent_payment::send_silent_payment(
+                    self,
+                    sdk,
+                    qualified_identity,
+                    counterparty_identity_id,
+                    seed_hash,
+                    amount,
+                )
+                .await
+            }
             OrchardPayTask::EditMessage {
                 qualified_identity,
                 identity_key,
@@ -536,6 +566,7 @@ impl AppContext {
                 let messages::LoadedThread {
                     all_decoded,
                     messages,
+                    silent_payments,
                     receipt_alerts,
                     history_cursor,
                     may_be_incomplete,
@@ -551,6 +582,7 @@ impl AppContext {
                     counterparty_identity_id,
                     all_decoded,
                     messages,
+                    silent_payments,
                     receipt_alerts,
                     history_cursor,
                     may_be_incomplete,
@@ -567,6 +599,7 @@ impl AppContext {
                 let messages::LoadedThread {
                     all_decoded,
                     messages,
+                    silent_payments,
                     receipt_alerts,
                     history_cursor,
                     may_be_incomplete,
@@ -585,6 +618,7 @@ impl AppContext {
                     counterparty_identity_id,
                     all_decoded,
                     messages,
+                    silent_payments,
                     receipt_alerts,
                     history_cursor,
                     may_be_incomplete,

@@ -652,6 +652,10 @@ pub enum BackendTaskSuccessResult {
         /// over the complete accumulated set. Not rendered directly.
         all_decoded: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
         messages: Vec<crate::backend_task::orchardpay::messages::ThreadMessage>,
+        /// Every locally-resolved `OPP2` silent payment with this
+        /// counterparty — merged into the same rendered timeline as
+        /// `messages` at the UI layer. See `messages::LoadedThread::silent_payments`.
+        silent_payments: Vec<crate::model::orchardpay::SilentPaymentRecord>,
         /// Saved `PaymentRequestReceipt`s whose original `PaymentRequest`
         /// no longer matches them (deleted, changed kind, or tampered
         /// amount/memo). See `messages::load_thread`'s anomaly-detection
@@ -685,6 +689,19 @@ pub enum BackendTaskSuccessResult {
     /// established-relationship `Payment` flow — conflating the two would
     /// misdescribe what happened to any future code matching on this type.
     OrchardPayDirectSendCompleted {
+        counterparty_identity_id: dash_sdk::platform::Identifier,
+        amount: u64,
+    },
+    /// Result of `OrchardPayTask::SendSilentPayment` — a real shielded
+    /// transfer to an `Established` contact completed with no backing
+    /// document, tagged so it still shows up in that contact's
+    /// conversation. See `backend_task::orchardpay::silent_payment::send_silent_payment`.
+    /// Deliberately distinct from [`Self::OrchardPayPaymentSent`] (always
+    /// document-backed) and [`Self::OrchardPayDirectSendCompleted`] (no
+    /// relationship required, never appears in any conversation) —
+    /// conflating any of the three would misdescribe what happened to any
+    /// future code matching on this type.
+    OrchardPaySilentPaymentSent {
         counterparty_identity_id: dash_sdk::platform::Identifier,
         amount: u64,
     },
