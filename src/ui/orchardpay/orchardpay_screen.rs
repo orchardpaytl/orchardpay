@@ -1030,30 +1030,30 @@ impl OrchardPayScreen {
 
         ui.horizontal(|ui| {
             ui.heading("Shielded Transaction History");
+            egui::ComboBox::from_id_salt("shielded_activity_filter")
+                .width(160.0)
+                .selected_text(match self.shielded_activity_filter {
+                    ShieldedActivityFilter::AllShielded => "All Shielded",
+                    ShieldedActivityFilter::OnlyOrchardPay => "Only OrchardPay",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.shielded_activity_filter,
+                        ShieldedActivityFilter::AllShielded,
+                        "All Shielded",
+                    );
+                    ui.selectable_value(
+                        &mut self.shielded_activity_filter,
+                        ShieldedActivityFilter::OnlyOrchardPay,
+                        "Only OrchardPay",
+                    );
+                });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Refresh").clicked() {
                     self.shielded_activity = None;
                     self.shielded_activity_dispatched = false;
                     self.shielded_activity_scroll_to_top_pending = true;
                 }
-                egui::ComboBox::from_id_salt("shielded_activity_filter")
-                    .width(160.0)
-                    .selected_text(match self.shielded_activity_filter {
-                        ShieldedActivityFilter::AllShielded => "All Shielded",
-                        ShieldedActivityFilter::OnlyOrchardPay => "Only OrchardPay",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.shielded_activity_filter,
-                            ShieldedActivityFilter::AllShielded,
-                            "All Shielded",
-                        );
-                        ui.selectable_value(
-                            &mut self.shielded_activity_filter,
-                            ShieldedActivityFilter::OnlyOrchardPay,
-                            "Only OrchardPay",
-                        );
-                    });
             });
         });
         ui.label(
