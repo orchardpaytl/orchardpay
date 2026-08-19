@@ -43,7 +43,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{StyledCheckbox, island_central_panel};
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
 };
@@ -218,11 +218,18 @@ pub struct OrchardPayScreen {
     /// matching `search_query`'s own persistence across subscreen switches.
     add_contact_message: String,
     /// Direct Send's own optional introduction — independent of
-    /// `add_contact_message`, only sent when the confirmation dialog's
-    /// "Include a contact request?" checkbox ends up checked; discarded
+    /// `add_contact_message`, only shown/editable and only sent when
+    /// `direct_send_include_contact_request` is checked; discarded
     /// otherwise (a bare `SendDirect` has no message/document channel at
     /// all).
     direct_send_message: String,
+    /// Direct Send's on-page "Include a contact request?" checkbox.
+    /// Decided before the confirmation modal opens — the modal just
+    /// confirms whichever task this already selected (`InitiateContact`
+    /// vs `SendDirect`), unlike the generic `ConfirmationDialog` checkbox
+    /// mechanism (still used by `message_thread_screen.rs`'s "Save
+    /// Receipt" dialog) where the choice is made inside the modal itself.
+    direct_send_include_contact_request: bool,
     /// `None` = not yet known (renders a "checking…" state, not the
     /// "publish" prompt — those two must never be conflated). `Some(true)` =
     /// confirmed published, seeded from the local cache
@@ -322,6 +329,7 @@ impl OrchardPayScreen {
             direct_send_amount: None,
             add_contact_message: String::new(),
             direct_send_message: String::new(),
+            direct_send_include_contact_request: false,
             // If the cache already confirms it, skip the check entirely —
             // no network round-trip, no "checking…"/"publish" flash on open.
             shielded_address_check_dispatched: has_shielded_address == Some(true),
@@ -1294,13 +1302,6 @@ impl OrchardPayScreen {
 
         ui.heading("Send Friend Request");
         ui.add_space(6.0);
-        ui.label("Add a short message (optional):");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.add_contact_message)
-                .char_limit(MAX_INITIAL_MESSAGE_CHARS)
-                .desired_width(ui.available_width()),
-        );
-        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
             ui.text_edit_singleline(&mut self.search_query);
@@ -1318,6 +1319,13 @@ impl OrchardPayScreen {
             }
         });
         ui.add_space(10.0);
+        ui.label("Add a short message (optional):");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.add_contact_message)
+                .char_limit(MAX_INITIAL_MESSAGE_CHARS)
+                .desired_width(ui.available_width() / 3.0),
+        );
+        ui.add_space(12.0);
 
         if self.searching {
             ui.label("Searching…");
@@ -1382,11 +1390,21 @@ impl OrchardPayScreen {
                                         result.identity_id,
                                         result.username.clone(),
                                         ANCHOR_SIGNAL_AMOUNT_CREDITS,
-                                        initial_message,
+                                        initial_message.clone(),
                                     );
+                                    let confirm_message = match &initial_message {
+                                        Some(msg) => format!(
+                                            "Send a contact request to {}?\n\nMessage: \"{msg}\"",
+                                            result.username
+                                        ),
+                                        None => format!(
+                                            "Send a contact request to {}?",
+                                            result.username
+                                        ),
+                                    };
                                     self.open_confirmation(
                                         "Send Contact Request",
-                                        format!("Send a contact request to {}?", result.username),
+                                        confirm_message,
                                         confirm_action,
                                         false,
                                         result.identity_id,
@@ -1448,18 +1466,6 @@ impl OrchardPayScreen {
         response.inner.update(&mut self.direct_send_amount);
         ui.add_space(10.0);
 
-        // Independent of the "Include a contact request?" checkbox in the
-        // confirmation dialog below — this text only ends up sent if that
-        // checkbox is checked at confirm time; a bare Direct Send discards
-        // it (no message/document channel exists for a plain transfer).
-        ui.label("Add a short message (optional, only sent if bundled with a contact request):");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.direct_send_message)
-                .char_limit(MAX_INITIAL_MESSAGE_CHARS)
-                .desired_width(ui.available_width()),
-        );
-        ui.add_space(6.0);
-
         ui.horizontal(|ui| {
             ui.label("Search by DPNS name:");
             ui.text_edit_singleline(&mut self.search_query);
@@ -1477,6 +1483,23 @@ impl OrchardPayScreen {
             }
         });
         ui.add_space(10.0);
+
+        StyledCheckbox::new(
+            &mut self.direct_send_include_contact_request,
+            "Include a contact request?",
+        )
+        .show(ui);
+        ui.add_space(6.0);
+
+        if self.direct_send_include_contact_request {
+            ui.label("Add a short message (optional):");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.direct_send_message)
+                    .char_limit(MAX_INITIAL_MESSAGE_CHARS)
+                    .desired_width(ui.available_width() / 3.0),
+            );
+            ui.add_space(12.0);
+        }
 
         if self.searching {
             ui.label("Searching…");
@@ -1535,24 +1558,34 @@ impl OrchardPayScreen {
                                 response
                             };
                             if response.clicked() {
-                                let message = self.direct_send_message.trim();
-                                if !message.is_empty()
-                                    && let Err(source) = validate_initial_message_text(message)
-                                {
-                                    MessageBanner::set_global(
-                                        ui.ctx(),
-                                        "The message is too long. Use 250 characters or fewer and try again.",
-                                        MessageType::Error,
-                                    )
-                                    .with_details(source);
-                                } else {
-                                    let initial_message = (!message.is_empty())
-                                        .then(|| message.to_string());
+                                if !self.direct_send_include_contact_request {
                                     self.direct_send_clicked(
                                         result.identity_id,
                                         result.username.clone(),
-                                        initial_message,
+                                        None,
+                                        false,
                                     );
+                                } else {
+                                    let message = self.direct_send_message.trim();
+                                    if !message.is_empty()
+                                        && let Err(source) = validate_initial_message_text(message)
+                                    {
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "The message is too long. Use 250 characters or fewer and try again.",
+                                            MessageType::Error,
+                                        )
+                                        .with_details(source);
+                                    } else {
+                                        let initial_message = (!message.is_empty())
+                                            .then(|| message.to_string());
+                                        self.direct_send_clicked(
+                                            result.identity_id,
+                                            result.username.clone(),
+                                            initial_message,
+                                            true,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1571,15 +1604,19 @@ impl OrchardPayScreen {
         action
     }
 
-    /// Opens Direct Send's confirmation modal. Mirrors `open_pay_confirmation`
-    /// in `message_thread_screen.rs`: the final `AppAction` depends on the
-    /// dialog's own checkbox, only known at confirm time, so it's built
-    /// lazily inside a `move` closure over owned locals.
+    /// Opens Direct Send's confirmation modal. Unlike the generic
+    /// `open_confirmation_lazy` checkbox mechanism (still used by
+    /// `message_thread_screen.rs`'s "Save Receipt" dialog), whether a
+    /// contact request is bundled in is decided by the on-page
+    /// `direct_send_include_contact_request` checkbox *before* this is
+    /// called — so the final `OrchardPayTask` is already known and the
+    /// modal just confirms it via the eager `open_confirmation`.
     fn direct_send_clicked(
         &mut self,
         counterparty_identity_id: Identifier,
         counterparty_name: String,
         initial_message: Option<String>,
+        include_contact_request: bool,
     ) {
         let Some(amount_credits) = self.direct_send_amount.as_ref().map(Amount::value) else {
             return;
@@ -1596,36 +1633,45 @@ impl OrchardPayScreen {
         };
         let owner_identity_id = identity.identity.id();
         let display_name = strip_dash_suffix(&counterparty_name).to_string();
-        let message = format!(
-            "Send {} to {display_name}?",
-            format_credits_as_dash(amount_credits)
-        );
+        let message = match (&initial_message, include_contact_request) {
+            (Some(msg), true) => format!(
+                "Send {} to {display_name} and send them a contact request?\n\nMessage: \"{msg}\"",
+                format_credits_as_dash(amount_credits)
+            ),
+            (None, true) => format!(
+                "Send {} to {display_name} and send them a contact request?",
+                format_credits_as_dash(amount_credits)
+            ),
+            (_, false) => format!(
+                "Send {} to {display_name}?",
+                format_credits_as_dash(amount_credits)
+            ),
+        };
 
-        self.open_confirmation_lazy(
+        let task = if include_contact_request {
+            OrchardPayTask::InitiateContact {
+                qualified_identity: identity,
+                identity_key: key,
+                counterparty_identity_id,
+                counterparty_name,
+                seed_hash,
+                amount_credits,
+                initial_message,
+            }
+        } else {
+            OrchardPayTask::SendDirect {
+                owner_identity_id,
+                counterparty_identity_id,
+                seed_hash,
+                amount: amount_credits,
+            }
+        };
+        let action = AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)));
+
+        self.open_confirmation(
             "Confirm Direct Send",
             message,
-            Some(("Include a contact request?", false)),
-            Box::new(move |include_contact_request| {
-                let task = if include_contact_request {
-                    OrchardPayTask::InitiateContact {
-                        qualified_identity: identity,
-                        identity_key: key,
-                        counterparty_identity_id,
-                        counterparty_name,
-                        seed_hash,
-                        amount_credits,
-                        initial_message,
-                    }
-                } else {
-                    OrchardPayTask::SendDirect {
-                        owner_identity_id,
-                        counterparty_identity_id,
-                        seed_hash,
-                        amount: amount_credits,
-                    }
-                };
-                AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(task)))
-            }),
+            action,
             true, // danger_mode: moves real DASH either way (PROTOCOL_DESIGN.md §2)
             counterparty_identity_id,
         );
@@ -2540,11 +2586,18 @@ mod tests {
     }
 
     #[test]
-    fn direct_send_click_opens_confirmation_with_checkbox() {
+    fn direct_send_checkbox_lives_on_page_not_in_modal() {
         let (screen, _temp_dir, _counterparty_id) = direct_send_screen();
 
         let observed_action = Rc::new(RefCell::new(AppAction::None));
         let mut harness = mount_direct_send(screen, observed_action.clone());
+
+        assert!(
+            harness
+                .query_by_label("Include a contact request?")
+                .is_some(),
+            "the checkbox must be on the Direct Send page itself, before any click"
+        );
 
         click_button_in_one_frame(&mut harness, "Direct Send");
 
@@ -2553,11 +2606,6 @@ mod tests {
             "the original Direct Send click must not dispatch a backend task"
         );
         assert!(harness.query_by_label("Confirm Direct Send").is_some());
-        assert!(
-            harness
-                .query_by_label("Include a contact request?")
-                .is_some()
-        );
     }
 
     #[test]
@@ -2567,8 +2615,8 @@ mod tests {
         let observed_action = Rc::new(RefCell::new(AppAction::None));
         let mut harness = mount_direct_send(screen, observed_action.clone());
 
+        // On-page checkbox left at its unchecked default.
         click_button_in_one_frame(&mut harness, "Direct Send");
-        // Checkbox left at its unchecked default.
         harness.get_by_label("Confirm").click_accesskit();
         harness.step();
 
@@ -2595,11 +2643,11 @@ mod tests {
         let observed_action = Rc::new(RefCell::new(AppAction::None));
         let mut harness = mount_direct_send(screen, observed_action.clone());
 
-        click_button_in_one_frame(&mut harness, "Direct Send");
         harness
             .get_by_label("Include a contact request?")
             .click_accesskit();
         harness.step();
+        click_button_in_one_frame(&mut harness, "Direct Send");
         harness.get_by_label("Confirm").click_accesskit();
         harness.step();
 
