@@ -171,6 +171,13 @@ pub fn opp2_memo_fingerprint(timestamp: u32, mac: &[u8; OPP2_MAC_LEN]) -> String
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContactAnchorPayload {
     pub reference_id: [u8; 32],
+    /// A second per-relationship identifier, generated and exchanged
+    /// alongside `reference_id` but for a distinct future purpose: once
+    /// Dash Platform supports shielded (ownerId-less) documents, this is
+    /// the identifier a sender will publish shielded documents under, so
+    /// the receiving party (via OrchardParty) can find them. No reader/
+    /// query logic exists yet — this field only carries the value.
+    pub shie_id: [u8; 32],
     /// Encrypted the same way DashPay's legacy contact-key exchange does it
     /// (`encrypt_extended_public_key` in `src/backend_task/dashpay/
     /// encryption.rs`), reused unmodified — this field carries that
@@ -223,6 +230,14 @@ pub struct AnchorDataRecord {
     pub my_reference_id: [u8; 32],
     /// `None` until the counterparty's return signal is decrypted.
     pub their_reference_id: Option<[u8; 32]>,
+    /// Mirrors `data`'s own `shie_id` — same rationale as `my_reference_id`.
+    pub my_shie_id: [u8; 32],
+    /// Seeded with a self-recognizable filler (this identity's own ID, same
+    /// convention as `their_reference_id`'s filler) until the counterparty's
+    /// return signal is decrypted, so this field is always `Some` from
+    /// creation regardless of role — see `their_reference_id`'s own filler
+    /// note and the 2026-07-27 adversarial audit's finding 5.
+    pub their_shie_id: Option<[u8; 32]>,
     /// Mirrors of `data`'s own optional fields — same rationale as
     /// `my_reference_id`: everything given to this contact should survive
     /// independently of the fragile ECDH path.
@@ -381,6 +396,7 @@ mod tests {
         let shared_key = [7u8; 32];
         let payload = ContactAnchorPayload {
             reference_id: [1u8; 32],
+            shie_id: [11u8; 32],
             core_payment_xpub: Some(vec![2u8; 96]),
             dedicated_shielded_address: None,
             initial_message: Some(b"hi".to_vec()),
@@ -397,6 +413,7 @@ mod tests {
     fn decrypt_fails_under_wrong_key() {
         let payload = ContactAnchorPayload {
             reference_id: [1u8; 32],
+            shie_id: [11u8; 32],
             core_payment_xpub: None,
             dedicated_shielded_address: None,
             initial_message: None,
@@ -421,6 +438,8 @@ mod tests {
             counterparty_name_snapshot: Some("bob.dash".to_string()),
             my_reference_id: [1u8; 32],
             their_reference_id: Some([2u8; 32]),
+            my_shie_id: [12u8; 32],
+            their_shie_id: Some([13u8; 32]),
             my_initial_message: Some(b"hi".to_vec()),
             my_core_payment_xpub: Some(vec![4u8; 96]),
             my_dedicated_shielded_address: None,
@@ -442,6 +461,8 @@ mod tests {
             counterparty_name_snapshot: None,
             my_reference_id: [1u8; 32],
             their_reference_id: None,
+            my_shie_id: [12u8; 32],
+            their_shie_id: None,
             my_initial_message: None,
             my_core_payment_xpub: None,
             my_dedicated_shielded_address: None,
@@ -469,6 +490,7 @@ mod tests {
         .expect("encode succeeds");
         let payload = ContactAnchorPayload {
             reference_id: [1u8; 32],
+            shie_id: [11u8; 32],
             core_payment_xpub: None,
             dedicated_shielded_address: None,
             initial_message: Some(encoded),
@@ -499,6 +521,7 @@ mod tests {
         let shared_key = [41u8; 32];
         let payload = ContactAnchorPayload {
             reference_id: [1u8; 32],
+            shie_id: [11u8; 32],
             core_payment_xpub: None,
             dedicated_shielded_address: None,
             initial_message: None,
@@ -525,6 +548,8 @@ mod tests {
             counterparty_name_snapshot: Some("bob.dash".to_string()),
             my_reference_id: [1u8; 32],
             their_reference_id: None,
+            my_shie_id: [12u8; 32],
+            their_shie_id: None,
             my_initial_message: Some(encoded),
             my_core_payment_xpub: None,
             my_dedicated_shielded_address: None,
@@ -574,6 +599,8 @@ mod tests {
             counterparty_name_snapshot: Some("a".repeat(63)), // DPNS max label length
             my_reference_id: [1u8; 32],
             their_reference_id: Some([2u8; 32]),
+            my_shie_id: [12u8; 32],
+            their_shie_id: Some([13u8; 32]),
             my_initial_message: Some(encoded),
             my_core_payment_xpub: Some(vec![4u8; 96]),
             my_dedicated_shielded_address: Some(vec![5u8; 43]),

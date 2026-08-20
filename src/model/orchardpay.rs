@@ -16,6 +16,7 @@ pub enum OrchardPayContactState {
     /// anchor.
     PendingOutbound {
         my_reference_id: [u8; 32],
+        my_shie_id: [u8; 32],
         my_anchor_document_id: [u8; 32],
         /// Counterparty's DPNS name, snapshotted at the moment the request
         /// was sent (reusing the same resolution already done for
@@ -42,6 +43,7 @@ pub enum OrchardPayContactState {
     /// — no anchor of my own exists for this relationship.
     PendingInboundUnaccepted {
         their_reference_id: [u8; 32],
+        their_shie_id: [u8; 32],
         their_anchor_document_id: [u8; 32],
         /// Counterparty's DPNS name, snapshotted when the request was
         /// detected. `None` if resolution failed or this relationship
@@ -65,8 +67,10 @@ pub enum OrchardPayContactState {
     /// party's anchor document needs to be fetched again after this point.
     Established {
         my_reference_id: [u8; 32],
+        my_shie_id: [u8; 32],
         my_anchor_document_id: [u8; 32],
         their_reference_id: [u8; 32],
+        their_shie_id: [u8; 32],
         /// Counterparty's contract-bounded ENCRYPTION/DECRYPTION public key
         /// bytes, cached at the same moment they were fetched for the
         /// `contactAnchor` handshake's ECDH secrets (mirroring
@@ -131,12 +135,14 @@ pub enum PendingOperationStep {
 /// this backs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PendingOrchardPayOperation {
-    /// An in-flight `initiate_contact`/`accept_contact` call. `my_reference_id`
-    /// and `my_anchor_document_id` are generated once, before the first
-    /// network call, and reused verbatim on any resume — never regenerated,
-    /// or the resumed transfer's memo would point at the wrong document.
+    /// An in-flight `initiate_contact`/`accept_contact` call. `my_reference_id`,
+    /// `my_shie_id`, and `my_anchor_document_id` are generated once, before
+    /// the first network call, and reused verbatim on any resume — never
+    /// regenerated, or the resumed transfer's memo would point at the wrong
+    /// document.
     ContactAnchor {
         my_reference_id: [u8; 32],
+        my_shie_id: [u8; 32],
         my_anchor_document_id: [u8; 32],
         step: PendingOperationStep,
     },

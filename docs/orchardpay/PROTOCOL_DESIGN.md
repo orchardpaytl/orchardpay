@@ -291,6 +291,11 @@ contains:
 pub struct ContactAnchorPayload {
     /// The only mandatory field.
     pub reference_id: [u8; 32],
+    /// A second per-relationship identifier, generated and exchanged the
+    /// same way as `reference_id` but for a distinct, forward-looking
+    /// purpose — see "`shie_id`: a forward-looking identifier for shielded
+    /// documents" below.
+    pub shie_id: [u8; 32],
     /// Optional: an extended pubkey for L1 Dash Core payments between the
     /// two parties, encrypted the same way DashPay's legacy contact-key
     /// exchange already does it — see `encrypt_extended_public_key` in
@@ -321,6 +326,32 @@ pub struct ContactAnchorPayload {
 `extra` is reserved for future use; no defined content yet. `anchorData` has
 its own, different content model and encryption scheme — see the next
 section; it no longer just mirrors the counterparty's `data`.
+
+### `shie_id`: a forward-looking identifier for shielded documents
+
+Dash Platform will support shielded documents — documents with no `ownerId`,
+built for privacy use cases the way `contactAnchor`/`encryptedMessage`
+already are. OrchardParty (the next dApp planned inside OrchardPay) will use
+them: each side of a relationship needs a Platform identifier the *receiving*
+party can later use to find shielded documents the *sender* publishes under
+it, the same way `reference_id` today lets each side find the other's
+`encryptedMessage` documents via `refId`.
+
+`shie_id` is that identifier. It is generated and exchanged with exactly the
+same lifecycle as `reference_id` — same generation (`OsRng`, once, at anchor
+creation), same placement (`ContactAnchorPayload.shie_id` in the ECDH-shared
+`data` field; `AnchorDataRecord.my_shie_id`/`their_shie_id` in the
+wallet-local `anchorData` field), and the same filler-then-deferred-replace
+anti-fingerprinting treatment `their_reference_id` gets (see "Deletability"
+above and finding 5 of the 2026-07-27 adversarial audit) — so the two
+identifiers stay consistent and an outside observer gets no new signal from
+`shie_id`'s presence.
+
+As of this writing, `shie_id` has **no reader or query logic** — it is
+generated, exchanged, and persisted, but nothing consumes it yet. That's
+deliberate: OrchardParty doesn't exist yet, so there is nothing to design the
+lookup mechanism against. See `docs/ai-design/2026-08-19-orchardpay-shieid/README.md`
+for the full rationale and scope boundary.
 
 ### `anchorData`: a wallet-local recovery record (decided and implemented 2026-07-19)
 
@@ -412,6 +443,13 @@ pub struct AnchorDataRecord {
     /// `None` until the counterparty's return signal is decrypted; filled
     /// in by the `ReplaceDocument` at step 4 of the handshake above.
     pub their_reference_id: Option<[u8; 32]>,
+    /// Mirrors `data`'s own `shie_id` — same rationale as `my_reference_id`.
+    pub my_shie_id: [u8; 32],
+    /// Seeded with the same self-recognizable filler as `their_reference_id`
+    /// until the counterparty's return signal is decrypted, so this field is
+    /// always `Some` from creation regardless of role — see "`shie_id`: a
+    /// forward-looking identifier for shielded documents" above.
+    pub their_shie_id: Option<[u8; 32]>,
     /// Mirrors of `data`'s own optional fields — same rationale as
     /// `my_reference_id`: everything given to this contact should survive
     /// independently of the fragile ECDH path, not just the ReferenceID.

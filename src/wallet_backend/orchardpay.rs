@@ -1551,6 +1551,7 @@ mod tests {
 
         let op = PendingOrchardPayOperation::ContactAnchor {
             my_reference_id: [1u8; 32],
+            my_shie_id: [8u8; 32],
             my_anchor_document_id: [2u8; 32],
             step: PendingOperationStep::DocumentPublished,
         };
@@ -1606,6 +1607,7 @@ mod tests {
 
         let op = PendingOrchardPayOperation::ContactAnchor {
             my_reference_id: [4u8; 32],
+            my_shie_id: [8u8; 32],
             my_anchor_document_id: [5u8; 32],
             step: PendingOperationStep::TransferSent,
         };
@@ -1730,6 +1732,7 @@ mod tests {
         // Both counterparties have ordinary contact state...
         let state = OrchardPayContactState::PendingOutbound {
             my_reference_id: [1u8; 32],
+            my_shie_id: [8u8; 32],
             my_anchor_document_id: [2u8; 32],
             name: None,
             created_at: None,
@@ -1890,6 +1893,7 @@ mod tests {
 
         let op = PendingOrchardPayOperation::ContactAnchor {
             my_reference_id: [7u8; 32],
+            my_shie_id: [9u8; 32],
             my_anchor_document_id: [8u8; 32],
             step: PendingOperationStep::TransferSent,
         };
@@ -1926,8 +1930,10 @@ mod tests {
 
         let state = OrchardPayContactState::Established {
             my_reference_id: [9u8; 32],
+            my_shie_id: [12u8; 32],
             my_anchor_document_id: [10u8; 32],
             their_reference_id: [11u8; 32],
+            their_shie_id: [13u8; 32],
             counterparty_encryption_pubkey: vec![1, 2, 3],
             counterparty_decryption_pubkey: vec![4, 5, 6],
             name: None,
@@ -1979,8 +1985,10 @@ mod tests {
 
         let state = OrchardPayContactState::Established {
             my_reference_id: [21u8; 32],
+            my_shie_id: [24u8; 32],
             my_anchor_document_id: [22u8; 32],
             their_reference_id: [23u8; 32],
+            their_shie_id: [25u8; 32],
             counterparty_encryption_pubkey: vec![7, 8, 9],
             counterparty_decryption_pubkey: vec![10, 11, 12],
             name: Some("alice".to_string()),
@@ -2021,6 +2029,7 @@ mod tests {
 
         let state = OrchardPayContactState::PendingOutbound {
             my_reference_id: [1u8; 32],
+            my_shie_id: [8u8; 32],
             my_anchor_document_id: [2u8; 32],
             name: None,
             created_at: None,
