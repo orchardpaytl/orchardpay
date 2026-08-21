@@ -1264,7 +1264,7 @@ async fn fetch_messages_by_ref_id(
         DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
             |e| OrchardPayError::QueryCreation {
                 query_target: "encryptedMessage thread fetch",
-                source: Box::new(e),
+                source: Box::new(e.into()),
             },
         )?;
     query = query
@@ -1439,7 +1439,7 @@ async fn fetch_latest_message_created_at(
         DocumentQuery::new(orchardpay_contract.clone(), ENCRYPTED_MESSAGE_DOCUMENT_TYPE).map_err(
             |e| OrchardPayError::QueryCreation {
                 query_target: "encryptedMessage latest-activity fetch",
-                source: Box::new(e),
+                source: Box::new(e.into()),
             },
         )?;
     query = query

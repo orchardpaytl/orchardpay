@@ -52,7 +52,7 @@ pub async fn search_contacts(
         DocumentQuery::new(app_context.dpns_contract.clone(), "domain").map_err(|e| {
             OrchardPayError::QueryCreation {
                 query_target: "DPNS domain search",
-                source: Box::new(e),
+                source: Box::new(e.into()),
             }
         })?;
     dpns_query = dpns_query

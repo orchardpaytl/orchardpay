@@ -175,7 +175,7 @@ async fn fetch_shielded_address_document(
     let mut query = DocumentQuery::new(orchardpay_contract.clone(), SHIELDED_ADDRESS_DOCUMENT_TYPE)
         .map_err(|e| OrchardPayError::QueryCreation {
             query_target: "shieldedAddress lookup",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         })?;
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),

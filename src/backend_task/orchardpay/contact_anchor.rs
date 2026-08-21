@@ -1493,7 +1493,7 @@ async fn resolve_dpns_name_for_identity(
         DocumentQuery::new(app_context.dpns_contract.clone(), "domain").map_err(|e| {
             OrchardPayError::QueryCreation {
                 query_target: "reverse DPNS name lookup",
-                source: Box::new(e),
+                source: Box::new(e.into()),
             }
         })?;
     query = query.with_where(WhereClause {
@@ -1540,7 +1540,7 @@ async fn fetch_anchor_document_by_id(
     let query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
         .map_err(|e| OrchardPayError::QueryCreation {
             query_target: "contactAnchor fetch by id",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         })?
         .with_document_id(&document_id);
 
@@ -1592,7 +1592,7 @@ async fn fetch_own_anchors(
     let mut query = DocumentQuery::new(orchardpay_contract.clone(), CONTACT_ANCHOR_DOCUMENT_TYPE)
         .map_err(|e| OrchardPayError::QueryCreation {
         query_target: "own contactAnchor recovery fetch",
-        source: Box::new(e),
+        source: Box::new(e.into()),
     })?;
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
