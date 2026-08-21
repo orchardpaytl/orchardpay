@@ -102,6 +102,7 @@ fn seed_three_stage_contacts(
             &outbound_id,
             &OrchardPayContactState::PendingOutbound {
                 my_reference_id: [1u8; 32],
+                my_shie_id: [11u8; 32],
                 my_anchor_document_id: [2u8; 32],
                 name: Some("Outbound Ollie".to_string()),
                 created_at: Some(1_000),
@@ -119,6 +120,7 @@ fn seed_three_stage_contacts(
             &inbound_id,
             &OrchardPayContactState::PendingInboundUnaccepted {
                 their_reference_id: [3u8; 32],
+                their_shie_id: [13u8; 32],
                 their_anchor_document_id: [4u8; 32],
                 name: Some("Inbound Ingrid".to_string()),
                 created_at: Some(2_000),
@@ -136,8 +138,10 @@ fn seed_three_stage_contacts(
             &established_id,
             &OrchardPayContactState::Established {
                 my_reference_id: [5u8; 32],
+                my_shie_id: [15u8; 32],
                 my_anchor_document_id: [6u8; 32],
                 their_reference_id: [7u8; 32],
+                their_shie_id: [17u8; 32],
                 counterparty_encryption_pubkey: vec![0u8; 32],
                 counterparty_decryption_pubkey: vec![0u8; 32],
                 name: Some("Established Eve".to_string()),
@@ -299,8 +303,10 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
                 &established_id,
                 &OrchardPayContactState::Established {
                     my_reference_id: [1u8; 32],
+                    my_shie_id: [21u8; 32],
                     my_anchor_document_id: [2u8; 32],
                     their_reference_id: [3u8; 32],
+                    their_shie_id: [23u8; 32],
                     counterparty_encryption_pubkey: vec![0u8; 32],
                     counterparty_decryption_pubkey: vec![0u8; 32],
                     name: Some("Older Message Established".to_string()),
@@ -320,6 +326,7 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
                 &pending_id,
                 &OrchardPayContactState::PendingInboundUnaccepted {
                     their_reference_id: [4u8; 32],
+                    their_shie_id: [24u8; 32],
                     their_anchor_document_id: [5u8; 32],
                     name: Some("Newer Pending Request".to_string()),
                     created_at: Some(seven_hours_ago),
@@ -410,6 +417,7 @@ fn pending_outbound_row_shows_message_snippet_when_present() {
                 &counterparty_id,
                 &OrchardPayContactState::PendingOutbound {
                     my_reference_id: [1u8; 32],
+                    my_shie_id: [31u8; 32],
                     my_anchor_document_id: [2u8; 32],
                     name: Some("Message Mia".to_string()),
                     created_at: Some(1_000),
@@ -475,6 +483,7 @@ fn pending_row_shows_amount_badge_above_default_signal_amount() {
                 &counterparty_id,
                 &OrchardPayContactState::PendingOutbound {
                     my_reference_id: [1u8; 32],
+                    my_shie_id: [32u8; 32],
                     my_anchor_document_id: [2u8; 32],
                     name: Some("Bundled Bob".to_string()),
                     created_at: Some(1_000),
@@ -517,8 +526,10 @@ fn established_row_never_shows_amount_badge_or_snippet() {
                 &counterparty_id,
                 &OrchardPayContactState::Established {
                     my_reference_id: [1u8; 32],
+                    my_shie_id: [33u8; 32],
                     my_anchor_document_id: [2u8; 32],
                     their_reference_id: [3u8; 32],
+                    their_shie_id: [34u8; 32],
                     counterparty_encryption_pubkey: vec![0u8; 32],
                     counterparty_decryption_pubkey: vec![0u8; 32],
                     name: Some("Connected Carl".to_string()),
