@@ -17,7 +17,7 @@ Diff/patch-id comparison against upstream is not trustworthy in this repo: the `
 4. For genuinely new commits, cherry-pick in upstream chronological order (oldest first) with `git cherry-pick -x`, do the `dash_evo_tool::` → `orchardpay::` rename follow-up (`grep -rl "dash_evo_tool::" --include="*.rs" .`), then build/test/fmt/clippy per `CLAUDE.md`.
 5. Append the newly-applied commits to the table below and update "Last checked".
 
-**Last checked:** 2026-07-31, against `dashpay-upstream/v1.0-dev` @ `2ee9fa64` (2026-07-31).
+**Last checked:** 2026-08-21, against `dashpay-upstream/v1.0-dev` @ `9d85c170` (2026-08-21).
 
 ## Applied commits
 
@@ -43,6 +43,9 @@ Diff/patch-id comparison against upstream is not trustworthy in this repo: the `
 | `c2e2c07f` | close two rounds of key-placement-resolution review findings (#948) | `a13d5869` | cherry-pick, 2026-07-31 sync |
 | `51de9590` | use selector ceiling for asset-lock Max (#937) | `027f6623` | cherry-pick, 2026-07-31 sync — also moved the `platform-wallet`/`dash-sdk` pin from branch-tracking to a frozen `rev = a18bd158`, matching upstream's current pin style; see `project_platform_wallet_pin_watch` |
 | `2ee9fa64` | stop epoch-fetch retry storm from exhausting the DAPI rate limit (#950) | `1ab22dff` | cherry-pick, 2026-07-31 sync |
+| `39b39928` | bump platform pin to PR #3968 tip / fix empty-script UTXO wallet-brick (#953) | `f1c81743` | cherry-pick, 2026-08-21 sync |
+| `b8fd0392` | isolate wallet databases from SPV cache + stop cross-wallet top-up corruption (#954) | `98a78351` | cherry-pick, 2026-08-21 sync — `docs/kv-keys.md` conflicted (store-name rename); resolved by keeping OrchardPay's own key/domain counts under the new `det-<net>.sqlite` name and renaming the leftover OrchardPay-key rows off the stale `platform-wallet.sqlite` name too |
+| `9d85c170` | bump platform pin to PR #3968 latest / 4784de03 (#958) | `a04f47e0` | cherry-pick, 2026-08-21 sync — `DocumentQuery::new` moved crates and its error type changed from `dash_sdk::Error` to `dash_platform_queries::Error`; upstream adapted its own call sites but OrchardPay-only code (`contact_anchor.rs`, `contact_search.rs`, `messages.rs`, `shielded_address.rs`) doesn't exist upstream and needed the same `.into()` conversion at 7 call sites, done as a separate follow-up commit `bbc48e3e` |
 
 ## Not applicable
 
