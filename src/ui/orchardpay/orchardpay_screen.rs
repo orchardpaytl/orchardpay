@@ -1783,11 +1783,18 @@ impl OrchardPayScreen {
         let Some(key) = self.selected_key.clone() else {
             return;
         };
+        let Some(wallet) = self.selected_wallet.clone() else {
+            return;
+        };
+        let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash()) else {
+            return;
+        };
         let action = AppAction::BackendTask(BackendTask::OrchardPayTask(Box::new(
             OrchardPayTask::DeleteOwnContactAnchor {
                 qualified_identity: identity,
                 identity_key: key,
                 counterparty_identity_id: counterparty,
+                seed_hash,
             },
         )));
         self.open_confirmation(

@@ -2703,6 +2703,7 @@ impl App for AppState {
                             contacts_recovered,
                             already_tracked,
                             undecryptable,
+                            tombstoned: _,
                         } => {
                             let mut msg = if contacts_recovered == 0 {
                                 format!(

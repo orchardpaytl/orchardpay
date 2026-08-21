@@ -218,13 +218,17 @@ const KV_PREFIX_VERIFIED_PAYMENT: &str = "det:orchardpay:verified_payment:";
 /// contact (`memo_scan.rs`). Scope: [`DetScope::Identity`] of the owner,
 /// same reasoning as [`KV_PREFIX_CONTACT`] — cascades on identity removal,
 /// never bleeds across identities sharing a wallet. Key shape:
-/// `det:orchardpay:silent:<contract_id_b58>:<counterparty_b58>:<fingerprint>`,
+/// `det:orchardpay:silent:<contract_id_b58>:<counterparty_b58>:<fingerprint>:<o|i>`,
 /// where `<fingerprint>` is [`crate::backend_task::orchardpay::encryption::opp2_memo_fingerprint`]'s 12-hex-char
 /// output — kept deliberately short (not the full timestamp+MAC) for the
 /// same [`platform_wallet_storage::kv::MAX_KEY_LEN`] (128) reason documented
 /// on [`KV_PREFIX_SCHEDULED_ANCHOR_REPLACE`]'s prefix: two full 44-char
 /// Identifiers already consume most of the budget before any per-note
-/// suffix is added.
+/// suffix is added. The trailing `<o|i>` (outgoing/incoming, from
+/// [`SilentPaymentRecord::from_me`]) exists so a party's own sent record and
+/// an incoming-attributed record can't collide on the same fingerprint —
+/// see [`silent_payment_key`]'s own doc comment and the 2026-08-21
+/// adversarial-audit addendum's finding 9.
 const KV_PREFIX_SILENT_PAYMENT: &str = "det:orchardpay:silent:";
 
 /// Presence marker: this identity's `shieldedAddress` document has been
@@ -384,13 +388,23 @@ fn scheduled_anchor_replace_key_prefix(contract_id: &Identifier) -> String {
     )
 }
 
+/// `from_me` is folded into the key (not just the stored `SilentPaymentRecord`
+/// value) so a party's own sent record and an incoming-attributed record
+/// sharing the same `(timestamp, mac)` fingerprint can never collide on one
+/// slot. Without this, a counterparty who receives a real silent payment can
+/// always read its `(timestamp, mac)` back out of the memo and later replay
+/// those exact bytes in a payment they send back, landing on the identical
+/// key and silently overwriting the original sender's own record of what
+/// they sent. See the 2026-08-21 adversarial-audit addendum, finding 9.
 fn silent_payment_key(
     contract_id: &Identifier,
     counterparty: &Identifier,
     fingerprint: &str,
+    from_me: bool,
 ) -> String {
+    let direction = if from_me { "o" } else { "i" };
     format!(
-        "{KV_PREFIX_SILENT_PAYMENT}{}:{}:{fingerprint}",
+        "{KV_PREFIX_SILENT_PAYMENT}{}:{}:{fingerprint}:{direction}",
         contract_id.to_string(Encoding::Base58),
         counterparty.to_string(Encoding::Base58)
     )
@@ -628,7 +642,7 @@ impl WalletBackend {
         record: &SilentPaymentRecord,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = silent_payment_key(contract_id, counterparty, fingerprint);
+        let key = silent_payment_key(contract_id, counterparty, fingerprint, record.from_me);
         self.kv()
             .put::<SilentPaymentRecord>(DetScope::Identity(&owner_buf), &key, record)
             .map_err(|e| TaskError::OrchardPaySidecarStorage { source: e })
@@ -1673,6 +1687,99 @@ mod tests {
             119,
             "worst-case length should match the prefix's documented budget; update the doc \
              comment on KV_PREFIX_SCHEDULED_ANCHOR_REPLACE if this changes"
+        );
+    }
+
+    /// `silent_payment_key` wasn't covered by
+    /// [`two_identifier_keys_stay_within_kv_max_len`] above (it takes a
+    /// third `fingerprint` argument the generic helper doesn't build), and
+    /// it's the tightest-budget key in this file even before finding 9's
+    /// fix — worth its own explicit worst-case assertion rather than
+    /// relying on the general test to happen to cover it.
+    #[test]
+    fn silent_payment_key_stays_within_kv_max_len() {
+        let contract_id = Identifier::new([0xffu8; 32]);
+        let counterparty = Identifier::new([0xffu8; 32]);
+        let fingerprint = "f".repeat(12); // opp2_memo_fingerprint's fixed output length
+
+        for from_me in [true, false] {
+            let key = silent_payment_key(&contract_id, &counterparty, &fingerprint, from_me);
+            assert!(
+                key.chars().count() <= platform_wallet_storage::kv::MAX_KEY_LEN,
+                "key {key:?} ({} chars) exceeds MAX_KEY_LEN ({})",
+                key.chars().count(),
+                platform_wallet_storage::kv::MAX_KEY_LEN
+            );
+        }
+
+        assert_eq!(
+            silent_payment_key(&contract_id, &counterparty, &fingerprint, true)
+                .chars()
+                .count(),
+            126,
+            "worst-case length should match the prefix's documented budget; update the doc \
+             comment on KV_PREFIX_SILENT_PAYMENT if this changes"
+        );
+    }
+
+    /// Regression test for finding 9 (2026-08-21 adversarial-audit
+    /// addendum): before the fix, `silent_payment_key` had no direction
+    /// component, so a party's own outgoing record and an incoming record
+    /// sharing the same `(timestamp, mac)` fingerprint collided on one KV
+    /// slot — a rogue counterparty who received a real payment could replay
+    /// its exact memo bytes back and silently overwrite the sender's own
+    /// record of what they sent. Same fingerprint, opposite `from_me`, must
+    /// now occupy independent slots.
+    #[test]
+    fn silent_payment_records_of_opposite_direction_do_not_collide() {
+        let kv = empty_kv();
+        let owner = [0x77u8; 32];
+        let contract_id = Identifier::new([0x11u8; 32]);
+        let counterparty = Identifier::new([0x99u8; 32]);
+        let scope = DetScope::Identity(&owner);
+        let fingerprint = "abcdef012345";
+
+        let sent = SilentPaymentRecord {
+            amount: 50_000,
+            timestamp: 1_700_000_000,
+            from_me: true,
+        };
+        let received = SilentPaymentRecord {
+            amount: 1, // attacker-chosen dust, replaying the same fingerprint
+            timestamp: 1_700_000_000,
+            from_me: false,
+        };
+
+        kv.put::<SilentPaymentRecord>(
+            scope,
+            &silent_payment_key(&contract_id, &counterparty, fingerprint, sent.from_me),
+            &sent,
+        )
+        .unwrap();
+        kv.put::<SilentPaymentRecord>(
+            scope,
+            &silent_payment_key(&contract_id, &counterparty, fingerprint, received.from_me),
+            &received,
+        )
+        .unwrap();
+
+        assert_eq!(
+            kv.get::<SilentPaymentRecord>(
+                scope,
+                &silent_payment_key(&contract_id, &counterparty, fingerprint, true)
+            )
+            .unwrap(),
+            Some(sent),
+            "the victim's own sent record must survive a same-fingerprint incoming write"
+        );
+        assert_eq!(
+            kv.get::<SilentPaymentRecord>(
+                scope,
+                &silent_payment_key(&contract_id, &counterparty, fingerprint, false)
+            )
+            .unwrap(),
+            Some(received),
+            "the incoming-attributed record must be independently readable"
         );
     }
 

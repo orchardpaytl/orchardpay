@@ -189,16 +189,35 @@ pub struct ContactAnchorPayload {
     pub initial_message: Option<Vec<u8>>,
 }
 
+/// Plaintext padding floor for [`ContactAnchorPayload::encrypt`] — same
+/// rationale and technique as [`MESSAGE_PADDING_FLOOR`], closing the
+/// equivalent leak for `contactAnchor.data`. Before this, `initial_message`
+/// (added after the 2026-07-27 audit's finding 7 was fixed) made the
+/// ciphertext length a near-exact oracle for whether an anchor carries an
+/// intro message and roughly how long it is — recoverable by an anonymous
+/// Platform observer immediately at publish, with no delay window softening
+/// it (unlike finding 5's timing signal). A no-fields-set payload serializes
+/// to 67 bytes; 128 covers that plus a short greeting (~55-60 bytes of UTF-8
+/// text) without materially raising the per-anchor storage-fee cost.
+/// Residual, accepted, same framing as finding 7: a message past that
+/// covers stays length-distinguishable. See the 2026-08-21 adversarial-audit
+/// addendum, finding 10.
+const CONTACT_ANCHOR_PAYLOAD_PADDING_FLOOR: usize = 128;
+
 impl ContactAnchorPayload {
     /// Serialize with bincode (matching `src/wallet_backend/kv.rs`'s
-    /// convention), then AES-256-GCM encrypt under `shared_key`.
+    /// convention), pad to [`CONTACT_ANCHOR_PAYLOAD_PADDING_FLOOR`], then
+    /// AES-256-GCM encrypt under `shared_key`.
     pub fn encrypt(&self, shared_key: &[u8; 32]) -> Result<Vec<u8>, OrchardPayCryptoError> {
-        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
+        let mut plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        plaintext.resize(plaintext.len().max(CONTACT_ANCHOR_PAYLOAD_PADDING_FLOOR), 0);
         encrypt(shared_key, &plaintext)
     }
 
-    /// Decrypt and deserialize a payload produced by [`Self::encrypt`].
+    /// Decrypt and deserialize a payload produced by [`Self::encrypt`]. Any
+    /// padding [`Self::encrypt`] added is silently ignored — bincode only
+    /// reads as many bytes as the decoded value needs.
     pub fn decrypt(shared_key: &[u8; 32], data: &[u8]) -> Result<Self, OrchardPayCryptoError> {
         let plaintext = decrypt(shared_key, data)?;
         let (payload, _) =
@@ -256,17 +275,58 @@ pub struct AnchorDataRecord {
     pub counterparty_decryption_pubkey: Option<Vec<u8>>,
 }
 
+/// Plaintext padding floor for [`AnchorDataRecord::encrypt`]. Closes the
+/// same `initial_message`-presence leak [`CONTACT_ANCHOR_PAYLOAD_PADDING_FLOOR`]
+/// closes for `data`, but for `anchorData`'s own mirror field
+/// (`my_initial_message`) — a *more* persistent instance of the leak than
+/// `data`'s, since `anchorData` is re-published at accept time and again by
+/// the finding-5 delayed-replace mechanism (always a content-preserving
+/// re-encrypt), so the signal would otherwise live for the whole
+/// relationship, not just at initial publish. Sized larger than
+/// `ContactAnchorPayload`'s floor to match this struct's much bigger
+/// baseline (fixed 32-byte IDs, two always-`Some` filler fields per finding
+/// 5, and two cached counterparty pubkeys). Residual, accepted: this struct
+/// has *other* independently variable-length fields this floor does not
+/// address — chiefly `counterparty_name_snapshot`'s DPNS-name length, which
+/// predates and is unrelated to the `initial_message` regression this fix
+/// closes. Solving that is a separate, broader anti-fingerprinting question,
+/// not attempted here. See the 2026-08-21 adversarial-audit addendum,
+/// finding 10.
+const ANCHOR_DATA_RECORD_PADDING_FLOOR: usize = 384;
+
+/// Sentinel value for [`AnchorDataRecord::counterparty_identity_id`] marking
+/// an anchor as intentionally removed (tombstoned) by its owner, rather than
+/// a real relationship. Real Platform identity IDs are hash-derived, so an
+/// all-zero 32-byte value has negligible collision risk — same reasoning
+/// [`initiate_contact`](super::contact_anchor::initiate_contact)'s filler
+/// convention already relies on for `their_reference_id`/`their_shie_id`.
+/// `delete_own_contact_anchor` writes this in place of a real Platform
+/// document delete, and `recover_own_anchors` skips any anchor whose
+/// decrypted record carries it, so a removed relationship never resurfaces
+/// on wallet restore. See the 2026-08-21 adversarial-audit addendum, finding
+/// 11 — a real `DeleteDocument` made the anchor disappear from any observer's
+/// running census, which was itself a hard proof the relationship had
+/// reached `Established` (deletion is only ever reachable from that state).
+/// Tombstoning instead keeps the document present and the same size as any
+/// live anchor, folding removal into the same "sometimes gets replaced"
+/// noise floor finding 5 already made unremarkable, at the cost of the
+/// anchor's Platform storage fee never being reclaimed.
+pub const ANCHOR_TOMBSTONE_SENTINEL: [u8; 32] = [0u8; 32];
+
 impl AnchorDataRecord {
     /// Serialize with bincode (matching `src/wallet_backend/kv.rs`'s
-    /// convention), then AES-256-GCM encrypt under the wallet's fixed
-    /// `anchorData` key.
+    /// convention), pad to [`ANCHOR_DATA_RECORD_PADDING_FLOOR`], then
+    /// AES-256-GCM encrypt under the wallet's fixed `anchorData` key.
     pub fn encrypt(&self, anchor_data_key: &[u8; 32]) -> Result<Vec<u8>, OrchardPayCryptoError> {
-        let plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
+        let mut plaintext = bincode::serde::encode_to_vec(self, bincode::config::standard())
             .map_err(|_| OrchardPayCryptoError::Malformed)?;
+        plaintext.resize(plaintext.len().max(ANCHOR_DATA_RECORD_PADDING_FLOOR), 0);
         encrypt(anchor_data_key, &plaintext)
     }
 
-    /// Decrypt and deserialize a record produced by [`Self::encrypt`].
+    /// Decrypt and deserialize a record produced by [`Self::encrypt`]. Any
+    /// padding [`Self::encrypt`] added is silently ignored — bincode only
+    /// reads as many bytes as the decoded value needs.
     pub fn decrypt(anchor_data_key: &[u8; 32], data: &[u8]) -> Result<Self, OrchardPayCryptoError> {
         let plaintext = decrypt(anchor_data_key, data)?;
         let (record, _) =
@@ -430,6 +490,44 @@ mod tests {
         assert_eq!(result, Err(OrchardPayCryptoError::Decryption));
     }
 
+    /// Regression test for finding 10 (2026-08-21 adversarial-audit
+    /// addendum): before this fix, an anchor with no `initial_message`
+    /// serialized to a visibly shorter ciphertext than one carrying a short
+    /// message, letting an anonymous Platform observer detect the message's
+    /// presence (and approximate length) directly from `contactAnchor.data`'s
+    /// public byte length, with no decryption needed. A no-message payload
+    /// and a short-message payload must now land at the same ciphertext
+    /// length.
+    #[test]
+    fn contact_anchor_payload_with_and_without_short_message_pad_to_the_same_ciphertext_length() {
+        let shared_key = [21u8; 32];
+        let expected_len = NONCE_SIZE + CONTACT_ANCHOR_PAYLOAD_PADDING_FLOOR + 16;
+
+        let without_message = ContactAnchorPayload {
+            reference_id: [1u8; 32],
+            shie_id: [11u8; 32],
+            core_payment_xpub: None,
+            dedicated_shielded_address: None,
+            initial_message: None,
+        };
+        let with_short_message = ContactAnchorPayload {
+            initial_message: Some(b"hi, it's alice".to_vec()),
+            ..without_message.clone()
+        };
+
+        for payload in [without_message, with_short_message] {
+            let encrypted = payload.encrypt(&shared_key).expect("encrypt succeeds");
+            assert_eq!(
+                encrypted.len(),
+                expected_len,
+                "{payload:?} did not pad to the shared floor"
+            );
+            let decrypted =
+                ContactAnchorPayload::decrypt(&shared_key, &encrypted).expect("decrypt succeeds");
+            assert_eq!(payload, decrypted, "padding corrupted the round trip");
+        }
+    }
+
     #[test]
     fn anchor_data_record_round_trips_through_encrypt_decrypt() {
         let anchor_data_key = [9u8; 32];
@@ -452,6 +550,49 @@ mod tests {
             AnchorDataRecord::decrypt(&anchor_data_key, &encrypted).expect("decrypt succeeds");
 
         assert_eq!(record, decrypted);
+    }
+
+    /// Regression test for finding 10 (2026-08-21 adversarial-audit
+    /// addendum): `anchorData`'s own mirror of `initial_message`
+    /// (`my_initial_message`) had the identical missing-padding gap as
+    /// `data`'s — and a more persistent one, since `anchorData` is
+    /// re-published at accept time and again by finding 5's delayed-replace
+    /// mechanism. Two records identical except for a short
+    /// `my_initial_message` must land at the same ciphertext length.
+    #[test]
+    fn anchor_data_record_with_and_without_short_message_pad_to_the_same_ciphertext_length() {
+        let anchor_data_key = [22u8; 32];
+        let expected_len = NONCE_SIZE + ANCHOR_DATA_RECORD_PADDING_FLOOR + 16;
+
+        let without_message = AnchorDataRecord {
+            counterparty_identity_id: [3u8; 32],
+            counterparty_name_snapshot: Some("bob.dash".to_string()),
+            my_reference_id: [1u8; 32],
+            their_reference_id: Some([2u8; 32]),
+            my_shie_id: [12u8; 32],
+            their_shie_id: Some([13u8; 32]),
+            my_initial_message: None,
+            my_core_payment_xpub: None,
+            my_dedicated_shielded_address: None,
+            counterparty_encryption_pubkey: Some(vec![5u8; 33]),
+            counterparty_decryption_pubkey: Some(vec![6u8; 33]),
+        };
+        let with_short_message = AnchorDataRecord {
+            my_initial_message: Some(b"hi, it's alice".to_vec()),
+            ..without_message.clone()
+        };
+
+        for record in [without_message, with_short_message] {
+            let encrypted = record.encrypt(&anchor_data_key).expect("encrypt succeeds");
+            assert_eq!(
+                encrypted.len(),
+                expected_len,
+                "{record:?} did not pad to the shared floor"
+            );
+            let decrypted =
+                AnchorDataRecord::decrypt(&anchor_data_key, &encrypted).expect("decrypt succeeds");
+            assert_eq!(record, decrypted, "padding corrupted the round trip");
+        }
     }
 
     #[test]
@@ -572,6 +713,47 @@ mod tests {
             MessageContent::Message {
                 data: "hey its me Paul".to_string(),
             }
+        );
+    }
+
+    /// Regression test for finding 11 (2026-08-21 adversarial-audit
+    /// addendum): `delete_own_contact_anchor` tombstones a removed anchor by
+    /// re-encrypting an `AnchorDataRecord` whose `counterparty_identity_id`
+    /// is [`ANCHOR_TOMBSTONE_SENTINEL`], and `recover_own_anchors` relies on
+    /// that sentinel surviving the encrypt/decrypt round trip exactly so it
+    /// can recognize and skip tombstoned anchors rather than resurrecting
+    /// them as tracked contacts.
+    #[test]
+    fn anchor_data_record_tombstone_sentinel_round_trips() {
+        let anchor_data_key = [55u8; 32];
+        let tombstone = AnchorDataRecord {
+            counterparty_identity_id: ANCHOR_TOMBSTONE_SENTINEL,
+            counterparty_name_snapshot: None,
+            my_reference_id: [0u8; 32],
+            their_reference_id: None,
+            my_shie_id: [0u8; 32],
+            their_shie_id: None,
+            my_initial_message: None,
+            my_core_payment_xpub: None,
+            my_dedicated_shielded_address: None,
+            counterparty_encryption_pubkey: None,
+            counterparty_decryption_pubkey: None,
+        };
+
+        let encrypted = tombstone
+            .encrypt(&anchor_data_key)
+            .expect("encrypt succeeds");
+        let decrypted =
+            AnchorDataRecord::decrypt(&anchor_data_key, &encrypted).expect("decrypt succeeds");
+        assert_eq!(
+            decrypted.counterparty_identity_id, ANCHOR_TOMBSTONE_SENTINEL,
+            "tombstone sentinel must survive the round trip exactly for recovery to recognize it"
+        );
+        assert_eq!(
+            encrypted.len(),
+            NONCE_SIZE + ANCHOR_DATA_RECORD_PADDING_FLOOR + 16,
+            "a tombstone must pad to the same floor as any live anchor, or it becomes \
+             distinguishable to an outside observer"
         );
     }
 

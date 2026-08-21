@@ -726,6 +726,11 @@ pub enum BackendTaskSuccessResult {
         contacts_recovered: usize,
         already_tracked: usize,
         undecryptable: usize,
+        /// Anchors carrying a tombstone sentinel — intentionally removed via
+        /// `OrchardPayTask::DeleteOwnContactAnchor`, correctly not
+        /// resurrected. See `contact_anchor::AnchorRecoverySummary`'s own
+        /// field doc.
+        tombstoned: usize,
     },
     /// Result of `OrchardPayTask::ScanForIncomingAnchors`. Unlike most
     /// fire-and-forget tasks, this needs a dedicated variant (not the generic

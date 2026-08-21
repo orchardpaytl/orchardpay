@@ -1,19 +1,21 @@
 # OrchardPay — Adversarial Conversation Audit (2026-07-27)
 
-Status: **implemented (2026-07-28).** All seven confirmed-exploitable
-findings and four low-severity findings reached agreed remediation designs
-(see the `Resolution` block under each), then were cross-checked
-holistically (see the bottom section) before any code was touched. Of the
-seven confirmed-exploitable findings, five (1, 2, 3, 5, 7) shipped as code
-fixes in `7aa61dbc` (spoofed-payment headline, flood-tolerant message
-loading, bidi/zero-width sanitization, ciphertext-length padding) and
-`2a7b8a78` (pending-vs-established anchor timing signal); two (4, 6) were
-accepted as architectural limitations with no code fix, per their own
-`Resolution` sections. Of the four low-severity items, two shipped in
-`7aa61dbc` (defensive encrypt-layer size cap, reused flood/decode-failure
-notice) and two were deliberately left as-is, per their own `Resolution`
-sections. Follow-up work should be tracked as further dated addendums to
-this file or new entries in
+Status: **implemented (2026-07-28); re-audited (2026-08-21), see addendum
+below — 4 new findings (8-11), all shipped as code fixes the same day.**
+All seven
+confirmed-exploitable findings and four low-severity findings from the
+original pass reached agreed remediation designs (see the `Resolution`
+block under each), then were cross-checked holistically (see the bottom
+section) before any code was touched. Of the seven confirmed-exploitable
+findings, five (1, 2, 3, 5, 7) shipped as code fixes in `7aa61dbc`
+(spoofed-payment headline, flood-tolerant message loading, bidi/zero-width
+sanitization, ciphertext-length padding) and `2a7b8a78` (pending-vs-established
+anchor timing signal); two (4, 6) were accepted as architectural limitations
+with no code fix, per their own `Resolution` sections. Of the four
+low-severity items, two shipped in `7aa61dbc` (defensive encrypt-layer size
+cap, reused flood/decode-failure notice) and two were deliberately left
+as-is, per their own `Resolution` sections. Follow-up work should be tracked
+as further dated addendums to this file or new entries in
 `docs/ai-design/2026-07-26-comprehensive-review-response/README.md`, per this
 repo's established convention (see that doc for the H-01/L-01/M-01/M-05
 findings this audit builds on).
@@ -481,3 +483,275 @@ findings (4, 5, 6, 7), which are largely architectural/inherent tradeoffs of
 a public-Platform-documents design rather than code defects. All designs
 above are agreed but **not yet implemented** — building them is the next,
 separate phase.
+
+## Addendum (2026-08-21) — re-run against current code
+
+Requested: re-run this same audit against the current codebase, given ~4
+weeks and 30+ commits of further OrchardPay work since the original pass
+(`7aa61dbc`..`HEAD`), including entirely new features the original audit
+never saw — most significantly OPP2 "documentless silent payments"
+(`0dd20f18`), deletable `contactAnchor` documents (`b42f8b60`), the `shie_id`
+field (`7f1447a8`), and initial-message/bundled-amount contact requests
+(`3d51f405`).
+
+Methodology: same as the original — three parallel read-only audits (no
+code changes), one per original adversary type plus the general
+input-handling pass, each given the original audit doc, the protocol/query
+docs, and told to (a) re-verify every original finding's fix against current
+code, not just trust this doc's own "implemented" claims, and (b) audit
+every new feature shipped since for issues under the same threat model.
+
+**Result: all seven original confirmed-exploitable findings and all four
+low-severity findings hold as previously resolved or accepted** — no
+regressions. Findings 1, 2, 3 (rogue contact), 4, 6 (observer, accepted
+limitations), and 5, 7 (observer, code-fixed) were each independently
+re-verified against current source, including against every commit flagged
+as touching relevant code (`8f9eb6be`, `572352bd`, `dfd99d84`, `b0666921`,
+`26c1e1ad`). Finding 5's dual-replace mechanism in particular was traced
+end-to-end and confirmed live-wired (`app.rs` dispatches it on every
+`OrchardPayShieldedSyncCompleted` event, not just designed-but-dormant).
+
+Four new findings surfaced, all in code that postdates the original audit:
+
+### 8. OPP2 silent payments verify against the wrong ECDH secret — genuine payments go unrecognized, and a rogue contact can forge attributed payment signals at will
+
+**Confirmed exploitable (new), high severity.**
+
+`src/backend_task/orchardpay/memo_scan.rs:56-67` (`build_silent_payment_candidates`)
+derives its MAC-verification key via `outbound_shared_secret(me, counterparty_decryption_pubkey)`
+— the formula for *encrypting what I send* — instead of
+`inbound_shared_secret(me, counterparty_encryption_pubkey)`, the formula
+`load_thread`/`load_more_history` correctly use for verifying what a
+counterparty sent me (`messages.rs:1696/1704`). Since each identity's
+`ENCRYPTION` and `DECRYPTION` Platform keys are independently derived
+(confirmed via `keys.rs:201-259`), these two ECDH values only match by
+commutativity across the *correct* sender/receiver pairing — the code as
+written checks against a value with no cryptographic relationship to what a
+genuine sender actually used.
+
+Two consequences, both confirmed against live code:
+
+- **Correctness**: a genuine `send_silent_payment` call, used exactly as the
+  UI intends, is never recognized by the recipient's scan — funds arrive in
+  the wallet balance normally, but the feature's entire point (attributed
+  display in the thread / Recent Payments / Most Recent sort) silently never
+  fires for anyone. No test anywhere in the repo exercises a real
+  two-identity OPP2 round trip, consistent with this shipping unnoticed.
+- **Security**: the victim's actual (buggy) verification key is
+  `ECDH(VICTIM_enc, ROGUE_dec)` — which, by commutativity, is exactly
+  `ECDH(ROGUE_dec_priv, VICTIM_enc_pub)`, a value the rogue contact can
+  compute independently from key material they already legitimately hold
+  (their own `DECRYPTION` private key, the victim's public `ENCRYPTION`
+  key). The rogue can craft one dust-value real shielded transfer with a
+  self-forged `MEMO_TAG_SILENT_PAYMENT ‖ T(attacker-chosen) ‖ HMAC(...)` and
+  have it land as a fully "wallet-verified" green payment bubble and Recent
+  Payments row, for any amount/timestamp of their choosing, at the cost of
+  one minimum-value transfer. `T` is only future-clamped
+  (`OPP2_TIMESTAMP_FUTURE_TOLERANCE_SECS`), so entries can be backdated
+  anywhere into existing history too.
+
+Files: `memo_scan.rs:56-67` (bug), `silent_payment.rs:81-89` (sender side,
+correct in isolation but mismatched with the verifier), `messages.rs:313-370`
+(the correct pattern this deviates from). Suggested fix direction (not
+implemented): change `build_silent_payment_candidates` to derive via
+`inbound_shared_secret`, matching `load_thread`'s existing pairing.
+
+**Resolution (2026-08-21, shipped):** `build_silent_payment_candidates` now
+derives via `messages::inbound_shared_secret(app_context, identity,
+contract_id, &established.counterparty_encryption_pubkey, seed_hash)`,
+matching `load_thread`'s receiver-side pairing exactly. `inbound_shared_secret`
+was widened from private to `pub(crate)` so `memo_scan` can call it directly
+instead of re-deriving the (buggy) formula locally. Residual, accepted: this
+fix has no dedicated regression test — a real check needs a two-identity
+round trip (genuine sender via `silent_payment.rs`'s `outbound_shared_secret`
+path, genuine receiver via this fixed `inbound_shared_secret` call,
+confirming they land on the same key by ECDH commutativity), which is
+`tests/backend-e2e/` territory, not a unit test. This gap predates the fix —
+the original finding already noted "no test anywhere in the repo exercises a
+real two-identity OPP2 round trip" — and remains open.
+
+### 9. `SilentPaymentRecord`'s cache key has no direction discriminator — a rogue contact can overwrite a victim's own outgoing payment record
+
+**Confirmed exploitable (new), high severity — compounds with #8, but stands independently of it.**
+
+`silent_payment_key(contract_id, counterparty, fingerprint)`
+(`src/wallet_backend/orchardpay.rs:387-397`) omits any `from_me`/direction
+component; `orchardpay_set_silent_payment` (same file, :622-635) is a blind
+overwrite at that key. Because a rogue contact who legitimately received a
+real silent payment from the victim can always decrypt its memo and read
+back the exact `(timestamp, mac)` used, they can later craft a new transfer
+reusing those identical bytes — the victim's own "verify incoming from
+rogue" computation is, by construction, the identical value the victim used
+for their own prior send to that same counterparty (both are
+`outbound_shared_secret(victim, rogue_dec_pub)`; this sub-case doesn't even
+require finding #8's ECDH-direction bug). The victim's next scan then
+overwrites their own genuine sent-payment record with a fabricated
+"received dust from rogue" one, at the identical sort position, in both the
+thread and Recent Payments. Cheaper and more targeted than the original
+finding 2's 100-document flood: one dust transfer, at a time of the
+attacker's choosing.
+
+Files: `wallet_backend/orchardpay.rs:387-397` (unscoped key), `:622-635`
+(blind overwrite). Suggested fix direction (not implemented): fold a
+direction/role component into `silent_payment_key` so a party's own sent
+record and a same-fingerprint incoming-attributed record cannot collide.
+
+**Resolution (2026-08-21, shipped):** `silent_payment_key` takes a `from_me:
+bool` parameter and folds a trailing `:o`/`:i` (outgoing/incoming) segment
+into the key, so a party's own sent record and an incoming-attributed record
+can never collide even on an identical `(timestamp, mac)` fingerprint.
+`orchardpay_set_silent_payment` passes `record.from_me` through.
+`orchardpay_list_silent_payments` (the only read path) already worked off a
+prefix scan (`silent_payment_key_prefix`, no fingerprint/direction in the
+prefix) and needed no change — both directions still list together. Worst-
+case key length re-verified against `MAX_KEY_LEN` (126 of 128 chars) with a
+dedicated test. Regression test:
+`silent_payment_records_of_opposite_direction_do_not_collide` writes a real
+sent record and a same-fingerprint replayed incoming record and confirms
+both survive independently.
+
+### 10. `contactAnchor.data` has no ciphertext padding — leaks the presence and approximate length of the new `initial_message` field
+
+**Confirmed exploitable (new), moderate-high severity — finding 7's fix never extended to this document type.**
+
+Finding 7's 64-byte padding (`MESSAGE_PADDING_FLOOR`, `encryption.rs:362`)
+is applied only at `MessageContent::encrypt`'s call site. `ContactAnchorPayload::encrypt`
+(`encryption.rs:192-199`) — the encrypt path for `contactAnchor.data`, whose
+`initial_message` field (`3d51f405`, shipped *after* finding 7's fix) is a
+real user-typed `Option<Vec<u8>>` up to `MAX_INITIAL_MESSAGE_CHARS` (250)
+chars — has no padding call at all. An observer running finding 4's free,
+unauthenticated `byOwner` census over `contactAnchor` can read every
+anchor's public `data` byte length directly: absent-vs-present is
+distinguishable at a ~95-byte baseline, and the actual message byte length
+is recoverable to within a handful of bytes, immediately at publish time
+(`data` is written once at creation and untouched by finding 5's
+deferred-replace mechanism, which only ever rewrites `anchorData`) — no
+10-hour delay softens this the way finding 5's fix softens the pairing
+signal. It also reopens a narrow role-identification signal: only an
+initiator's anchor can carry `initial_message` (`accept_contact` hard-codes
+`None`), so any anchor with above-baseline `data` length is provably an
+initiator's.
+
+Files: `encryption.rs:192-199` (missing padding), `contact_anchor.rs:171-191`
+(unpadded `initial_message` encode). Suggested fix direction (not
+implemented): apply the same padding-floor treatment `MessageContent::encrypt`
+already uses to `ContactAnchorPayload::encrypt`.
+
+**Resolution (2026-08-21, shipped):** two padding floors, applied at
+encrypt-side only (decrypt already ignores trailing bytes, same as finding
+7). `ContactAnchorPayload::encrypt` pads to a 128-byte floor (covers a
+no-fields payload plus a short ~55-60-byte greeting). `AnchorDataRecord::encrypt`
+— covering `anchorData`'s own `my_initial_message` mirror, a *more*
+persistent instance of the same leak since `anchorData` is re-published at
+accept time and again by finding 5's delayed-replace mechanism — pads to a
+384-byte floor, sized for that struct's larger fixed baseline. Residual,
+accepted, same framing as finding 7: a message past either floor is
+length-distinguishable again; `AnchorDataRecord` also still leaks
+`counterparty_name_snapshot`'s DPNS-name length, a pre-existing, unrelated
+signal this fix doesn't address. Regression tests:
+`contact_anchor_payload_with_and_without_short_message_pad_to_the_same_ciphertext_length`
+and
+`anchor_data_record_with_and_without_short_message_pad_to_the_same_ciphertext_length`.
+
+### 11. Deletable `contactAnchor` gives an observer a hard proof that a relationship reached `Established`
+
+**Confirmed exploitable (new), low-moderate severity.**
+
+`delete_own_contact_anchor` (`contact_anchor.rs:800-873`) is reachable only
+from `Established` state — enforced backend-side, not just in the UI. Since
+`documentsKeepHistory: false`, deletion is a genuine, permanent disappearance
+from any future census (finding 4). An observer maintaining a running
+`contactAnchor` census can therefore treat "this owner's previously-seen
+anchor vanished between two scans" as a hard, code-guaranteed proof the
+relationship reached `Established` before deletion — a narrower instance of
+exactly what finding 5's fix was built to keep hidden for *live* anchors,
+via a mechanism (`b42f8b60`) that shipped after finding 5's fix and wasn't
+reasoned about against it. No counterparty-pairing is revealed, and it's
+conditional on the owner choosing to delete, so severity is lower than
+finding 5's original issue — closer to findings 4/6's "architectural,
+inherent to a public/deletable-by-owner document" category.
+
+**Resolution (2026-08-21, shipped):** tombstone instead of a real Platform
+delete. `delete_own_contact_anchor` no longer issues `DocumentTask::DeleteDocument`
+— it does a `ReplaceDocument` that overwrites `anchorData` with a tombstone
+`AnchorDataRecord` (`counterparty_identity_id` set to the new
+`ANCHOR_TOMBSTONE_SENTINEL`, an all-zero 32-byte value with negligible
+collision risk against a real identity ID; every other field cleared),
+re-encrypted under the same wallet-derived key and still padded to the same
+384-byte floor every live anchor uses (finding 10). Removal now looks
+exactly like any other `ReplaceDocument` event — the same noise finding 5
+already made unremarkable — instead of a document vanishing.
+`recover_own_anchors` recognizes the sentinel and skips tombstoned anchors
+(counted in a new `AnchorRecoverySummary::tombstoned` field, kept separate
+so `anchors_found` still equals the sum of all four buckets), preserving
+the original feature's point: a removed relationship doesn't come back on
+wallet restore. The document's `data` field (encrypted for the
+counterparty) is left untouched — already-opaque ciphertext, never
+re-read by the counterparty once `Established`. **Cost, same flavor as
+finding 5's own accepted cost:** the anchor's Platform storage fee is never
+reclaimed — a removed contact's document, and its storage-fee footprint,
+now persist forever, which is the real tradeoff against the true delete
+this replaces. Regression test:
+`anchor_data_record_tombstone_sentinel_round_trips`.
+
+### Also checked, re-verified clean or not yet exploitable
+
+- **OPP2 vs. the observer adversary**: a silent payment creates no
+  Platform document of any kind (a raw shielded transfer only) — invisible
+  to a Platform-document-only observer; "absence is itself informative" was
+  specifically checked and ruled out, since a real OPP2 transfer and no
+  transfer at all both produce an empty result set to every query this
+  adversary can issue.
+- **`shie_id`**: fully traced lifecycle, mirrors `their_reference_id`'s
+  existing filler/deferred-replace protection exactly (one combined
+  `ReplaceDocument` swap). Currently inert — zero readers anywhere in the
+  codebase (the consuming feature doesn't exist yet) — so not yet
+  exploitable; flagged only for review once its consumer ships.
+- **Deletable `contactAnchor` vs. the rogue-contact adversary**: only
+  operates on the caller's own anchor; cannot affect a counterparty's local
+  state (messaging/payment reads never re-fetch a live counterparty
+  `contactAnchor`); deleting-and-recreating mid-`Established` is silently
+  ignored by the victim's scan (no desync, no handshake replay). One
+  low-severity, non-regression note: OrchardPay has no way for a victim to
+  *permanently* refuse a specific identity — a removed rogue can always
+  re-request via a fresh anchor.
+- **Non-constant-time OPP2 MAC comparison** (`memo_scan.rs:330`, derived
+  `[u8; 28]` `PartialEq`): theoretical/low severity hygiene note — no live
+  timing-oracle path exists (comparison runs locally against a small,
+  already-fetched local candidate set, not a network-facing oracle).
+- **`\n` now allowed in message/memo text** (`8f9eb6be`): theoretical/low
+  severity — bounded "vertical flood" nuisance (up to ~500 blank lines
+  within the existing char cap), not a content-spoofing regression of
+  finding 3.
+- Everything else re-audited — the bundled-amount contact-request display,
+  the initial-message UI rework, the `5901baa0` key-resolution API
+  adaptation, `Cargo.toml`'s platform-pin consistency, and the full original
+  "checked, not exploitable / clean" list (SQL injection, integer overflow,
+  zero/negative amounts, decrypt panic-safety, malformed-payload size
+  blow-up, backend re-validation, no unwrap/expect/panic on attacker data)
+  — re-verified clean against all 30+ commits since `7aa61dbc`.
+
+### Summary
+
+| # | Item | Adversary | Classification | Severity | Status |
+|---|---|---|---|---|---|
+| 8 | OPP2 verifies against wrong ECDH secret | Rogue contact | Confirmed exploitable | High | **Shipped 2026-08-21** |
+| 9 | `SilentPaymentRecord` key has no direction discriminator | Rogue contact | Confirmed exploitable | High | **Shipped 2026-08-21** |
+| 10 | `contactAnchor.data` unpadded, leaks `initial_message` presence/length | Observer | Confirmed exploitable | Moderate-high | **Shipped 2026-08-21** |
+| 11 | Deletable anchor proves "reached Established" | Observer | Confirmed exploitable | Low-moderate | **Shipped 2026-08-21** |
+| — | OPP2 MAC comparison not constant-time | — | Theoretical/low severity | Low | Not planned |
+| — | `\n` allowed in message/memo text | — | Theoretical/low severity | Low | Not planned |
+| — | No permanent block for a removed rogue contact | Rogue contact | Theoretical/low severity | Low | Not planned |
+| 1-7 | All original findings | Both | Re-verified clean, no regressions | — | — |
+
+Findings 8 and 9, both in the OPP2 feature (`0dd20f18`, shipped 2026-08-18,
+zero round-trip test coverage anywhere in the repo), were the most
+significant results of this re-run — 8 alone meant the feature did not work
+as designed for honest use, independent of the security angle. All four new
+findings shipped as code fixes on 2026-08-21 (see each finding's own
+`Resolution` block above). Finding 8 has no dedicated regression test (see
+its `Resolution` block — needs `tests/backend-e2e/` coverage, not a unit
+test); findings 9, 10, and 11 each have one. Unlike the rest, finding 11
+went through an explicit accept-vs-fix decision first (the user chose "design
+a fix" over accepting it as an architectural limitation like findings 4/6),
+matching the disposition process the original audit used for those two.

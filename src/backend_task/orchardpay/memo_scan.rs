@@ -33,11 +33,25 @@ struct SilentPaymentCandidate {
 /// MAC keys once per scan pass, so resolving each [`IncomingMemoSignal::SilentPayment`]
 /// found this pass is just an HMAC comparison per candidate, not a fresh
 /// per-note key derivation. Entirely local: `established_state`/
-/// `outbound_shared_secret` never touch the network once a relationship's
+/// `inbound_shared_secret` never touch the network once a relationship's
 /// counterparty pubkeys are already cached, which `Established` guarantees.
 /// A single contact whose shared-secret derivation fails (e.g. a locked
 /// wallet edge case) is skipped with a warning rather than aborting the
 /// whole scan pass.
+///
+/// Deliberately derives via [`messages::inbound_shared_secret`], not
+/// `outbound_shared_secret` — this key verifies a signal the *counterparty*
+/// sent *to me*, the same direction `load_thread` uses `inbound_shared_secret`
+/// for. Using `outbound_shared_secret` here (as an earlier version of this
+/// function did) checks against a value with no cryptographic relationship
+/// to what a genuine sender actually used: it never matches a real sender's
+/// key by ECDH commutativity, so real `OPP2` payments went unrecognized,
+/// and — because the buggy formula only depends on this identity's own
+/// ENCRYPTION key and the counterparty's DECRYPTION key, both of which the
+/// counterparty already legitimately holds — a rogue counterparty could
+/// independently compute the exact (wrong) key this scan checked against
+/// and forge arbitrary attributed payment signals. See the 2026-08-21
+/// adversarial-audit addendum, finding 8.
 async fn build_silent_payment_candidates(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -58,11 +72,11 @@ async fn build_silent_payment_candidates(
             else {
                 continue; // Not `Established` yet — no relationship to attribute a silent payment to.
             };
-            match messages::outbound_shared_secret(
+            match messages::inbound_shared_secret(
                 app_context,
                 identity,
                 contract_id,
-                &established.counterparty_decryption_pubkey,
+                &established.counterparty_encryption_pubkey,
                 seed_hash,
             )
             .await

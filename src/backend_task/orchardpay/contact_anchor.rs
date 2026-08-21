@@ -26,7 +26,7 @@
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::encryption::{
-    AnchorDataRecord, ContactAnchorPayload, MessageContent,
+    ANCHOR_TOMBSTONE_SENTINEL, AnchorDataRecord, ContactAnchorPayload, MessageContent,
 };
 use crate::backend_task::orchardpay::errors::OrchardPayError;
 use crate::backend_task::orchardpay::keys::{
@@ -773,18 +773,17 @@ pub async fn accept_contact(
         .unwrap_or(BackendTaskSuccessResult::None))
 }
 
-/// Permanently delete my own `contactAnchor` document for
-/// `counterparty_identity_id` — a true Platform document delete (the schema
-/// is `canBeDeleted: true`), not a tombstone. Only offered once the
-/// relationship is `Established`: deleting a still-pending anchor (before
-/// the counterparty has read my `data` field or published their own return
+/// Permanently remove my own `contactAnchor` relationship record for
+/// `counterparty_identity_id`. Only offered once the relationship is
+/// `Established`: doing this on a still-pending anchor (before the
+/// counterparty has read my `data` field or published their own return
 /// anchor) could interrupt an in-flight handshake, which is a different
 /// concern from the one this restriction is really about — long-term
 /// recovery. Once `Established`, `anchorData` already caches everything
 /// either side needs about the other (`counterparty_identity_id`,
 /// `counterparty_name_snapshot`, `their_reference_id`,
 /// `counterparty_encryption_pubkey`, `counterparty_decryption_pubkey` — see
-/// `AnchorDataRecord`), so deleting my own anchor only affects *my own*
+/// `AnchorDataRecord`), so removing my own anchor only affects *my own*
 /// future seed-only recovery of this one relationship (`recover_own_anchors`
 /// / ORP-005); it does not affect the counterparty's ability to keep
 /// messaging or paying me. This is the key difference from DashPay's
@@ -793,16 +792,43 @@ pub async fn accept_contact(
 /// discover their extended public key — see
 /// `docs/orchardpay/PROTOCOL_DESIGN.md` for the full contrast.
 ///
-/// Unlike `messages::delete_message`, this needs no document fetch, shared-
-/// secret derivation, or wallet seed — `Established` state already carries
-/// `my_anchor_document_id` locally, so this is a pure "read local state,
-/// sign a delete transition, clear local state" flow.
+/// **Tombstone, not a real Platform delete** (2026-08-21, adversarial-audit
+/// addendum finding 11): the schema keeps `canBeDeleted: true`, but this no
+/// longer issues `DocumentTask::DeleteDocument`. A real delete made the
+/// document disappear from any observer's running `byOwner` census of
+/// `contactAnchor` — a hard, code-guaranteed proof the relationship had
+/// reached `Established` (deletion was only ever reachable from that
+/// state), since `documentsKeepHistory: false` makes that disappearance
+/// permanent and unambiguous. Instead, this does a `ReplaceDocument` that
+/// overwrites `anchorData` with a tombstone [`AnchorDataRecord`] —
+/// `counterparty_identity_id` set to [`ANCHOR_TOMBSTONE_SENTINEL`],
+/// every other field cleared — re-encrypted under the same wallet-derived
+/// key as always, so it still pads to the same fixed floor every live
+/// anchor already uses. From an outside observer's view, removal now looks
+/// exactly like any other `ReplaceDocument` event on this document type —
+/// the same noise finding 5's delayed-replace mechanism already made
+/// unremarkable — instead of a document vanishing.
+/// [`recover_own_anchors`] recognizes the sentinel and skips tombstoned
+/// anchors, preserving this function's actual point: a removed relationship
+/// doesn't come back on wallet restore. **Cost of this tradeoff**: the
+/// anchor's Platform storage fee is never reclaimed — a removed contact's
+/// document, and its storage-fee footprint, persist forever. `data` (the
+/// field encrypted for the counterparty) is left untouched: it's already
+/// opaque ciphertext to anyone else, and the counterparty never re-reads a
+/// live `contactAnchor` once `Established` (messaging/payment reads only
+/// ever use locally cached `AnchorDataRecord` state).
+///
+/// Unlike `messages::delete_message`, this needs no shared-secret
+/// derivation — `Established` state already carries `my_anchor_document_id`
+/// locally — but it does need the wallet seed (via `seed_hash`) to
+/// re-derive the `anchorData` key for the tombstone re-encryption.
 pub async fn delete_own_contact_anchor(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     qualified_identity: QualifiedIdentity,
     identity_key: IdentityPublicKey,
     counterparty_identity_id: Identifier,
+    seed_hash: WalletSeedHash,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = qualified_identity.identity.id();
     let orchardpay_contract = super::ensure_orchardpay_contract(app_context, sdk).await?;
@@ -821,12 +847,39 @@ pub async fn delete_own_contact_anchor(
         _ => return Err(OrchardPayError::ContactNotEstablishedForRemoval.into()),
     };
 
+    let mut document =
+        fetch_anchor_document_by_id(&orchardpay_contract, sdk, my_anchor_document_id)
+            .await?
+            .ok_or(OrchardPayError::AnchorNotFound)?;
+
+    let anchor_data_key = backend
+        .orchardpay_anchor_data_key(&seed_hash, app_context.network)
+        .await?;
+    let tombstone_record = AnchorDataRecord {
+        counterparty_identity_id: ANCHOR_TOMBSTONE_SENTINEL,
+        counterparty_name_snapshot: None,
+        my_reference_id: [0u8; 32],
+        their_reference_id: None,
+        my_shie_id: [0u8; 32],
+        their_shie_id: None,
+        my_initial_message: None,
+        my_core_payment_xpub: None,
+        my_dedicated_shielded_address: None,
+        counterparty_encryption_pubkey: None,
+        counterparty_decryption_pubkey: None,
+    };
+    let anchor_data_bytes = tombstone_record
+        .encrypt(&anchor_data_key)
+        .map_err(OrchardPayError::Crypto)?;
+    document.set(ANCHOR_DATA_FIELD, Value::Bytes(anchor_data_bytes));
+    document.bump_revision();
+
     let document_type = orchardpay_contract
         .document_type_cloned_for_name(CONTACT_ANCHOR_DOCUMENT_TYPE)
         .expect("contactAnchor document type is part of the checked-in OrchardPay contract schema");
 
-    let task = DocumentTask::DeleteDocument {
-        document_id: my_anchor_document_id,
+    let task = DocumentTask::ReplaceDocument {
+        document,
         document_type,
         data_contract: orchardpay_contract,
         qualified_identity,
@@ -835,24 +888,23 @@ pub async fn delete_own_contact_anchor(
     };
     let result = app_context.run_document_task(task, sdk).await?;
     let fee = match result {
-        BackendTaskSuccessResult::DeletedDocument(_, fee) => fee,
+        BackendTaskSuccessResult::ReplacedDocument(_, fee) => fee,
         other => {
-            // `DocumentTask::DeleteDocument` always yields `DeletedDocument`
+            // `DocumentTask::ReplaceDocument` always yields `ReplacedDocument`
             // on success — anything else means `run_document_task`'s result
             // shape changed underneath this code.
             return Ok(other);
         }
     };
 
-    // Local cleanup only after the Platform delete actually lands — same
+    // Local cleanup only after the Platform replace actually lands — same
     // ordering discipline as accept_contact/initiate_contact (write Platform
     // state first, local state reflects confirmed reality after).
     backend.orchardpay_clear_contact_state(&contract_id, &owner_id, &counterparty_identity_id)?;
-    // A scheduled re-seal marker should never coexist with a fresh delete,
+    // A scheduled re-seal marker should never coexist with a fresh tombstone,
     // but clear it too for symmetry/safety — otherwise
-    // `fire_due_scheduled_anchor_replace` would keep failing with
-    // `AnchorNotFound` on every future shielded-sync pass trying to replace a
-    // document that no longer exists.
+    // `fire_due_scheduled_anchor_replace` would try to fire the finding-5
+    // delayed replace against a document that's already been tombstoned.
     backend.orchardpay_clear_scheduled_anchor_replace(
         &contract_id,
         &owner_id,
@@ -1660,6 +1712,12 @@ pub struct AnchorRecoverySummary {
     pub contacts_recovered: usize,
     pub already_tracked: usize,
     pub undecryptable: usize,
+    /// Anchors that decrypted fine but carry [`ANCHOR_TOMBSTONE_SENTINEL`] —
+    /// a relationship this identity intentionally removed via
+    /// `delete_own_contact_anchor`. Counted separately from
+    /// `already_tracked`/`undecryptable` so `anchors_found` still equals the
+    /// sum of all four buckets.
+    pub tombstoned: usize,
 }
 
 /// Rebuild local contact state from every `contactAnchor` I've ever
@@ -1727,6 +1785,14 @@ pub async fn recover_own_anchors(
             summary.undecryptable += 1;
             continue;
         };
+
+        if anchor_record.counterparty_identity_id == ANCHOR_TOMBSTONE_SENTINEL {
+            // Intentionally removed via `delete_own_contact_anchor` — never
+            // resurrect it as a tracked contact. See finding 11 of the
+            // 2026-08-21 adversarial-audit addendum.
+            summary.tombstoned += 1;
+            continue;
+        }
 
         let counterparty_id = Identifier::from(anchor_record.counterparty_identity_id);
         if backend

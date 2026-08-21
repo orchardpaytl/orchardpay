@@ -342,7 +342,11 @@ pub(crate) async fn outbound_shared_secret(
 
 /// The ECDH secret for messages the counterparty *sent me* (tagged with
 /// their `refId`): my DECRYPTION key + their cached ENCRYPTION pubkey.
-async fn inbound_shared_secret(
+/// `pub(crate)` so sibling modules (e.g. `memo_scan`, verifying incoming
+/// `OPP2` silent-payment signals) derive the receiver-side secret the same
+/// way `load_thread` does, rather than reusing `outbound_shared_secret` by
+/// mistake — see the 2026-08-21 adversarial-audit addendum's finding 8.
+pub(crate) async fn inbound_shared_secret(
     app_context: &Arc<AppContext>,
     qualified_identity: &QualifiedIdentity,
     orchardpay_contract_id: Identifier,
