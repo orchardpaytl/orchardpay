@@ -17,7 +17,7 @@ Diff/patch-id comparison against upstream is not trustworthy in this repo: the `
 4. For genuinely new commits, cherry-pick in upstream chronological order (oldest first) with `git cherry-pick -x`, do the `dash_evo_tool::` → `orchardpay::` rename follow-up (`grep -rl "dash_evo_tool::" --include="*.rs" .`), then build/test/fmt/clippy per `CLAUDE.md`.
 5. Append the newly-applied commits to the table below and update "Last checked".
 
-**Last checked:** 2026-08-21, against `dashpay-upstream/v1.0-dev` @ `9d85c170` (2026-08-21).
+**Last checked:** 2026-08-27, against `dashpay-upstream/v1.0-dev` @ `05572d6f` (2026-08-27).
 
 ## Applied commits
 
@@ -46,6 +46,10 @@ Diff/patch-id comparison against upstream is not trustworthy in this repo: the `
 | `39b39928` | bump platform pin to PR #3968 tip / fix empty-script UTXO wallet-brick (#953) | `f1c81743` | cherry-pick, 2026-08-21 sync |
 | `b8fd0392` | isolate wallet databases from SPV cache + stop cross-wallet top-up corruption (#954) | `98a78351` | cherry-pick, 2026-08-21 sync — `docs/kv-keys.md` conflicted (store-name rename); resolved by keeping OrchardPay's own key/domain counts under the new `det-<net>.sqlite` name and renaming the leftover OrchardPay-key rows off the stale `platform-wallet.sqlite` name too |
 | `9d85c170` | bump platform pin to PR #3968 latest / 4784de03 (#958) | `a04f47e0` | cherry-pick, 2026-08-21 sync — `DocumentQuery::new` moved crates and its error type changed from `dash_sdk::Error` to `dash_platform_queries::Error`; upstream adapted its own call sites but OrchardPay-only code (`contact_anchor.rs`, `contact_search.rs`, `messages.rs`, `shielded_address.rs`) doesn't exist upstream and needed the same `.into()` conversion at 7 call sites, done as a separate follow-up commit `bbc48e3e` |
+| `521d5dbc` | register masternode/evonode identities without requiring a wallet (#955) | `16b3085d` | cherry-pick, 2026-08-27 sync — clean auto-merge, including `docs/kv-keys.md` |
+| `8571bf98` | unblock the weekly Flatpak build and auto-publish scheduled pre-releases (#959) | `74679b02` | cherry-pick, 2026-08-27 sync — CI-only, clean auto-merge |
+| `e45b24b4` | stop advising a retry when a broadcast outcome is unknown (#961) | `dc3bfc8a` | cherry-pick, 2026-08-27 sync — `src/backend_task/error.rs` conflicted (two unrelated new variants inserted at the same point); resolved by keeping both, OrchardPay's `ShieldedActivityUnavailable` and upstream's new `TransactionConfirmationUnknown`. The two exhaustive matches in `wallet_backend/mod.rs` auto-merged cleanly alongside OrchardPay's own extra arms |
+| `05572d6f` | bump platform pin to PR #3968 latest / a844aecf (#960) | `706a6efe` | cherry-pick, 2026-08-27 sync — clean auto-merge; `DocumentV0` gained a `contract_version: Option<u32>` field and OrchardPay-only code (`contact_anchor.rs`, `messages.rs`, `shielded_address.rs`) constructs `DocumentV0` directly at 6 call sites not touched by upstream's own fix — same shape as the `9d85c170` gap, closed as a separate follow-up commit `dbe0ef0e` |
 
 ## Not applicable
 
