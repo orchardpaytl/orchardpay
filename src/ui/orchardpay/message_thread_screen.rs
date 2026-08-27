@@ -365,6 +365,13 @@ impl MessageThreadScreen {
                 &identity.identity.id(),
                 &counterparty_identity_id,
             )
+            .inspect_err(|e| {
+                tracing::warn!(
+                    counterparty = %counterparty_identity_id,
+                    error = ?e,
+                    "failed to read OrchardPay contact state while resolving counterparty name"
+                );
+            })
             .ok()??;
         match state {
             OrchardPayContactState::Established { name, .. } => {

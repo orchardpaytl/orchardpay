@@ -1671,6 +1671,47 @@ fn decode_thread_message(
     })
 }
 
+/// Build [`load_thread`]'s synthesized "first bubble" from whichever side's
+/// pending phase started this relationship — `None` when there's nothing
+/// worth showing (no attached message, and the transfer never exceeded the
+/// routine default signal amount every request bundles regardless of
+/// intent). When the payment does qualify, it takes over the bubble (any
+/// attached text becomes the payment's memo, the same field shape a real
+/// `Payment` already uses) rather than rendering as a separate bubble.
+/// Pulled out of `load_thread` as a pure function so this branch of decision
+/// logic is unit-testable without the surrounding network/SDK plumbing.
+fn synthesize_initiating_bubble(
+    initial_message: Option<String>,
+    initial_payment_credits: u64,
+    initiating_anchor_document_id: [u8; 32],
+    initial_message_from_me: bool,
+    established_created_at: Option<u64>,
+) -> Option<ThreadMessage> {
+    let qualifying_payment =
+        (initial_payment_credits > ANCHOR_SIGNAL_AMOUNT_CREDITS).then_some(initial_payment_credits);
+    if initial_message.is_none() && qualifying_payment.is_none() {
+        return None;
+    }
+    let content = match qualifying_payment {
+        Some(amount) => MessageContent::Payment {
+            amount,
+            memo: initial_message,
+        },
+        None => MessageContent::Message {
+            data: initial_message.expect("guarded above: qualifying_payment is None here"),
+        },
+    };
+    Some(ThreadMessage {
+        document_id: Identifier::from(initiating_anchor_document_id),
+        from_me: initial_message_from_me,
+        created_at: established_created_at,
+        updated_at: None,
+        content,
+        verified_amount: qualifying_payment,
+        synthetic: true,
+    })
+}
+
 /// Reconstruct the full two-way thread with `counterparty_identity_id`:
 /// documents I sent (tagged with my own `refId`) union documents they sent
 /// (tagged with their `refId`, learned from my own anchor's `anchorData`),
@@ -1770,36 +1811,14 @@ pub async fn load_thread(
     // `$createdAt`, which causally precedes every real message in this
     // relationship (messaging only becomes possible once `Established`), so
     // it naturally sorts first without any special-casing below.
-    //
-    // The transfer amount is only worth surfacing once it exceeds the
-    // routine default signal amount every request bundles regardless of
-    // intent — otherwise every established contact would show a "payment"
-    // for the protocol's own minimum. When it does qualify, it takes over
-    // the bubble (any attached text becomes the payment's memo, the same
-    // field shape a real `Payment` already uses) rather than rendering as a
-    // separate bubble.
-    let qualifying_payment =
-        (initial_payment_credits > ANCHOR_SIGNAL_AMOUNT_CREDITS).then_some(initial_payment_credits);
-    if initial_message.is_some() || qualifying_payment.is_some() {
-        let content = match qualifying_payment {
-            Some(amount) => MessageContent::Payment {
-                amount,
-                memo: initial_message,
-            },
-            None => MessageContent::Message {
-                data: initial_message
-                    .expect("guarded by the if above: qualifying_payment is None here"),
-            },
-        };
-        all_decoded.push(ThreadMessage {
-            document_id: Identifier::from(initiating_anchor_document_id),
-            from_me: initial_message_from_me,
-            created_at: established_created_at,
-            updated_at: None,
-            content,
-            verified_amount: qualifying_payment,
-            synthetic: true,
-        });
+    if let Some(bubble) = synthesize_initiating_bubble(
+        initial_message,
+        initial_payment_credits,
+        initiating_anchor_document_id,
+        initial_message_from_me,
+        established_created_at,
+    ) {
+        all_decoded.push(bubble);
     }
 
     let history_cursor = HistoryCursor {
@@ -2316,5 +2335,98 @@ mod tests {
             slightly_ahead,
             "modest clock skew within tolerance must not be altered"
         );
+    }
+
+    /// Neither an attached message nor a payment above the routine default —
+    /// nothing worth showing as the conversation's first bubble.
+    #[test]
+    fn synthesize_initiating_bubble_returns_none_when_nothing_to_show() {
+        let bubble = synthesize_initiating_bubble(
+            None,
+            ANCHOR_SIGNAL_AMOUNT_CREDITS,
+            [7u8; 32],
+            true,
+            Some(1_000),
+        );
+        assert!(
+            bubble.is_none(),
+            "no message and a non-qualifying amount must synthesize nothing"
+        );
+    }
+
+    /// Exactly the routine default signal amount every request bundles
+    /// regardless of intent — must never qualify as a payment on its own,
+    /// even with a message attached (the `>` boundary, not `>=`).
+    #[test]
+    fn synthesize_initiating_bubble_message_only_at_the_floor_does_not_qualify_as_payment() {
+        let bubble = synthesize_initiating_bubble(
+            Some("hi there".to_string()),
+            ANCHOR_SIGNAL_AMOUNT_CREDITS,
+            [7u8; 32],
+            true,
+            Some(1_000),
+        )
+        .expect("a message alone must still synthesize a bubble");
+
+        assert_eq!(
+            bubble.content,
+            MessageContent::Message {
+                data: "hi there".to_string()
+            },
+            "an amount at the floor must not promote the bubble to a Payment"
+        );
+        assert_eq!(bubble.verified_amount, None);
+        assert!(bubble.from_me);
+        assert_eq!(bubble.document_id, Identifier::from([7u8; 32]));
+        assert_eq!(bubble.created_at, Some(1_000));
+        assert!(bubble.synthetic);
+    }
+
+    /// The smallest value that actually qualifies — one credit above the
+    /// floor — with no message attached. Must render as a verified Payment
+    /// with no memo.
+    #[test]
+    fn synthesize_initiating_bubble_qualifying_payment_just_above_the_floor_has_no_memo() {
+        let amount = ANCHOR_SIGNAL_AMOUNT_CREDITS + 1;
+        let bubble = synthesize_initiating_bubble(None, amount, [9u8; 32], false, Some(2_000))
+            .expect("an above-floor payment alone must still synthesize a bubble");
+
+        assert_eq!(
+            bubble.content,
+            MessageContent::Payment { amount, memo: None }
+        );
+        assert_eq!(
+            bubble.verified_amount,
+            Some(amount),
+            "the amount is wallet-verified by construction, not a claim awaiting verification"
+        );
+        assert!(!bubble.from_me);
+        assert!(bubble.synthetic);
+    }
+
+    /// A qualifying payment with an attached message folds the message into
+    /// the payment's memo rather than rendering as two separate bubbles.
+    #[test]
+    fn synthesize_initiating_bubble_qualifying_payment_with_message_folds_it_into_memo() {
+        let amount = ANCHOR_SIGNAL_AMOUNT_CREDITS + 500_000;
+        let bubble = synthesize_initiating_bubble(
+            Some("for the rent".to_string()),
+            amount,
+            [3u8; 32],
+            true,
+            None,
+        )
+        .expect("message + qualifying payment must synthesize a bubble");
+
+        assert_eq!(
+            bubble.content,
+            MessageContent::Payment {
+                amount,
+                memo: Some("for the rent".to_string()),
+            },
+            "the message must become the payment's memo, not a separate bubble"
+        );
+        assert_eq!(bubble.verified_amount, Some(amount));
+        assert_eq!(bubble.created_at, None);
     }
 }

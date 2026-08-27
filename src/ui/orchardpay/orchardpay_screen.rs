@@ -661,6 +661,13 @@ impl OrchardPayScreen {
                 let contract_id = contract_id?;
                 let state = backend
                     .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            counterparty = %counterparty,
+                            error = ?e,
+                            "failed to read OrchardPay contact state; dropping this contact from the list"
+                        );
+                    })
                     .ok()??;
                 Some((counterparty, state))
             })
@@ -956,6 +963,13 @@ impl OrchardPayScreen {
                 let contract_id = contract_id?;
                 let state = backend
                     .orchardpay_get_contact_state(&contract_id, &owner_id, &counterparty)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            counterparty = %counterparty,
+                            error = ?e,
+                            "failed to read OrchardPay contact state; dropping this contact from the list"
+                        );
+                    })
                     .ok()??;
                 Some((counterparty, state))
             })
@@ -1924,6 +1938,13 @@ impl OrchardPayScreen {
         for key in keys {
             let real_state = backend
                 .orchardpay_get_contact_state(&contract_id, &owner_id, &key)
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        counterparty = %key,
+                        error = ?e,
+                        "failed to read OrchardPay contact state while reconciling a pending action"
+                    );
+                })
                 .ok()
                 .flatten();
             let landed = matches!(

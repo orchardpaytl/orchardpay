@@ -871,6 +871,25 @@ architecturally correct, not a reopening of finding #1.**
   that read errors (silent drop vs. a banner). Worth a quick explicit check
   if anyone has pre-existing `Established` OrchardPay contacts in a
   `v1.0-dev` build from before 2026-08-27.
+
+  **Addressed (2026-08-27):** traced it — every UI-layer read of
+  `orchardpay_get_contact_state` (`orchardpay_screen.rs`'s Contacts-list and
+  Recent-Activity filters, `reconcile_contact_actions`'s pending-action
+  check, `message_thread_screen.rs`'s counterparty-name resolution) called
+  it through `.ok()`/`.ok()??`, discarding any `Err` with zero logging —
+  confirming the silent-drop concern: an affected `Established` contact
+  would simply vanish from the Contacts list with nothing to explain why.
+  **Did not bump `SCHEMA_VERSION`** — that constant is global across every
+  payload type `DetKv` stores (identities, top-up history, scheduled votes,
+  DashPay overlays, every other OrchardPay KV record), so bumping it for
+  one struct's field addition would invalidate all of those too, a
+  disproportionate blast radius for this change. Instead added
+  `tracing::warn!` at all four call sites before the `.ok()` discard, so a
+  decode failure is now diagnosable in logs (counterparty ID + typed error)
+  instead of leaving no trace at all. User-facing behavior is unchanged —
+  still degrades to "treat as absent" rather than a banner, which matches
+  every other read at these call sites and doesn't fit the synchronous,
+  no-banner-channel context they render in.
 - **Test-coverage gap**: `load_thread`'s synthesis logic itself
   (the `qualifying_payment` derivation, the branch selection, the `expect()`
   guard) has no direct unit test — the four new tests this commit added
@@ -883,14 +902,26 @@ architecturally correct, not a reopening of finding #1.**
   flavor of gap as finding #8's missing regression test — noted, not
   blocking, since this audit's manual trace closes it for now.
 
+  **Addressed (2026-08-27):** extracted the synthesis branch out of
+  `load_thread` into a pure `synthesize_initiating_bubble` function
+  (`messages.rs`) taking the same five already-resolved inputs and
+  returning `Option<ThreadMessage>`, with `load_thread` now just calling it
+  and conditionally pushing the result — no behavior change. Added four
+  direct unit tests: nothing-to-show → `None`; a message at the floor
+  (non-qualifying, `>` not `>=`) stays a plain `Message`; the smallest
+  qualifying value (`ANCHOR_SIGNAL_AMOUNT_CREDITS + 1`) with no message
+  renders a memo-less `Payment`; a qualifying payment with a message folds
+  the message into the memo. Pins the exact boundary this audit's trace
+  relied on, plus `from_me`/`document_id`/`created_at` passthrough.
+
 ### Summary
 
 | # | Item | Adversary | Classification | Severity | Status |
 |---|---|---|---|---|---|
 | — | `initial_payment_credits`/synthesized-Payment `verified_amount` reopens finding #1 | Rogue contact | Investigated, re-verified clean | — | Not a regression — wallet-verified, not claimed |
 | — | `dbe0ef0e` mechanical field addition | — | Re-verified clean | — | — |
-| — | KV `SCHEMA_VERSION` not bumped for `Established`'s shape change | — | Non-adversarial, out of audit scope | — | Flagged for separate follow-up |
-| — | `load_thread` synthesis logic has no direct unit test | — | Non-adversarial, out of audit scope | — | Flagged for separate follow-up |
+| — | KV `SCHEMA_VERSION` not bumped for `Established`'s shape change | — | Non-adversarial, out of audit scope | — | **Addressed 2026-08-27** (logged, not version-bumped — see above) |
+| — | `load_thread` synthesis logic has no direct unit test | — | Non-adversarial, out of audit scope | — | **Addressed 2026-08-27** (extracted + 4 tests) |
 | 1-11 | All prior findings | Both | Re-verified clean, no regressions | — | — |
 
 No new confirmed-exploitable or theoretical-low-severity findings this pass —
@@ -898,4 +929,8 @@ the smallest window audited so far (2 OrchardPay commits vs. the ~30 the prior
 re-audit covered), but the one commit in scope landed squarely on the exact
 vulnerability class (claimed-vs-verified payment amount) that produced
 finding #1, which is why it got a full four-way independent trace rather than
-a lighter pass. No code changes made as a result of this addendum.
+a lighter pass. No security-relevant code changes resulted from this
+addendum — the two code changes made (`messages.rs`,
+`ui/orchardpay/orchardpay_screen.rs`, `ui/orchardpay/message_thread_screen.rs`)
+address the two non-adversarial follow-ups above (diagnosability logging,
+regression-test coverage), not a vulnerability.
