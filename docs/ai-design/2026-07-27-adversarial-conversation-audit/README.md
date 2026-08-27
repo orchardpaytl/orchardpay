@@ -1,7 +1,9 @@
 # OrchardPay — Adversarial Conversation Audit (2026-07-27)
 
 Status: **implemented (2026-07-28); re-audited (2026-08-21), see addendum
-below — 4 new findings (8-11), all shipped as code fixes the same day.**
+below — 4 new findings (8-11), all shipped as code fixes the same day; re-
+audited again (2026-08-27) — no new findings, one investigated thread
+re-verified clean.**
 All seven
 confirmed-exploitable findings and four low-severity findings from the
 original pass reached agreed remediation designs (see the `Resolution`
@@ -755,3 +757,145 @@ test); findings 9, 10, and 11 each have one. Unlike the rest, finding 11
 went through an explicit accept-vs-fix decision first (the user chose "design
 a fix" over accepting it as an architectural limitation like findings 4/6),
 matching the disposition process the original audit used for those two.
+
+## Addendum (2026-08-27): re-audit against post-2026-08-21 changes
+
+Re-ran the same methodology (three parallel read-only audits, no code changes,
+told to be creative not checklist-driven) against everything changed since the
+2026-08-21 re-audit (`fee8d7f6..HEAD`). Unlike the prior two passes, this
+window was small — 7 commits, only two touching OrchardPay:
+
+- `dbe0ef0e` — mechanical `contract_version: None` addition at 6 pre-existing
+  `DocumentV0` literals, matching an upstream field addition. All three
+  passes independently confirmed this is correct and carries no audit
+  weight of its own.
+- `7617f3d6` (2026-08-27) — the real subject. Feature: a contact request's
+  bundled shielded transfer now carries forward into `Established` state
+  (`OrchardPayContactState::Established.initial_payment_credits`) and
+  `load_thread` synthesizes it into the conversation's first bubble as a
+  verified `Payment`, so it also counts toward Recent Payments.
+
+### Investigated and re-verified clean: does this reopen finding #1's bug class?
+
+This commit sets `verified_amount: Some(initial_payment_credits)` directly on
+a synthesized bubble, without going through the normal
+`orchardpay_get_verified_payment_amount` verification call used for a real
+`encryptedMessage`-carried `Payment`. Finding #1 was specifically about a
+`Payment` bubble showing an unverified, sender-claimed amount as if
+confirmed — so this shape of change was flagged to all three audit passes as
+the priority thread to chase down, not assumed safe.
+
+All three passes traced `initial_payment_credits` to the same origin and
+reached the same conclusion, independently confirmed by a fourth trace here:
+it is **never a value the counterparty asserts in ciphertext**.
+`ContactAnchorPayload` (the encrypted `contactAnchor.data` payload) has no
+amount field at all — a rogue contact has nothing to lie in. The value comes
+from `wallet_backend/orchardpay.rs:1053-1062`
+(`orchardpay_scan_incoming_memos`): `amount_credits:
+decrypted_note.value().inner()`, the real Orchard note value the
+*recipient's own wallet* decrypts off an actual on-chain shielded transfer,
+floor-filtered against `MIN_SEND_AMOUNT_CREDITS` before it's even attached to
+a signal. `OrchardPayContactState::PendingInboundUnaccepted.amount_credits`'s
+own doc comment (`model/orchardpay.rs`) states this explicitly: *"never a
+value merely claimed by the counterparty... this always comes from the
+wallet's own note decryption."* `accept_contact` and
+`handle_incoming_anchor_signal` forward this value unchanged into
+`Established.initial_payment_credits`, which `load_thread` then uses as both
+`amount` and `verified_amount` — identical by construction, so there is no
+claimed-vs-verified gap to exploit. For a rogue contact to light up a
+"verified Payment" bubble above the floor, they must actually transfer that
+many real credits to the victim's wallet — the same cost/verification
+profile as an ordinary `Payment` document's `verified_amount`, not finding
+#1's zero-cost claim.
+
+**Conclusion: not a regression. `verified_amount: Some(...)` here is
+architecturally correct, not a reopening of finding #1.**
+
+### Also checked and re-verified clean
+
+- **Payment bubble's Add/Edit Memo synthetic guard** — the commit's own
+  noted "latent bug" (no `!synthetic` guard on the `Payment` branch's memo
+  actions, unlike the pre-existing `Message` branch guard). Confirmed fixed
+  at `message_thread_screen.rs:1082,1103`; every other `BubbleAction` variant
+  is structurally unreachable for a synthetic bubble (synthesized content is
+  only ever `Message` or `Payment`, never `PaymentRequest`). Two new
+  regression tests cover both affordances.
+- **`initiating_anchor_document_id: [u8; 32]`** (replaced the old
+  `Option<[u8; 32]>`) — all three construction sites (`accept_contact`,
+  `handle_incoming_anchor_signal`, `recover_own_anchors`) assign a genuine,
+  already-fetched document ID, never a placeholder; its only live consumer
+  is display-only (`Identifier::from(...)` as a synthetic
+  `ThreadMessage::document_id`), never round-tripped into a document
+  mutate/fetch call — no collision risk with `ANCHOR_TOMBSTONE_SENTINEL` or
+  any real document.
+- **`initial_message.expect(...)` panic safety** in `load_thread` — walked
+  all four `Some`/`None` combinations of `initial_message`/
+  `qualifying_payment`, including through `recover_own_anchors` (which
+  always yields `qualifying_payment: None` since its recovered amount sits
+  exactly at the floor). No reachable panic.
+- **Observer vantage** — no diff hunk touches `encryption.rs`; nothing new
+  is serialized into any Platform-published document. Findings #4/#5/#10/#11
+  (census, timing, padding, tombstone) are all unaffected — no new byte, no
+  new document, no new timing event.
+- **`PendingOutbound` field-shadowing** in `handle_incoming_anchor_signal` —
+  confirmed intentional: the return-signal arm uses the initiator's own
+  locally-recorded amount (which can exceed the floor), not the just-observed
+  return-signal amount (`accept_contact` always sends back the fixed floor),
+  which is the only choice that makes the feature work.
+- **Sender-anonymity residual** (theoretical, not escalated to a finding):
+  since Orchard transfers are sender-shielded, a third party who somehow
+  learned a rogue's own already-published, victim-addressed anchor document
+  ID could in principle fund the signaling transfer instead of the rogue.
+  Not escalated: the funds are still real and land in the victim's wallet (no
+  false claim), the anchor's `data` payload must still be genuinely
+  ECDH-authored by its owner to this specific victim to decrypt at all, and
+  the mechanism is single-use post-`Established`. Pre-existing property of
+  shielded-transfer sender anonymity, not something this commit changes the
+  risk profile of.
+
+### Non-adversarial observations (outside audit scope, worth separate follow-up)
+
+- **`OrchardPayContactState::Established`'s KV wire shape changed
+  (`initial_payment_credits` added, `initial_message_document_id:
+  Option<[u8;32]>` → `initiating_anchor_document_id: [u8;32]`) without
+  bumping `wallet_backend/kv.rs`'s `SCHEMA_VERSION` (still `1`).** That byte
+  only guards against a *version* mismatch, not a same-version shape change —
+  a pre-existing `Established` record saved before this commit will attempt
+  to `bincode` decode into the new shape and most likely return a typed
+  `KvAdapterError::Decode` (propagated as `TaskError`, not a panic) the next
+  time it's read, rather than silently misreading it. This repo's convention
+  for pre-launch schema changes has been "no migration, let it error
+  cleanly" rather than versioned migrations, so this isn't a new pattern —
+  but it wasn't reasoned about explicitly for this specific change, and
+  no one has traced what the Contacts/Message screens actually show when
+  that read errors (silent drop vs. a banner). Worth a quick explicit check
+  if anyone has pre-existing `Established` OrchardPay contacts in a
+  `v1.0-dev` build from before 2026-08-27.
+- **Test-coverage gap**: `load_thread`'s synthesis logic itself
+  (the `qualifying_payment` derivation, the branch selection, the `expect()`
+  guard) has no direct unit test — the four new tests this commit added
+  construct an already-synthesized `ThreadMessage` and feed it straight to
+  `display_task_result`, bypassing `load_thread` entirely. The
+  `ANCHOR_SIGNAL_AMOUNT_CREDITS + 1` boundary (the smallest qualifying value)
+  and the `PendingOutbound` field-shadowing behavior are each currently
+  correct only by inspection (this audit's trace, and the original commit's
+  own reasoning), with nothing that would catch a future regression. Same
+  flavor of gap as finding #8's missing regression test — noted, not
+  blocking, since this audit's manual trace closes it for now.
+
+### Summary
+
+| # | Item | Adversary | Classification | Severity | Status |
+|---|---|---|---|---|---|
+| — | `initial_payment_credits`/synthesized-Payment `verified_amount` reopens finding #1 | Rogue contact | Investigated, re-verified clean | — | Not a regression — wallet-verified, not claimed |
+| — | `dbe0ef0e` mechanical field addition | — | Re-verified clean | — | — |
+| — | KV `SCHEMA_VERSION` not bumped for `Established`'s shape change | — | Non-adversarial, out of audit scope | — | Flagged for separate follow-up |
+| — | `load_thread` synthesis logic has no direct unit test | — | Non-adversarial, out of audit scope | — | Flagged for separate follow-up |
+| 1-11 | All prior findings | Both | Re-verified clean, no regressions | — | — |
+
+No new confirmed-exploitable or theoretical-low-severity findings this pass —
+the smallest window audited so far (2 OrchardPay commits vs. the ~30 the prior
+re-audit covered), but the one commit in scope landed squarely on the exact
+vulnerability class (claimed-vs-verified payment amount) that produced
+finding #1, which is why it got a full four-way independent trace rather than
+a lighter pass. No code changes made as a result of this addendum.
