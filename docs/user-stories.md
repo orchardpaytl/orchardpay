@@ -1102,6 +1102,7 @@ As a user, I want to remove an established OrchardPay contact so that I can prun
 - Confirming permanently deletes my own `contactAnchor` document from Platform — not a local-only hide.
 - The confirmation dialog explains the actual tradeoff: I'll no longer be able to recover this connection from the network if I reinstall or switch devices, but the other person can still message and pay me as normal — removal only affects my own copy of the connection record.
 - The contact disappears from both the Contacts and Most Recent tabs immediately on success, and is excluded from any future "Recover from Network" pass (ORP-005) for that counterparty specifically.
+- **Currently hidden from the UI** (2026-08-27): the overflow menu is gated behind `CONTACT_DELETE_ENABLED` (`const` in `render_contact_card`, [src/ui/orchardpay/orchardpay_screen.rs](../src/ui/orchardpay/orchardpay_screen.rs)), set to `false`. The feature itself — confirmation dialog, `DeleteOwnContactAnchor` backend task, Platform deletion — is fully built and untouched; only the entry point is suppressed. Flip the constant to `true` to re-expose it on both tabs.
 
 ### ORP-019: Send a payment without leaving a public paper trail [Implemented]
 **Persona:** Alex, Priya

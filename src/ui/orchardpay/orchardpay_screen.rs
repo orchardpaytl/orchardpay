@@ -856,30 +856,36 @@ impl OrchardPayScreen {
                                 ),
                             ));
                         }
-                        let in_flight = self.contact_actions.is_in_flight(&counterparty);
-                        ui.add_enabled_ui(!in_flight, |ui| {
-                            ui.menu_button("⋯", |ui| {
-                                let label = if in_flight {
-                                    "Removing…"
-                                } else {
-                                    "Remove Contact"
-                                };
-                                if ui.button(label).clicked() {
-                                    ui.close();
-                                    let display_name = name
-                                        .as_deref()
-                                        .map(strip_dash_suffix)
-                                        .map(str::to_string)
-                                        .unwrap_or_else(|| {
-                                            counterparty.to_string(Encoding::Base58)
-                                        });
-                                    self.open_remove_contact_confirmation(
-                                        counterparty,
-                                        display_name,
-                                    );
-                                }
+                        // Temporary UI toggle: remove-contact flow (confirmation dialog,
+                        // backend DeleteOwnContactAnchor task) is intentionally kept intact
+                        // below and can be re-enabled by flipping this to true.
+                        const CONTACT_DELETE_ENABLED: bool = false;
+                        if CONTACT_DELETE_ENABLED {
+                            let in_flight = self.contact_actions.is_in_flight(&counterparty);
+                            ui.add_enabled_ui(!in_flight, |ui| {
+                                ui.menu_button("⋯", |ui| {
+                                    let label = if in_flight {
+                                        "Removing…"
+                                    } else {
+                                        "Remove Contact"
+                                    };
+                                    if ui.button(label).clicked() {
+                                        ui.close();
+                                        let display_name = name
+                                            .as_deref()
+                                            .map(strip_dash_suffix)
+                                            .map(str::to_string)
+                                            .unwrap_or_else(|| {
+                                                counterparty.to_string(Encoding::Base58)
+                                            });
+                                        self.open_remove_contact_confirmation(
+                                            counterparty,
+                                            display_name,
+                                        );
+                                    }
+                                });
                             });
-                        });
+                        }
                     });
                 }
             }
