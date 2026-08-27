@@ -147,8 +147,9 @@ fn seed_three_stage_contacts(
                 name: Some("Established Eve".to_string()),
                 created_at: Some(3_000),
                 initial_message: None,
+                initial_payment_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
                 initial_message_from_me: false,
-                initial_message_document_id: None,
+                initiating_anchor_document_id: [0u8; 32],
             },
         )
         .expect("seed established contact");
@@ -312,8 +313,9 @@ fn most_recent_tab_orders_a_newer_pending_request_above_an_older_established_mes
                     name: Some("Older Message Established".to_string()),
                     created_at: Some(nine_hours_ago),
                     initial_message: None,
+                    initial_payment_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
                     initial_message_from_me: false,
-                    initial_message_document_id: None,
+                    initiating_anchor_document_id: [0u8; 32],
                 },
             )
             .expect("seed established contact");
@@ -535,8 +537,9 @@ fn established_row_never_shows_amount_badge_or_snippet() {
                     name: Some("Connected Carl".to_string()),
                     created_at: Some(1_000),
                     initial_message: Some("hey its me Paul".to_string()),
+                    initial_payment_credits: ANCHOR_SIGNAL_AMOUNT_CREDITS,
                     initial_message_from_me: true,
-                    initial_message_document_id: Some([4u8; 32]),
+                    initiating_anchor_document_id: [4u8; 32],
                 },
             )
             .expect("seed established contact carrying a message");

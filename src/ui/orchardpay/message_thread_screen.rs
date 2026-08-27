@@ -1074,7 +1074,12 @@ impl MessageThreadScreen {
                                 Some(memo_text) => {
                                     let sanitized_memo = strip_unsafe_display_characters_allow_newlines(memo_text);
                                     let memo_response = ui.label(&sanitized_memo);
-                                    if message.from_me {
+                                    // Never reachable for the synthesized
+                                    // initial-payment entry: its `document_id`
+                                    // is a `contactAnchor`, not a `Payment`
+                                    // document, and must never be handed to
+                                    // `BubbleAction::EditPaymentMemo`.
+                                    if message.from_me && !message.synthetic {
                                         memo_response.context_menu(|ui| {
                                             ui.set_min_width(140.0);
                                             if ui
@@ -1095,7 +1100,7 @@ impl MessageThreadScreen {
                                         show_busy_label(ui);
                                     }
                                 }
-                                None if message.from_me => {
+                                None if message.from_me && !message.synthetic => {
                                     let label = if busy_here { LABEL_SAVING } else { "Add Memo" };
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -2467,6 +2472,109 @@ mod tests {
         assert!(
             harness.query_by_label("Edit Message").is_none(),
             "a synthetic bubble must never expose an Edit Message action"
+        );
+    }
+
+    /// A synthesized initial-payment bubble (a contact request whose bundled
+    /// anchor-signal transfer exceeded the routine default amount) must
+    /// render as a normal verified Payment bubble, show up in the Recent
+    /// Payments panel, and — the same §8 gotcha as the message-only case
+    /// above, extended to the `Payment` branch, which had no `!synthetic`
+    /// guard before this test's regression was fixed — must never expose an
+    /// "Edit Memo" action, since its `document_id` is a `contactAnchor`, not
+    /// a real `Payment` document.
+    #[test]
+    fn synthetic_initial_payment_with_memo_renders_with_no_edit_memo_menu() {
+        let (mut screen, _temp_dir) = message_thread_screen();
+
+        let payment_message = ThreadMessage {
+            document_id: Identifier::random(),
+            from_me: true,
+            created_at: Some(1_700_000_000_000),
+            updated_at: None,
+            content: MessageContent::Payment {
+                amount: 200_000_000,
+                memo: Some("hey its me Paul".to_string()),
+            },
+            verified_amount: Some(200_000_000),
+            synthetic: true,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::OrchardPayThreadLoaded {
+            counterparty_identity_id: screen.counterparty_identity_id,
+            all_decoded: vec![payment_message.clone()],
+            messages: vec![payment_message],
+            silent_payments: Vec::new(),
+            receipt_alerts: Vec::new(),
+            history_cursor: HistoryCursor::default(),
+            may_be_incomplete: false,
+        });
+
+        let mut harness = mount_full(screen);
+
+        assert!(
+            harness
+                .query_by_label_contains("Payment: 0.002 DASH")
+                .is_some(),
+            "the synthesized initial payment must render as a verified Payment bubble"
+        );
+        assert!(
+            harness.query_by_label_contains("hey its me Paul").is_some(),
+            "the attached initial message must render as the payment's memo"
+        );
+        assert!(
+            harness.query_by_label("Sent").is_some(),
+            "a from-me payment must appear as a \"Sent\" row in the Recent Payments panel"
+        );
+
+        right_click_in_one_frame(&mut harness, "hey its me Paul");
+
+        assert!(
+            harness.query_by_label("Edit Memo").is_none(),
+            "a synthetic bubble must never expose an Edit Memo action"
+        );
+    }
+
+    /// The no-memo sibling of the above: a synthesized initial-payment
+    /// bubble with no attached message must not offer "Add Memo" either —
+    /// same reasoning, different affordance (an always-visible button here
+    /// rather than a context-menu item).
+    #[test]
+    fn synthetic_initial_payment_without_memo_shows_no_add_memo_button() {
+        let (mut screen, _temp_dir) = message_thread_screen();
+
+        let payment_message = ThreadMessage {
+            document_id: Identifier::random(),
+            from_me: true,
+            created_at: Some(1_700_000_000_000),
+            updated_at: None,
+            content: MessageContent::Payment {
+                amount: 200_000_000,
+                memo: None,
+            },
+            verified_amount: Some(200_000_000),
+            synthetic: true,
+        };
+        screen.display_task_result(BackendTaskSuccessResult::OrchardPayThreadLoaded {
+            counterparty_identity_id: screen.counterparty_identity_id,
+            all_decoded: vec![payment_message.clone()],
+            messages: vec![payment_message],
+            silent_payments: Vec::new(),
+            receipt_alerts: Vec::new(),
+            history_cursor: HistoryCursor::default(),
+            may_be_incomplete: false,
+        });
+
+        let harness = mount_full(screen);
+
+        assert!(
+            harness
+                .query_by_label_contains("Payment: 0.002 DASH")
+                .is_some(),
+            "the synthesized initial payment must render as a verified Payment bubble"
+        );
+        assert!(
+            harness.query_by_label("Add Memo").is_none(),
+            "a synthetic bubble must never expose an Add Memo action"
         );
     }
 }

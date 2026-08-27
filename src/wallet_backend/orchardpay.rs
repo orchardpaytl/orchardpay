@@ -2046,8 +2046,9 @@ mod tests {
             name: None,
             created_at: None,
             initial_message: None,
+            initial_payment_credits: 0,
             initial_message_from_me: false,
-            initial_message_document_id: None,
+            initiating_anchor_document_id: [0u8; 32],
         };
         kv.put::<OrchardPayContactState>(scope, &contact_key(&old_contract, &counterparty), &state)
             .unwrap();
@@ -2101,8 +2102,9 @@ mod tests {
             name: Some("alice".to_string()),
             created_at: Some(1_700_000_000_000),
             initial_message: None,
+            initial_payment_credits: 0,
             initial_message_from_me: false,
-            initial_message_document_id: None,
+            initiating_anchor_document_id: [0u8; 32],
         };
         kv.put::<OrchardPayContactState>(scope, &key, &state)
             .unwrap();

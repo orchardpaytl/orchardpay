@@ -490,26 +490,33 @@ pub async fn accept_contact(
     let contract_id = orchardpay_contract.id();
 
     let backend = app_context.wallet_backend()?;
-    let (their_reference_id, their_shie_id, their_anchor_document_id, their_initial_message) =
-        match backend.orchardpay_get_contact_state(
-            &contract_id,
-            &owner_id,
-            &counterparty_identity_id,
-        )? {
-            Some(OrchardPayContactState::PendingInboundUnaccepted {
-                their_reference_id,
-                their_shie_id,
-                their_anchor_document_id,
-                initial_message,
-                ..
-            }) => (
-                their_reference_id,
-                their_shie_id,
-                their_anchor_document_id,
-                initial_message,
-            ),
-            _ => return Err(OrchardPayError::AnchorNotFound.into()),
-        };
+    let (
+        their_reference_id,
+        their_shie_id,
+        their_anchor_document_id,
+        their_initial_message,
+        their_amount_credits,
+    ) = match backend.orchardpay_get_contact_state(
+        &contract_id,
+        &owner_id,
+        &counterparty_identity_id,
+    )? {
+        Some(OrchardPayContactState::PendingInboundUnaccepted {
+            their_reference_id,
+            their_shie_id,
+            their_anchor_document_id,
+            initial_message,
+            amount_credits,
+            ..
+        }) => (
+            their_reference_id,
+            their_shie_id,
+            their_anchor_document_id,
+            initial_message,
+            amount_credits,
+        ),
+        _ => return Err(OrchardPayError::AnchorNotFound.into()),
+    };
 
     let counterparty_shielded_address =
         lookup_shielded_address(app_context, sdk, counterparty_identity_id)
@@ -758,10 +765,9 @@ pub async fn accept_contact(
                 .as_ref()
                 .and_then(broadcast_document_created_at),
             initial_message: their_initial_message.clone(),
+            initial_payment_credits: their_amount_credits,
             initial_message_from_me: false,
-            initial_message_document_id: their_initial_message
-                .is_some()
-                .then_some(their_anchor_document_id),
+            initiating_anchor_document_id: their_anchor_document_id,
         },
     )?;
     backend.orchardpay_clear_pending_operation(
@@ -1088,6 +1094,7 @@ pub async fn handle_incoming_anchor_signal(
             name,
             created_at,
             initial_message,
+            amount_credits,
             ..
         }) => {
             // This is the counterparty's return signal. Read (not write)
@@ -1171,9 +1178,8 @@ pub async fn handle_incoming_anchor_signal(
                         ),
                     name,
                     created_at,
-                    initial_message_document_id: initial_message
-                        .is_some()
-                        .then_some(my_anchor_document_id),
+                    initiating_anchor_document_id: my_anchor_document_id,
+                    initial_payment_credits: amount_credits,
                     initial_message_from_me: true,
                     initial_message,
                 },
@@ -1815,8 +1821,11 @@ pub async fn recover_own_anchors(
         // amount — it was only ever spent as a shielded transfer, never
         // written into `AnchorDataRecord`. Defaulting to the fixed signal
         // amount silently loses the amount badge for a recovered pending
-        // request rather than showing a wrong number; accepted, documented
-        // gap.
+        // request (and, for an `Established` recovery below, the Recent
+        // Payments/first-bubble surfacing in `messages::load_thread`) rather
+        // than showing a wrong number; accepted, documented gap. Sitting
+        // exactly at `ANCHOR_SIGNAL_AMOUNT_CREDITS` also means it never
+        // spuriously qualifies as a notable payment once recovered.
         let recovered_amount_credits = ANCHOR_SIGNAL_AMOUNT_CREDITS;
         let state = match anchor_record.their_reference_id {
             // Filler (this identity's own ID, seeded at creation — see
@@ -1884,9 +1893,8 @@ pub async fn recover_own_anchors(
                     counterparty_decryption_pubkey,
                     name,
                     created_at,
-                    initial_message_document_id: my_decoded_initial_message
-                        .is_some()
-                        .then_some(document.id().to_buffer()),
+                    initiating_anchor_document_id: document.id().to_buffer(),
+                    initial_payment_credits: recovered_amount_credits,
                     initial_message_from_me: true,
                     initial_message: my_decoded_initial_message.clone(),
                 }

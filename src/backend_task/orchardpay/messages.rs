@@ -20,7 +20,7 @@
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::orchardpay::contact_anchor::{
-    compute_shared_secret_from_key, own_bounds_verified_key,
+    ANCHOR_SIGNAL_AMOUNT_CREDITS, compute_shared_secret_from_key, own_bounds_verified_key,
 };
 use crate::backend_task::orchardpay::encryption::MessageContent;
 use crate::backend_task::orchardpay::errors::OrchardPayError;
@@ -255,10 +255,10 @@ fn synthetic_ecdh_public_key(bytes: &[u8], purpose: Purpose) -> IdentityPublicKe
 /// The subset of [`OrchardPayContactState::Established`] messaging needs:
 /// both ReferenceIDs (to tag outbound documents / query inbound ones), the
 /// counterparty's cached ECDH pubkeys (to derive both directional secrets
-/// with no network call), and the initial message (if any) carried forward
-/// from whichever pending phase preceded `Established` — [`load_thread`]
-/// synthesizes this into the conversation's first bubble without a second
-/// `orchardpay_get_contact_state` read.
+/// with no network call), and the initial message/payment (if any) carried
+/// forward from whichever pending phase preceded `Established` —
+/// [`load_thread`] synthesizes these into the conversation's first bubble
+/// without a second `orchardpay_get_contact_state` read.
 pub(crate) struct EstablishedRelationship {
     pub(crate) my_reference_id: [u8; 32],
     pub(crate) their_reference_id: [u8; 32],
@@ -266,8 +266,9 @@ pub(crate) struct EstablishedRelationship {
     pub(crate) counterparty_decryption_pubkey: Vec<u8>,
     pub(crate) created_at: Option<u64>,
     pub(crate) initial_message: Option<String>,
+    pub(crate) initial_payment_credits: u64,
     pub(crate) initial_message_from_me: bool,
-    pub(crate) initial_message_document_id: Option<[u8; 32]>,
+    pub(crate) initiating_anchor_document_id: [u8; 32],
 }
 
 /// Resolve `counterparty_identity_id`'s `Established` local contact state
@@ -293,8 +294,9 @@ pub(crate) fn established_state(
             counterparty_decryption_pubkey,
             created_at,
             initial_message,
+            initial_payment_credits,
             initial_message_from_me,
-            initial_message_document_id,
+            initiating_anchor_document_id,
             ..
         }) => Ok(EstablishedRelationship {
             my_reference_id,
@@ -303,8 +305,9 @@ pub(crate) fn established_state(
             counterparty_decryption_pubkey,
             created_at,
             initial_message,
+            initial_payment_credits,
             initial_message_from_me,
-            initial_message_document_id,
+            initiating_anchor_document_id,
         }),
         _ => Err(OrchardPayError::ContactNotEstablished.into()),
     }
@@ -1690,8 +1693,9 @@ pub async fn load_thread(
         counterparty_decryption_pubkey: dec_pk,
         created_at: established_created_at,
         initial_message,
+        initial_payment_credits,
         initial_message_from_me,
-        initial_message_document_id,
+        initiating_anchor_document_id,
     } = established_state(
         &backend,
         orchardpay_contract.id(),
@@ -1757,25 +1761,43 @@ pub async fn load_thread(
         &mut all_decoded,
     );
 
-    // The initial message attached to whichever side's request started this
-    // relationship rides along on the `contactAnchor` document itself, not
-    // as a separate `encryptedMessage` — synthesize it into the timeline
-    // here so it renders as a normal bubble instead of vanishing once the
-    // handshake completes. Its `created_at` is the anchor's own
+    // The initial message and/or payment attached to whichever side's
+    // request started this relationship ride along on the `contactAnchor`
+    // document itself, not as a separate `encryptedMessage`/shielded
+    // transfer memo-tagged for payment scanning — synthesize them into the
+    // timeline here so they render as a normal bubble instead of vanishing
+    // once the handshake completes. Its `created_at` is the anchor's own
     // `$createdAt`, which causally precedes every real message in this
     // relationship (messaging only becomes possible once `Established`), so
     // it naturally sorts first without any special-casing below.
-    if let Some(text) = initial_message {
+    //
+    // The transfer amount is only worth surfacing once it exceeds the
+    // routine default signal amount every request bundles regardless of
+    // intent — otherwise every established contact would show a "payment"
+    // for the protocol's own minimum. When it does qualify, it takes over
+    // the bubble (any attached text becomes the payment's memo, the same
+    // field shape a real `Payment` already uses) rather than rendering as a
+    // separate bubble.
+    let qualifying_payment =
+        (initial_payment_credits > ANCHOR_SIGNAL_AMOUNT_CREDITS).then_some(initial_payment_credits);
+    if initial_message.is_some() || qualifying_payment.is_some() {
+        let content = match qualifying_payment {
+            Some(amount) => MessageContent::Payment {
+                amount,
+                memo: initial_message,
+            },
+            None => MessageContent::Message {
+                data: initial_message
+                    .expect("guarded by the if above: qualifying_payment is None here"),
+            },
+        };
         all_decoded.push(ThreadMessage {
-            document_id: Identifier::from(
-                initial_message_document_id
-                    .expect("Some initial_message implies Some initial_message_document_id"),
-            ),
+            document_id: Identifier::from(initiating_anchor_document_id),
             from_me: initial_message_from_me,
             created_at: established_created_at,
             updated_at: None,
-            content: MessageContent::Message { data: text },
-            verified_amount: None,
+            content,
+            verified_amount: qualifying_payment,
             synthetic: true,
         });
     }

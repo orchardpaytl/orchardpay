@@ -95,16 +95,27 @@ pub enum OrchardPayContactState {
         /// phase that preceded `Established` — never re-fetched/re-decrypted
         /// on every thread-open. `None` if neither side attached one.
         initial_message: Option<String>,
-        /// `true` if *I* attached `initial_message`, `false` if the
-        /// counterparty did. Meaningless (ignore) when `initial_message` is
-        /// `None`.
+        /// The anchor-signaling transfer's real credits value, carried
+        /// forward from whichever side's pending phase started this
+        /// relationship — unlike `initial_message`, always populated: every
+        /// request bundles a transfer, whether or not a message was
+        /// attached. Compared against `contact_anchor::ANCHOR_SIGNAL_AMOUNT_CREDITS`
+        /// to decide whether it's worth surfacing as a payment (see
+        /// `messages::load_thread`'s synthesized first bubble) rather than
+        /// just the routine default signal amount.
+        initial_payment_credits: u64,
+        /// `true` if *I* attached `initial_message`/sent `initial_payment_credits`,
+        /// `false` if the counterparty did. Always accurate regardless of
+        /// whether a message was attached (both construction sites set this
+        /// from "who initiated", not from message presence).
         initial_message_from_me: bool,
-        /// The anchor document ID that carried `initial_message` — mine if
-        /// `initial_message_from_me`, theirs otherwise. Used as the stable,
-        /// collision-free synthetic `ThreadMessage` id for rendering this
-        /// message as the conversation's first bubble. `None` iff
-        /// `initial_message` is `None`.
-        initial_message_document_id: Option<[u8; 32]>,
+        /// The anchor document ID that carried `initial_message` and
+        /// `initial_payment_credits` — mine if `initial_message_from_me`,
+        /// theirs otherwise. Used as the stable, collision-free synthetic
+        /// `ThreadMessage` id for rendering the conversation's first bubble.
+        /// Always populated: the anchor document exists regardless of
+        /// whether a message/qualifying payment ends up rendered from it.
+        initiating_anchor_document_id: [u8; 32],
     },
 }
 
