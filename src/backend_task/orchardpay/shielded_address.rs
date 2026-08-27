@@ -108,6 +108,7 @@ pub async fn publish_own_shielded_address(
                 creator_id: None,
                 properties,
                 revision: Some(1),
+                contract_version: None,
                 created_at: None,
                 updated_at: None,
                 transferred_at: None,
